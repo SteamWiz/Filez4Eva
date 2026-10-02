@@ -4,7 +4,7 @@ description = "Shift scans, photos, and other files into structured folders for 
 authors = ["Steampunk Wizard <filez4eva@steamwiz.io>"]
 license = "MIT"
 readme = "PACKAGE.md"
-version = "3.0.13"
+version = "4.0.0"
 homepage = 'https://steamwiz.io'
 repository = 'https://github.com/SteamWiz/Filez4Eva'
 
