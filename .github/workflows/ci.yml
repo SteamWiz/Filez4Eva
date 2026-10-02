@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release-level:
+        description: "Force a release at this level (patch, minor, major), or leave empty for commit-driven"
+        type: choice
+        options:
+          - ''
+          - patch
+          - minor
+          - major
+        default: ''
+
+permissions:
+  contents: write
+  checks: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  pipeline:
+    uses: steamwiz/actions/.github/workflows/python-pipeline.yml@v1
+    with:
+      python-version: '3.13'
+      coverage-min: 95
+      do-style: false
+      source-dir: filez4eva
+      release-level: ${{ inputs.release-level }}
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+
+  build:
+    name: Build
+    needs: pipeline
+    if: needs.pipeline.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.pipeline.outputs.tag }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Poetry
+        run: pip install "poetry==2.*"
+
+      - name: Install project dependencies
+        run: poetry install --no-root
+
+      - name: Build distribution
+        run: poetry build
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 30
+
+  publish:
+    name: Publish to PyPI
+    needs: [pipeline, build]
+    if: needs.pipeline.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

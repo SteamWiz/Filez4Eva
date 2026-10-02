@@ -1,0 +1,23 @@
+# Common Python stuff
+.eggs/
+__pycache__/
+*.pyc
+.idea/
+.coverage
+*,cover
+htmlcov/
+coverage.xml
+build/
+*.egg-info/
+dist/
+.DS_Store
+*.zip
+.env
+/.venv/
+
+# Application
+/sandbox/test-source/
+/sandbox/test-target/
+
+delete-me.*
+.target-branch

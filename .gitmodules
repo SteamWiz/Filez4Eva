@@ -1,0 +1,4 @@
+[submodule ".conf"]
+	path = .conf
+	url = https://github.com/SteamWiz/Conf.git
+	branch = main

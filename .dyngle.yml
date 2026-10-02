@@ -1,0 +1,25 @@
+# Dyngle tools for developers (think of it like Make). Shared operations live
+# in the .conf submodule (https://github.com/SteamWiz/Conf).
+
+dyngle:
+
+  imports:
+    - .conf/python.dyngle.yml
+    - ~/.dyngle.yml
+
+  # Repo-specific settings. coverage-target should match coverage-min in
+  # .github/workflows/ci.yml.
+
+  constants:
+    coverage-target: '95'
+    python-version: '3.13'
+
+  operations:
+
+    # Reset the sandbox source/target directories for manual testing (see the
+    # `play` alias in .swytchitrc.sh)
+
+    sandbox:
+      - rm -rf ./sandbox/test-target
+      - rm -rf ./sandbox/test-source
+      - cp -r ./sandbox/test-origin ./sandbox/test-source

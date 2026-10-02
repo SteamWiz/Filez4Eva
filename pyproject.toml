@@ -1,0 +1,41 @@
+[tool.poetry]
+name = "filez4eva"
+description = "Shift scans, photos, and other files into structured folders for permanent safekeeping"
+authors = ["Steampunk Wizard <filez4eva@steamwiz.io>"]
+license = "MIT"
+readme = "PACKAGE.md"
+version = "3.0.13"
+homepage = 'https://steamwiz.io'
+repository = 'https://github.com/SteamWiz/Filez4Eva'
+
+[tool.poetry.dependencies]
+python = "^3.13"
+wizlib = "^4.0.8"
+
+[tool.poetry.group.dev.dependencies]
+pycodestyle = "^2.11.0"
+coverage = "^7.3.0"
+autopep8 = "^2.0.4"
+pytest = "^9.0.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+filez4eva = "filez4eva:Filez4EvaApp.main"
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:tool.poetry.version"]
+tag_format = "v{version}"
+build_command = ""
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.remote.token]
+env = "GH_TOKEN"
+
+[tool.semantic_release.publish]
+upload_to_vcs_release = false
