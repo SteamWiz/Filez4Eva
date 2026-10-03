@@ -51,7 +51,9 @@ class StowDirCommand(Filez4EvaCommand):
     ACTION_CHOOSER = Chooser('', '', {'x': 'skip', 'p': 'preview',
                                       's': 'stow', 'd': 'delete', 'q': 'quit'})
 
-    DELETE_CHOOSER = Chooser('Delete?', 'No', {'Y': 'Yes'})
+    # WizLib's Chooser resolves Enter to the *first* choice, not to the
+    # default text, so the default ('No') must be listed first.
+    DELETE_CHOOSER = Chooser('Delete?', 'No', {'N': 'No', 'Y': 'Yes'})
 
     def handle_file(self, file):
         self.app.ui.send(file.name)

@@ -86,6 +86,36 @@ class TestCommandScan(WizLibTestCase):
             nx = [x.name for x in Path(source).iterdir()]
         self.assertEqual(nx, ['c.txt'])
 
+    def _run_delete_declined(self, keys):
+        with \
+                TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                self.patchout() as o, \
+                self.patcherr() as e, \
+                self.patch_ttyin(keys):
+            n = Path(source) / 'b.txt'
+            with open(n, 'w') as f:
+                f.write('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(
+                filez4eva_target=target)
+            c = StowDirCommand(a, dir=str(source))
+            c.execute()
+            nx = [x.name for x in Path(source).iterdir()]
+        self.assertEqual(nx, ['b.txt'])
+        self.assertEqual(c.status, 'Skipped 1 file')
+
+    def test_delete_declined_default(self):
+        # Enter at the confirmation takes the default ('No')
+        self._run_delete_declined('d\nx')
+
+    def test_delete_declined_explicit(self):
+        self._run_delete_declined('dNx')
+
+    def test_delete_prompt(self):
+        self.assertEqual(StowDirCommand.DELETE_CHOOSER.prompt_string,
+                         'Delete? [No] (Y)es: ')
+
     def test_preview(self):
         sourcefn1: str = 'b.txt'
         sourcecontent: str = 'a'
