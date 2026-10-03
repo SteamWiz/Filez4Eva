@@ -36,7 +36,7 @@ Filez4Eva will interactively prompt for:
 To process all files in a directory:
 
 ```bash
-filez4eva stow-dir ~/Desktop
+filez4eva scan-dir ~/Desktop
 ```
 
 This interactive process lets you:
@@ -58,7 +58,7 @@ stow-file command:
 - `--part, -p PART`: Specify part name
 - `file`: Path to the file to stow
 
-stow-dir command:
+scan-dir command:
 - `dir`: Optional path to directory to scan (defaults to configured source)
 
 ## Configuration
