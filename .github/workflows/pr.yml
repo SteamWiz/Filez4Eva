@@ -1,0 +1,22 @@
+name: PR Checks
+
+on:
+  pull_request:
+
+# Read-only: pull requests never need to write to the repository.
+permissions:
+  contents: read
+  checks: write
+
+# One run per PR; a new push cancels the superseded run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    uses: steamwiz/actions/.github/workflows/python-ci.yml@v1
+    with:
+      python-version: '3.13'
+      source-dir: filez4eva
+      coverage-min: 95
