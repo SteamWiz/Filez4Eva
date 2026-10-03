@@ -1,37 +1,55 @@
-name: CI
+# Manual release, run from `main` (Actions > Release > Run workflow).
+#
+# Keep this file named ci.yml: PyPI trusted publishing is registered against the
+# filename of the workflow that contains the `publish` job. Renaming it breaks
+# publishing until the trusted publisher is re-registered on PyPI.
+#
+# Pull-request checks live in pr.yml.
+name: Release
 
 on:
-  push:
-    branches-ignore:
-      - main
-  pull_request:
   workflow_dispatch:
     inputs:
       release-level:
-        description: "Force a release at this level (patch, minor, major), or leave empty for commit-driven"
+        description: "Release level: auto = decide from conventional commits"
         type: choice
         options:
-          - ''
+          - auto
           - patch
           - minor
           - major
-        default: ''
+        default: auto
 
 permissions:
-  contents: write
-  checks: write
-  issues: write
-  pull-requests: write
-  id-token: write
+  contents: read
+
+# Never cancel a release part-way through.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  pipeline:
-    uses: steamwiz/actions/.github/workflows/python-pipeline.yml@v1
+  test:
+    uses: steamwiz/actions/.github/workflows/python-ci.yml@ci/split-pipeline
+    permissions:
+      contents: read
+      checks: write
     with:
       python-version: '3.13'
-      coverage-min: 95
-      do-style: false
       source-dir: filez4eva
+      coverage-min: 95
+
+  # Only runs on main; on any other ref the job is skipped, so dispatching this
+  # workflow from a branch is a safe dry run of the tests.
+  release:
+    needs: test
+    uses: steamwiz/actions/.github/workflows/python-release.yml@ci/split-pipeline
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    with:
+      python-version: '3.13'
       release-level: ${{ inputs.release-level }}
     secrets:
       APP_ID: ${{ secrets.APP_ID }}
@@ -39,15 +57,17 @@ jobs:
 
   build:
     name: Build
-    needs: pipeline
-    if: needs.pipeline.outputs.released == 'true'
+    needs: release
+    if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.pipeline.outputs.tag }}
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -71,9 +91,9 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: [pipeline, build]
-    if: needs.pipeline.outputs.released == 'true'
+    needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: pypi
     permissions:
       id-token: write
