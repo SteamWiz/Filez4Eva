@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   test:
-    uses: steamwiz/actions/.github/workflows/python-ci.yml@ci/split-pipeline
+    uses: steamwiz/actions/.github/workflows/python-ci.yml@v1
     permissions:
       contents: read
       checks: write
@@ -43,7 +43,7 @@ jobs:
   # workflow from a branch is a safe dry run of the tests.
   release:
     needs: test
-    uses: steamwiz/actions/.github/workflows/python-release.yml@ci/split-pipeline
+    uses: steamwiz/actions/.github/workflows/python-release.yml@v1
     permissions:
       contents: write
       issues: write
