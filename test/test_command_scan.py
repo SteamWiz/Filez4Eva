@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
-from filez4eva.command.scan_dir_command import StowDirCommand
+from filez4eva.command.scan_dir_command import ScanDirCommand
 from filez4eva.command import Filez4EvaCommand
 from filez4eva import Filez4EvaApp
 
@@ -36,7 +36,7 @@ class TestCommandScan(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(
                 filez4eva_target=target)
-            c = StowDirCommand(a, dir=str(source))
+            c = ScanDirCommand(a, dir=str(source))
             c.execute()
             with open(target + stowedpath1, 'r') as f:
                 r1 = f.read()
@@ -59,7 +59,7 @@ class TestCommandScan(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(
                 filez4eva_target=target)
-            c = StowDirCommand(a, dir=str(source))
+            c = ScanDirCommand(a, dir=str(source))
             with self.assertRaises(AppCancellation):
                 c.execute()
 
@@ -81,7 +81,7 @@ class TestCommandScan(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(
                 filez4eva_target=target)
-            c = StowDirCommand(a, dir=str(source))
+            c = ScanDirCommand(a, dir=str(source))
             c.execute()
             nx = [x.name for x in Path(source).iterdir()]
         self.assertEqual(nx, ['c.txt'])
@@ -99,7 +99,7 @@ class TestCommandScan(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(
                 filez4eva_target=target)
-            c = StowDirCommand(a, dir=str(source))
+            c = ScanDirCommand(a, dir=str(source))
             c.execute()
             nx = [x.name for x in Path(source).iterdir()]
         self.assertEqual(nx, ['b.txt'])
@@ -113,7 +113,7 @@ class TestCommandScan(WizLibTestCase):
         self._run_delete_declined('dNx')
 
     def test_delete_prompt(self):
-        self.assertEqual(StowDirCommand.DELETE_CHOOSER.prompt_string,
+        self.assertEqual(ScanDirCommand.DELETE_CHOOSER.prompt_string,
                          'Delete? [No] (Y)es: ')
 
     def test_preview(self):
@@ -134,7 +134,7 @@ class TestCommandScan(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(
                 filez4eva_target=target)
-            c = StowDirCommand(a, dir=str(source))
+            c = ScanDirCommand(a, dir=str(source))
             c.execute()
             rm.assert_called_once()
 
@@ -159,7 +159,7 @@ class TestCommandScan(WizLibTestCase):
             a.config = ConfigHandler.fake(
                 filez4eva_target=target,
                 filez4eva_source=source)
-            a.parse_run('stow-dir', source)
+            a.parse_run('scan-dir', source)
             with open(target + stowedpath1, 'r') as f:
                 r1 = f.read()
             with open(target + stowedpath2, 'r') as f:
@@ -189,7 +189,7 @@ class TestCommandScan(WizLibTestCase):
             a.config = ConfigHandler.fake(
                 filez4eva_target=target,
                 filez4eva_source=source)
-            a.parse_run('stow-dir')
+            a.parse_run('scan-dir')
             with open(target + stowedpath1, 'r') as f:
                 r1 = f.read()
             with open(target + stowedpath2, 'r') as f:

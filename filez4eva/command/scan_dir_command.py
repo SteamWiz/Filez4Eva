@@ -11,10 +11,10 @@ from filez4eva.command import Filez4EvaCommand
 from filez4eva.command.stow_file_command import StowFileCommand
 
 
-class StowDirCommand(Filez4EvaCommand):
+class ScanDirCommand(Filez4EvaCommand):
     """Handle files from a directory"""
 
-    name = 'stow-dir'
+    name = 'scan-dir'
 
     @classmethod
     def add_args(cls, parser: WizParser):
