@@ -24,5 +24,6 @@ GitHub Actions performs the entire build/test/release cycle using the shared [St
 The application uses the following external libraries:
 
 - [WizLib](https://wizlib.steamwiz.io/) for CLI and configuration handling
+- [Kwark](https://github.com/SteamWiz/Kwark) (its `kwark.ai` library layer) for transcribing files to Markdown with Claude. Filez4Eva passes its own settings (model, API key) as arguments and never reads Kwark's configuration. Tests mock `kwark.ai.transcribe`, so no API calls are made.
 
 Note that this application makes heavy use of WizLib and all code changes are expected to comply with, and take advantage of, the framework.
