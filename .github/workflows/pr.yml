@@ -17,6 +17,6 @@ jobs:
   python:
     uses: steamwiz/actions/.github/workflows/python-ci.yml@v1
     with:
-      python-version: '3.13'
+      python-version: '3.14'
       source-dir: filez4eva
       coverage-min: 95

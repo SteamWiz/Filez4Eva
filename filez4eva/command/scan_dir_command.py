@@ -11,10 +11,10 @@ from filez4eva.command import Filez4EvaCommand
 from filez4eva.command.stow_file_command import StowFileCommand
 
 
-class StowDirCommand(Filez4EvaCommand):
+class ScanDirCommand(Filez4EvaCommand):
     """Handle files from a directory"""
 
-    name = 'stow-dir'
+    name = 'scan-dir'
 
     @classmethod
     def add_args(cls, parser: WizParser):
@@ -51,7 +51,9 @@ class StowDirCommand(Filez4EvaCommand):
     ACTION_CHOOSER = Chooser('', '', {'x': 'skip', 'p': 'preview',
                                       's': 'stow', 'd': 'delete', 'q': 'quit'})
 
-    DELETE_CHOOSER = Chooser('Delete?', 'No', {'Y': 'Yes'})
+    # WizLib's Chooser resolves Enter to the *first* choice, not to the
+    # default text, so the default ('No') must be listed first.
+    DELETE_CHOOSER = Chooser('Delete?', 'No', {'N': 'No', 'Y': 'Yes'})
 
     def handle_file(self, file):
         self.app.ui.send(file.name)
@@ -68,7 +70,8 @@ class StowDirCommand(Filez4EvaCommand):
                 os.remove(file)
                 self.increment_result('Deleted')
             elif action == 'stow':
-                command = StowFileCommand(self.app, file=str(file))
+                command = StowFileCommand(self.app, file=str(file),
+                                          use_stdin=False)
                 command.execute()
                 if command.status:
                     self.increment_result('Stowed')

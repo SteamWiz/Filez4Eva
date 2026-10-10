@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import Mock, patch
 
-from filez4eva.command.scan_dir_command import StowDirCommand
+from filez4eva.command.scan_dir_command import ScanDirCommand
 from filez4eva.command import Filez4EvaCommand
 from filez4eva import Filez4EvaApp
 
@@ -36,13 +36,37 @@ class TestCommandScan(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(
                 filez4eva_target=target)
-            c = StowDirCommand(a, dir=str(source))
+            c = ScanDirCommand(a, dir=str(source))
             c.execute()
             with open(target + stowedpath1, 'r') as f:
                 r1 = f.read()
             with open(target + stowedpath2, 'r') as f:
                 r2 = f.read()
         self.assertEqual(r1 + r2, 'aa')
+        self.assertEqual(c.status, 'Stowed 2 files')
+
+    def test_invalid_prompted_part_does_not_abort(self):
+        # A typo at the part prompt re-asks; the session carries on to the
+        # next file instead of ending.
+        keys = 's20240213\nj\nbank statement\nt\ns20231211\nk\nu\n'
+        with \
+                TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                self.patchout(), \
+                self.patcherr() as e, \
+                self.patch_ttyin(keys):
+            for fn in ['b.txt', 'c.txt']:
+                (Path(source) / fn).write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target)
+            c = ScanDirCommand(a, dir=str(source))
+            c.execute()
+            self.assertTrue(
+                (Path(target) / '2024/j/20240213-t.txt').is_file())
+            self.assertTrue(
+                (Path(target) / '2023/k/20231211-u.txt').is_file())
+            e.seek(0)
+            self.assertIn('Part must contain only', e.read())
         self.assertEqual(c.status, 'Stowed 2 files')
 
     def test_quit(self):
@@ -59,7 +83,7 @@ class TestCommandScan(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(
                 filez4eva_target=target)
-            c = StowDirCommand(a, dir=str(source))
+            c = ScanDirCommand(a, dir=str(source))
             with self.assertRaises(AppCancellation):
                 c.execute()
 
@@ -81,10 +105,40 @@ class TestCommandScan(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(
                 filez4eva_target=target)
-            c = StowDirCommand(a, dir=str(source))
+            c = ScanDirCommand(a, dir=str(source))
             c.execute()
             nx = [x.name for x in Path(source).iterdir()]
         self.assertEqual(nx, ['c.txt'])
+
+    def _run_delete_declined(self, keys):
+        with \
+                TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                self.patchout() as o, \
+                self.patcherr() as e, \
+                self.patch_ttyin(keys):
+            n = Path(source) / 'b.txt'
+            with open(n, 'w') as f:
+                f.write('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(
+                filez4eva_target=target)
+            c = ScanDirCommand(a, dir=str(source))
+            c.execute()
+            nx = [x.name for x in Path(source).iterdir()]
+        self.assertEqual(nx, ['b.txt'])
+        self.assertEqual(c.status, 'Skipped 1 file')
+
+    def test_delete_declined_default(self):
+        # Enter at the confirmation takes the default ('No')
+        self._run_delete_declined('d\nx')
+
+    def test_delete_declined_explicit(self):
+        self._run_delete_declined('dNx')
+
+    def test_delete_prompt(self):
+        self.assertEqual(ScanDirCommand.DELETE_CHOOSER.prompt_string,
+                         'Delete? [No] (Y)es: ')
 
     def test_preview(self):
         sourcefn1: str = 'b.txt'
@@ -104,7 +158,7 @@ class TestCommandScan(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(
                 filez4eva_target=target)
-            c = StowDirCommand(a, dir=str(source))
+            c = ScanDirCommand(a, dir=str(source))
             c.execute()
             rm.assert_called_once()
 
@@ -129,7 +183,7 @@ class TestCommandScan(WizLibTestCase):
             a.config = ConfigHandler.fake(
                 filez4eva_target=target,
                 filez4eva_source=source)
-            a.parse_run('stow-dir', source)
+            a.parse_run('scan-dir', source)
             with open(target + stowedpath1, 'r') as f:
                 r1 = f.read()
             with open(target + stowedpath2, 'r') as f:
@@ -159,7 +213,7 @@ class TestCommandScan(WizLibTestCase):
             a.config = ConfigHandler.fake(
                 filez4eva_target=target,
                 filez4eva_source=source)
-            a.parse_run('stow-dir')
+            a.parse_run('scan-dir')
             with open(target + stowedpath1, 'r') as f:
                 r1 = f.read()
             with open(target + stowedpath2, 'r') as f:
@@ -167,3 +221,24 @@ class TestCommandScan(WizLibTestCase):
         self.assertEqual(r1 + r2, 'aa')
         e.seek(0)
         self.assertIn('Stowed 2 files', e.read())
+
+    def test_cabinet_prompted_per_file(self):
+        # With several cabinets, each stowed file asks for its cabinet
+        keys = 'smemories\n20240213\nj\nt\nsaccounts\n20231211\nk\nu\n'
+        with \
+                TemporaryDirectory() as source, \
+                TemporaryDirectory() as a, \
+                TemporaryDirectory() as b, \
+                self.patchout(), \
+                self.patcherr(), \
+                self.patch_ttyin(keys):
+            for fn in ['b.txt', 'c.txt']:
+                (Path(source) / fn).write_text('a')
+            app = Filez4EvaApp()
+            app.config = ConfigHandler.fake(filez4eva_cabinets={
+                'accounts': {'target': a}, 'memories': {'target': b}})
+            c = ScanDirCommand(app, dir=str(source))
+            c.execute()
+            self.assertTrue((Path(b) / '2024/j/20240213-t.txt').is_file())
+            self.assertTrue((Path(a) / '2023/k/20231211-u.txt').is_file())
+        self.assertEqual(c.status, 'Stowed 2 files')
