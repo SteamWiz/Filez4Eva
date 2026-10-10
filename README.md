@@ -8,7 +8,7 @@ The following document is for _developers_ contributing to the application. For 
 
 ## Development setup
 
-Requires Python 3.13 or higher. Uses [Dyngle](https://dyngle.steamwiz.io/) for administration (installed separately). Shared Dyngle operations live in the `.conf` submodule ([SteamWiz/Conf](https://github.com/SteamWiz/Conf)), so clone with `--recurse-submodules` or run `git submodule update --init`.
+Requires Python 3.14 or higher. Uses [Dyngle](https://dyngle.steamwiz.io/) for administration (installed separately). Shared Dyngle operations live in the `.conf` submodule ([SteamWiz/Conf](https://github.com/SteamWiz/Conf)), so clone with `--recurse-submodules` or run `git submodule update --init`.
 
 - `dyngle run init` - Create the virtual environment and install poetry
 - `dyngle run dependencies` - Install the required packages using poetry
