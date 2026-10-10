@@ -27,6 +27,8 @@ filez4eva stow-file ~/Desktop/123456789SomeFileIDownloaded.pdf
 ```
 
 Filez4Eva will interactively prompt for:
+- Cabinet, only if several are configured (with tab-completion of cabinet
+  names; see [Cabinets](#cabinets))
 - Date in YYYYMMDD format
 - Account name (with tab-completion from existing accounts)
 - Part name (with tab-completion from existing files for that account)
@@ -39,7 +41,8 @@ printf 'date: 20240213\naccount: acct\npart: statement\n' \
   | filez4eva stow-file ~/Desktop/statement.pdf
 ```
 
-- Recognised keys are `date`, `account` and `part`; any other keys are ignored.
+- Recognised keys are `cabinet`, `date`, `account` and `part`; any other keys
+  are ignored.
 - Command-line flags override values from stdin.
 - Anything still missing is prompted for as usual.
 - `date` may be `20240213`, `'20240213'` or `2024-02-13`. If it isn't a valid
@@ -77,6 +80,7 @@ Global options:
 - `--debug`: Enable debug output
 
 stow-file command:
+- `--cabinet, -c NAME`: Specify the cabinet (destination) to stow into
 - `--date, -d DATE`: Specify date in YYYYMMDD format
 - `--account, -a ACCOUNT`: Specify account name
 - `--part, -p PART`: Specify part name
@@ -137,3 +141,44 @@ exits before moving anything or prompting, if it:
 Tab completion of accounts and parts reads existing files in the default
 layout, so it only works with the default pattern. With any other pattern the
 prompts still accept typed values but offer no completion.
+
+### Cabinets
+
+To file into more than one destination, configure named cabinets:
+
+```yaml
+filez4eva:
+  cabinets:
+    accounts:
+      target: ~/Dropbox/accounts
+      pattern: '{year}/{account}/{date}-{part}{ext}'
+      description: Personal account records
+    memories:
+      target: ~/Dropbox/memories
+      pattern: '{account}/{year}/{part}-{date}{ext}'
+```
+
+Each cabinet has:
+- `target` (required): the directory files are stowed under
+- `pattern` (optional): the layout under the target, as described above.
+  Defaults to the top-level `pattern` if set, otherwise
+  `'{year}/{account}/{date}-{part}{ext}'`
+- `description` (optional): a note on what the cabinet holds
+
+Choose the cabinet with `--cabinet NAME` (or `-c NAME`), or with a `cabinet`
+key on stdin; the flag wins if both are given. If neither is given and there
+is more than one cabinet, `stow-file` prompts for one, with tab-completion of
+the names. With only one cabinet it is used without asking. An unknown name
+from the flag or stdin is an error; an unknown name typed at the prompt is
+rejected and the prompt asks again. `scan-dir` asks for a cabinet for each
+file it stows.
+
+Tab completion of accounts and parts reads the chosen cabinet's target.
+
+If there is no `cabinets` section (or it is empty), the top-level `target` and
+`pattern` form a single cabinet named `default`, so existing configurations
+work unchanged. If `cabinets` is present, the top-level `target` is ignored.
+
+The whole configuration is checked before any prompt: a cabinet with no
+`target`, or with an invalid pattern, is an error even if it isn't the one
+being used.

@@ -1,4 +1,6 @@
+from dataclasses import dataclass
 from datetime import datetime
+from functools import cached_property
 import os
 from pathlib import Path
 import re
@@ -19,7 +21,7 @@ FILE_PATTERN = re.compile(r'\d{8}\-([a-zA-Z0-9-]+)\.(\w+)')
 
 # Keys that stow-file reads from a YAML mapping on stdin. Other keys are
 # ignored.
-STDIN_KEYS = ['date', 'account', 'part']
+STDIN_KEYS = ['cabinet', 'date', 'account', 'part']
 
 # A part becomes part of the filename, so it must match FILE_PATTERN.
 PART_PATTERN = re.compile(r'[a-zA-Z0-9-]+')
@@ -97,6 +99,66 @@ def check_pattern(pattern: str):
         raise error("must stay inside the target")
 
 
+# Name of the implicit cabinet built from the top-level `target` and
+# `pattern` keys when no `cabinets` section is configured.
+DEFAULT_CABINET = 'default'
+
+
+@dataclass(frozen=True)
+class Cabinet:
+    """A named destination: a target directory with its own pattern"""
+
+    name: str
+    target: str
+    pattern: str = DEFAULT_PATTERN
+    description: str = None
+
+    @property
+    def targetdir(self) -> Path:
+        return Path(self.target).expanduser()
+
+
+def load_cabinets(config) -> dict:
+    """Return the configured cabinets as a dict of name -> Cabinet. Without a
+    `cabinets` section, the top-level `target` and `pattern` form a single
+    cabinet named 'default'. With one, the top-level `target` is ignored and
+    the top-level `pattern` is the default for cabinets that set none. Raises
+    Filez4EvaError on bad configuration, including any invalid pattern."""
+    pattern = config.get('filez4eva-pattern') or DEFAULT_PATTERN
+    entries = config.get('filez4eva-cabinets')
+    if not entries:
+        target = config.get('filez4eva-target')
+        if not target:
+            raise Filez4EvaError(
+                "No target configured: set filez4eva target or cabinets")
+        check_pattern(pattern)
+        return {DEFAULT_CABINET: Cabinet(DEFAULT_CABINET, str(target),
+                                         pattern)}
+    if not isinstance(entries, dict):
+        raise Filez4EvaError(
+            "filez4eva cabinets must be a mapping of name to settings")
+    cabinets = {}
+    for name, entry in entries.items():
+        if not isinstance(name, str) or not name.strip():
+            raise Filez4EvaError(
+                f"Cabinet name must be a non-empty string: {name!r}")
+        if entry is None:
+            entry = {}
+        if not isinstance(entry, dict):
+            raise Filez4EvaError(f"Cabinet {name} must be a mapping")
+        target = entry.get('target')
+        if not isinstance(target, str) or not target.strip():
+            raise Filez4EvaError(f"Cabinet {name} must have a target")
+        description = entry.get('description')
+        if description is not None and not isinstance(description, str):
+            raise Filez4EvaError(
+                f"Cabinet {name} description must be text")
+        cabinet_pattern = entry.get('pattern') or pattern
+        check_pattern(cabinet_pattern)
+        cabinets[name] = Cabinet(name, target, cabinet_pattern, description)
+    return cabinets
+
+
 class StowFileCommand(Filez4EvaCommand):
     """Move filez to the right place with the right name"""
 
@@ -105,6 +167,7 @@ class StowFileCommand(Filez4EvaCommand):
     date: str
     account: str
     part: str
+    cabinet: str
 
     # Set False when stow-file runs inside another command (e.g. scan-dir),
     # so a record piped to that command isn't applied to every file.
@@ -116,14 +179,17 @@ class StowFileCommand(Filez4EvaCommand):
         parser.add_argument('--date', '-d')
         parser.add_argument('--account', '-a')
         parser.add_argument('--part', '-p')
+        parser.add_argument('--cabinet', '-c')
         parser.add_argument('file')
 
     def handle_vals(self):
         super().handle_vals()
-        # Fail on a bad pattern before prompting for anything
-        check_pattern(self.pattern)
+        # Fail on bad configuration (including any cabinet's pattern) before
+        # prompting for anything
+        self.cabinets
         if self.use_stdin:
             self.apply_stdin_record()
+        self.resolve_cabinet()
         if not self.provided('date'):
             while True:
                 self.date = self.app.ui.get_text('Date: ').strip()
@@ -189,7 +255,9 @@ class StowFileCommand(Filez4EvaCommand):
             value = value.strip()
             if not value or value in YAML_NULLS:
                 continue
-            if key == 'date':
+            if key == 'cabinet':
+                self.check_cabinet(value)
+            elif key == 'date':
                 value = self.normalize_stdin_date(value)
             elif key == 'account':
                 check_account(value)
@@ -236,13 +304,39 @@ class StowFileCommand(Filez4EvaCommand):
                             parts.add(match.groups()[0])
         return sorted(parts)
 
+    @cached_property
+    def cabinets(self) -> dict:
+        """Configured cabinets by name"""
+        return load_cabinets(self.app.config)
+
+    def check_cabinet(self, name: str):
+        """Raise Filez4EvaError unless name is a configured cabinet"""
+        if name not in self.cabinets:
+            known = ', '.join(sorted(self.cabinets))
+            raise Filez4EvaError(f"Unknown cabinet {name}; known: {known}")
+
+    def resolve_cabinet(self) -> Cabinet:
+        """Return the selected cabinet, choosing it on first use: the
+        --cabinet flag or stdin value if given (an unknown name raises),
+        otherwise the only cabinet, otherwise a prompt."""
+        if self.provided('cabinet'):
+            self.check_cabinet(self.cabinet)
+        elif len(self.cabinets) == 1:
+            self.cabinet = next(iter(self.cabinets))
+        else:
+            names = sorted(self.cabinets)
+            self.cabinet = self.prompt_value(
+                'Cabinet', names, lambda v: v in self.cabinets,
+                'Cabinet must be one of: ' + ', '.join(names))
+        return self.cabinets[self.cabinet]
+
     @property
-    def targetdir(self):
-        return Path(self.app.config.get('filez4eva-target')).expanduser()
+    def targetdir(self) -> Path:
+        return self.resolve_cabinet().targetdir
 
     @property
     def pattern(self) -> str:
-        return self.app.config.get('filez4eva-pattern') or DEFAULT_PATTERN
+        return self.resolve_cabinet().pattern
 
     @Filez4EvaCommand.wrap
     def execute(self):

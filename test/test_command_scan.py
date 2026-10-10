@@ -221,3 +221,24 @@ class TestCommandScan(WizLibTestCase):
         self.assertEqual(r1 + r2, 'aa')
         e.seek(0)
         self.assertIn('Stowed 2 files', e.read())
+
+    def test_cabinet_prompted_per_file(self):
+        # With several cabinets, each stowed file asks for its cabinet
+        keys = 'smemories\n20240213\nj\nt\nsaccounts\n20231211\nk\nu\n'
+        with \
+                TemporaryDirectory() as source, \
+                TemporaryDirectory() as a, \
+                TemporaryDirectory() as b, \
+                self.patchout(), \
+                self.patcherr(), \
+                self.patch_ttyin(keys):
+            for fn in ['b.txt', 'c.txt']:
+                (Path(source) / fn).write_text('a')
+            app = Filez4EvaApp()
+            app.config = ConfigHandler.fake(filez4eva_cabinets={
+                'accounts': {'target': a}, 'memories': {'target': b}})
+            c = ScanDirCommand(app, dir=str(source))
+            c.execute()
+            self.assertTrue((Path(b) / '2024/j/20240213-t.txt').is_file())
+            self.assertTrue((Path(a) / '2023/k/20231211-u.txt').is_file())
+        self.assertEqual(c.status, 'Stowed 2 files')
