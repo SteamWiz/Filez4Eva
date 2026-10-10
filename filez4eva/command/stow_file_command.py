@@ -2,6 +2,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 import re
+from string import Formatter
 from subprocess import run
 import sys
 
@@ -31,6 +32,19 @@ STDIN_DATE_FORMATS = ['%Y%m%d', '%Y-%m-%d']
 # missing rather than as a directory or part called "null".
 YAML_NULLS = {'~', 'null', 'Null', 'NULL'}
 
+# Destination layout under the target directory, from the `filez4eva:
+# pattern:` config key. The default reproduces the original layout.
+DEFAULT_PATTERN = '{year}/{account}/{date}-{part}{ext}'
+
+# Placeholders allowed in a pattern. `date` is YYYYMMDD and `ext` includes
+# the dot.
+PLACEHOLDERS = {'year', 'date', 'account', 'part', 'ext'}
+
+PATTERN_RULE = ('Pattern may only use the placeholders '
+                + ', '.join('{' + p + '}' for p in sorted(PLACEHOLDERS))
+                + ' (no format specs, conversions, attributes or indexes)'
+                + ' and must be a relative path inside the target')
+
 ACCOUNT_RULE = 'Account must be a single directory name'
 PART_RULE = 'Part must contain only letters, digits and hyphens'
 
@@ -59,6 +73,30 @@ def check_part(part: str):
         raise Filez4EvaError(f"{PART_RULE}: {part!r}")
 
 
+def check_pattern(pattern: str):
+    """Raise Filez4EvaError unless pattern is a valid destination pattern"""
+    def error(detail):
+        return Filez4EvaError(
+            f"Invalid filez4eva pattern {pattern!r}: {detail}. "
+            f"{PATTERN_RULE}")
+    if not isinstance(pattern, str) or not pattern.strip():
+        raise error("must not be empty")
+    try:
+        fields = list(Formatter().parse(pattern))
+    except ValueError as err:
+        raise error(str(err)) from None
+    for _, name, spec, conversion in fields:
+        if name is None:
+            continue
+        if name not in PLACEHOLDERS:
+            raise error(f"unknown placeholder {{{name}}}")
+        if spec or conversion:
+            raise error(f"format spec or conversion on {{{name}}}")
+    pure = Path(pattern)
+    if pure.is_absolute() or pattern.startswith('~') or '..' in pure.parts:
+        raise error("must stay inside the target")
+
+
 class StowFileCommand(Filez4EvaCommand):
     """Move filez to the right place with the right name"""
 
@@ -82,6 +120,8 @@ class StowFileCommand(Filez4EvaCommand):
 
     def handle_vals(self):
         super().handle_vals()
+        # Fail on a bad pattern before prompting for anything
+        check_pattern(self.pattern)
         if self.use_stdin:
             self.apply_stdin_record()
         if not self.provided('date'):
@@ -168,6 +208,10 @@ class StowFileCommand(Filez4EvaCommand):
             f"Date from stdin must match format YYYYMMDD: {value}")
 
     def get_accounts(self) -> list:
+        """Return past accounts for tab completion. Only supported for the
+        default pattern; other patterns return an empty list."""
+        if self.pattern != DEFAULT_PATTERN:
+            return []
         accounts = set()
         for year in self.targetdir.iterdir():
             if year.name.isdigit() and year.is_dir():
@@ -177,7 +221,10 @@ class StowFileCommand(Filez4EvaCommand):
         return sorted(accounts)
 
     def get_parts(self, sub: str) -> list:
-        """Return a set of past filename parts"""
+        """Return past filename parts for tab completion. Only supported for
+        the default pattern; other patterns return an empty list."""
+        if self.pattern != DEFAULT_PATTERN:
+            return []
         parts = set()
         for year in self.targetdir.iterdir():
             if year.name.isdigit():
@@ -193,26 +240,35 @@ class StowFileCommand(Filez4EvaCommand):
     def targetdir(self):
         return Path(self.app.config.get('filez4eva-target')).expanduser()
 
+    @property
+    def pattern(self) -> str:
+        return self.app.config.get('filez4eva-pattern') or DEFAULT_PATTERN
+
     @Filez4EvaCommand.wrap
     def execute(self):
+        pattern = self.pattern
+        check_pattern(pattern)
         path = Path(self.file).expanduser().absolute()
         if not path.is_file():
             raise Filez4EvaError(f"File {path} must exist")
-        extension = path.suffix
         check_account(self.account)
         check_part(self.part)
         date = datetime.strptime(self.date, "%Y%m%d")
-        dirpath = self.targetdir.absolute() / str(date.year) / self.account
-        if not dirpath.exists():
-            # confirm = rlinput(f"Create {dirpath}? ", default="yes")
-            # if confirm.startswith('y'):
-            dirpath.mkdir(parents=True)
-        targetpath = dirpath / \
-            f"{date.strftime('%Y%m%d')}-{self.part}{extension}"
+        targetdir = self.targetdir.absolute()
+        relative = pattern.format(
+            year=str(date.year), date=date.strftime('%Y%m%d'),
+            account=self.account, part=self.part, ext=path.suffix)
+        targetpath = targetdir / relative
+        # Belt and braces: the formatted path must name a file inside the
+        # target directory (checked lexically, so symlinks are allowed).
+        base = os.path.normpath(targetdir)
+        dest = os.path.normpath(targetpath)
+        if os.path.commonpath([base, dest]) != base or dest == base:
+            raise Filez4EvaError(
+                f"Destination {targetpath} is outside target {targetdir}")
         if targetpath.exists():
             raise Filez4EvaError(f"File already exists at {targetpath}")
-        # confirm = rlinput(f"Move file to {targetpath}? ", default="yes")
-        # if confirm.startswith('y'):
+        targetpath.parent.mkdir(parents=True, exist_ok=True)
         path.rename(targetpath)
         self.status = 'Done'
         return str(targetpath)
