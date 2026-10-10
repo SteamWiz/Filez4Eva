@@ -38,6 +38,40 @@ class TestStowCommand(WizLibTestCase):
                 r = f.read()
         self.assertEqual(r, 'a')
 
+    def test_returns_destination_path(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            n = Path(source) / 'b.txt'
+            with open(n, 'w') as f:
+                f.write('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target)
+            c = StowFileCommand(a, file=str(n), date='20240213', account='j',
+                                part='t')
+            with self.patchout():
+                r = c.execute()
+            expected = Path(target) / '2024/j/20240213-t.txt'
+            self.assertTrue(Path(r).is_absolute())
+            self.assertEqual(Path(r), expected)
+            self.assertTrue(Path(r).is_file())
+
+    def test_returns_absolute_path_for_relative_target(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as cwd, \
+                patch('os.getcwd', return_value=cwd):
+            n = Path(source) / 'b.txt'
+            with open(n, 'w') as f:
+                f.write('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target='.')
+            c = StowFileCommand(a, file=str(n), date='20240213', account='j',
+                                part='t')
+            with self.patchout():
+                r = c.execute()
+            self.assertTrue(Path(r).is_absolute())
+            self.assertEqual(Path(r), Path(cwd) / '2024/j/20240213-t.txt')
+            self.assertTrue(Path(r).is_file())
+
     def test_error_if_no_source(self):
         sourcefn: str = 'b.txt'
         date: str = '20240213'
@@ -195,6 +229,29 @@ class TestStowCommand(WizLibTestCase):
             e.seek(0)
             r = e.read()
         self.assertEqual(r, 'Done\n')
+
+    def test_stdout_is_destination_path(self):
+        with \
+                TemporaryDirectory() as target, \
+                TemporaryDirectory() as sd, \
+                patch('sys.stderr', StringIO()), \
+                patch('sys.stdout', o := StringIO()):
+            sp = Path(sd) / 'b.txt'
+            with open(sp, 'w') as sf:
+                sf.write('a')
+            with NamedTemporaryFile('w+') as cf:
+                cf.writelines([
+                    f"filez4eva:\n",
+                    f"  target: {target}\n"])
+                cf.seek(0)
+                Filez4EvaApp.start('--config', cf.name, 'stow-file', str(sp),
+                                   '--date', '20240213', '--account', 'j',
+                                   '--part', 't', debug=True)
+            printed = Path(o.getvalue().strip())
+            actual = Path(target) / '2024/j/20240213-t.txt'
+            self.assertTrue(printed.is_absolute())
+            self.assertTrue(actual.is_file())
+            self.assertEqual(printed.resolve(), actual.resolve())
 
     def test_parts(self):
         paths = [

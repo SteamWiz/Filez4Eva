@@ -58,6 +58,10 @@ stow-file command:
 - `--part, -p PART`: Specify part name
 - `file`: Path to the file to stow
 
+After a successful move, `stow-file` prints the absolute destination path on
+stdout (the `Done` status goes to stderr), so scripts can capture it, e.g.
+`dest=$(filez4eva stow-file -d 20240213 -a acct -p part file.pdf)`.
+
 scan-dir command:
 - `dir`: Optional path to directory to scan (defaults to configured source)
 
