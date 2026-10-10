@@ -31,6 +31,30 @@ Filez4Eva will interactively prompt for:
 - Account name (with tab-completion from existing accounts)
 - Part name (with tab-completion from existing files for that account)
 
+Values can also be piped in as a YAML mapping on stdin, which is handy for
+other tools that produce a record for the file:
+
+```bash
+printf 'date: 20240213\naccount: acct\npart: statement\n' \
+  | filez4eva stow-file ~/Desktop/statement.pdf
+```
+
+- Recognised keys are `date`, `account` and `part`; any other keys are ignored.
+- Command-line flags override values from stdin.
+- Anything still missing is prompted for as usual.
+- `date` may be `20240213`, `'20240213'` or `2024-02-13`. If it isn't a valid
+  date, `stow-file` exits with an error.
+- If stdin is empty, isn't valid YAML, or isn't a mapping, it is ignored.
+- Values are read as plain text, so `0123` stays `0123` and `yes` stays `yes`.
+- `~` and `null` are treated as missing, so that value is prompted for.
+- Stdin is only read by `stow-file` itself. `scan-dir` ignores it.
+
+However the values are supplied (flags, stdin or prompts), `account` must be a
+single directory name (not empty, `.` or `..`, and without `/` or `\`), and
+`part` may contain only letters, digits and hyphens. An invalid value from a
+flag or stdin makes `stow-file` exit with an error. An invalid value typed at
+a prompt is rejected and the prompt asks again.
+
 ### Processing Multiple Files
 
 To process all files in a directory:

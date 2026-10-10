@@ -70,7 +70,8 @@ class ScanDirCommand(Filez4EvaCommand):
                 os.remove(file)
                 self.increment_result('Deleted')
             elif action == 'stow':
-                command = StowFileCommand(self.app, file=str(file))
+                command = StowFileCommand(self.app, file=str(file),
+                                          use_stdin=False)
                 command.execute()
                 if command.status:
                     self.increment_result('Stowed')

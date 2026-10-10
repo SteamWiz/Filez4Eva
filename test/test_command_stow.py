@@ -270,3 +270,217 @@ class TestStowCommand(WizLibTestCase):
             c = StowFileCommand(a)
             x = c.get_parts('j')
         self.assertEqual(x, ['c', 't'])
+
+
+class TestStowFileStdin(WizLibTestCase):
+    """stow-file reads date, account and part from a YAML mapping on stdin"""
+
+    def stow(self, stdin, *args, ttyin=''):
+        """Run stow-file via the app with the given stdin text and typed
+        input; return (destination files under target, stderr text)"""
+        with \
+                TemporaryDirectory() as targetd, \
+                TemporaryDirectory() as sourced, \
+                self.patchout(), \
+                self.patcherr() as e, \
+                self.patch_stream(stdin), \
+                self.patch_ttyin(ttyin) as t:
+            sourcep = Path(sourced) / 'b.txt'
+            sourcep.write_text('a')
+            with NamedTemporaryFile('w+') as cf:
+                cf.write(f"filez4eva:\n  target: {targetd}\n")
+                cf.seek(0)
+                Filez4EvaApp.start('--config', cf.name, 'stow-file',
+                                   str(sourcep), *args, debug=True)
+            files = sorted(str(p.relative_to(targetd))
+                           for p in Path(targetd).rglob('*') if p.is_file())
+            e.seek(0)
+            return files, e.read(), t
+
+    def test_all_values_from_stdin(self):
+        files, _, t = self.stow('date: 20240213\naccount: j\npart: t\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+        t.assert_not_called()
+
+    def test_iso_date_from_stdin(self):
+        files, _, _ = self.stow('date: 2024-02-13\naccount: j\npart: t\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+
+    def test_quoted_date_from_stdin(self):
+        files, _, _ = self.stow("date: '20240213'\naccount: j\npart: t\n")
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+
+    def test_unknown_keys_ignored(self):
+        files, _, t = self.stow(
+            'date: 20240213\naccount: j\npart: t\nsummary: x\ntags: [a]\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+        t.assert_not_called()
+
+    def test_flags_override_stdin(self):
+        files, _, t = self.stow('date: 20240213\naccount: j\npart: t\n',
+                                '--date', '20230101', '--account', 'k',
+                                '--part', 'u')
+        self.assertEqual(files, ['2023/k/20230101-u.txt'])
+        t.assert_not_called()
+
+    def test_one_flag_overrides_stdin(self):
+        files, _, _ = self.stow('date: 20240213\naccount: j\npart: t\n',
+                                '--account', 'k')
+        self.assertEqual(files, ['2024/k/20240213-t.txt'])
+
+    def test_partial_stdin_prompts_for_rest(self):
+        files, _, _ = self.stow('date: 20240213\n', ttyin='j\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+
+    def test_blank_stdin_values_prompted(self):
+        files, _, _ = self.stow("date: 20240213\naccount: ''\npart:\n",
+                                ttyin='j\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+
+    def test_empty_stdin_prompts_as_before(self):
+        files, _, _ = self.stow('', ttyin='20240213\nj\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+
+    def test_non_mapping_stdin_ignored(self):
+        files, _, _ = self.stow('- a\n- b\n', ttyin='20240213\nj\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+
+    def test_malformed_stdin_ignored(self):
+        files, _, _ = self.stow('date: [unclosed\n',
+                                ttyin='20240213\nj\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+
+    def test_bad_stdin_date_raises(self):
+        with self.assertRaises(Filez4EvaError):
+            self.stow('date: 20240299\naccount: j\npart: t\n')
+
+    def test_no_stream_handler(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            n = Path(source) / 'b.txt'
+            n.write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target)
+            del a.stream
+            c = StowFileCommand(a, file=str(n), date='20240213', account='j',
+                                part='t')
+            with self.patchout():
+                c.execute()
+            self.assertTrue((Path(target) / '2024/j/20240213-t.txt').is_file())
+
+    # YAML 1.1 scalars must stay as typed (no octal, booleans, etc.)
+
+    def test_leading_zero_part_kept(self):
+        files, _, _ = self.stow('date: 20240213\naccount: j\npart: 0123\n')
+        self.assertEqual(files, ['2024/j/20240213-0123.txt'])
+
+    def test_leading_zero_account_kept(self):
+        files, _, _ = self.stow('date: 20240213\naccount: 0042\npart: t\n')
+        self.assertEqual(files, ['2024/0042/20240213-t.txt'])
+
+    def test_yes_no_kept(self):
+        files, _, _ = self.stow('date: 20240213\naccount: yes\npart: no\n')
+        self.assertEqual(files, ['2024/yes/20240213-no.txt'])
+
+    def test_non_scalar_stdin_value_raises(self):
+        with self.assertRaises(Filez4EvaError):
+            self.stow('date: 20240213\naccount: [a, b]\npart: t\n')
+
+    # Stdin is untrusted: account and part must be one safe path segment
+
+    def assert_rejected(self, stdin):
+        with TemporaryDirectory() as outside:
+            with self.assertRaises(Filez4EvaError):
+                self.stow(stdin.replace('OUTSIDE', outside))
+            self.assertEqual(list(Path(outside).rglob('*')), [])
+
+    def test_account_traversal_rejected(self):
+        self.assert_rejected('date: 20240213\naccount: ../../escaped\n'
+                             'part: t\n')
+
+    def test_account_absolute_rejected(self):
+        self.assert_rejected('date: 20240213\naccount: OUTSIDE\npart: t\n')
+
+    def test_account_dot_rejected(self):
+        self.assert_rejected('date: 20240213\naccount: "."\npart: t\n')
+
+    def test_account_dotdot_rejected(self):
+        self.assert_rejected('date: 20240213\naccount: ..\npart: t\n')
+
+    def test_account_backslash_rejected(self):
+        self.assert_rejected('date: 20240213\naccount: a\\b\npart: t\n')
+
+    def test_part_traversal_rejected(self):
+        self.assert_rejected('date: 20240213\naccount: j\n'
+                             'part: ../../../pwned\n')
+
+    def test_part_bad_characters_rejected(self):
+        self.assert_rejected('date: 20240213\naccount: j\npart: a.b\n')
+
+    def test_bad_stdin_rejected_before_prompting(self):
+        # With no typed input, a date prompt would cancel instead of raising
+        with self.assertRaises(Filez4EvaError):
+            self.stow('account: ../x\n')
+
+    # The same checks apply to flags and prompts
+
+    def test_flag_account_traversal_rejected(self):
+        with self.assertRaises(Filez4EvaError):
+            self.stow('', '--date', '20240213', '--account', '../x',
+                      '--part', 't')
+
+    # Prompts re-ask on an invalid value instead of raising
+
+    def test_invalid_prompted_part_reasked(self):
+        files, err, _ = self.stow(
+            '', ttyin='20240213\nj\n../x\nbank statement\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+        self.assertEqual(err.count('Part must contain only'), 2)
+
+    def test_invalid_prompted_account_reasked(self):
+        files, err, _ = self.stow('', ttyin='20240213\n../x\nj\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+        self.assertIn('Account must be a single directory name', err)
+
+    # YAML null spellings are treated as missing
+
+    def test_null_stdin_values_prompted(self):
+        files, _, _ = self.stow('date: 20240213\naccount: ~\npart: null\n',
+                                ttyin='j\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+
+
+class TestScanDirIgnoresStdin(WizLibTestCase):
+
+    def test_scan_dir_stow_does_not_use_stdin(self):
+        from filez4eva.command.scan_dir_command import ScanDirCommand
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            (Path(source) / 'b.txt').write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target)
+            a.stream = Mock(text='date: 20240213\naccount: j\npart: t\n')
+            c = ScanDirCommand(a, dir=source)
+            with patch('filez4eva.command.scan_dir_command.StowFileCommand')\
+                    as s, \
+                    patch.object(a.ui, 'get_option', return_value='stow'), \
+                    patch.object(a.ui, 'send'):
+                c.execute()
+            s.assert_called_once_with(a, file=str(Path(source) / 'b.txt'),
+                                      use_stdin=False)
+
+    def test_use_stdin_false_skips_record(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            n = Path(source) / 'b.txt'
+            n.write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target)
+            a.stream = Mock(text='date: 20230101\naccount: k\npart: u\n')
+            c = StowFileCommand(a, file=str(n), date='20240213', account='j',
+                                part='t', use_stdin=False)
+            c.apply_stdin_record = Mock()
+            with self.patchout():
+                c.execute()
+            c.apply_stdin_record.assert_not_called()
+            self.assertTrue((Path(target) / '2024/j/20240213-t.txt').is_file())
