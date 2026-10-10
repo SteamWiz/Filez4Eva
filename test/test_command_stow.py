@@ -672,3 +672,346 @@ class TestStowFilePattern(WizLibTestCase):
         # formatted destination must stay inside the target
         with patch('filez4eva.command.stow_file_command.check_pattern'):
             self.assert_rejected('../{account}{ext}')
+
+
+class TestStowFileCabinets(WizLibTestCase):
+    """Multiple named destinations from the `filez4eva: cabinets:` key"""
+
+    CUSTOM = '{account}/{year}/{part}-{date}{ext}'
+
+    def run_app(self, config, *args, stdin='', ttyin=''):
+        """Run stow-file via the app with a YAML config body (indented under
+        `filez4eva:`); return (stderr text, ttyin mock)"""
+        with \
+                TemporaryDirectory() as sourced, \
+                self.patchout(), \
+                self.patcherr() as e, \
+                self.patch_stream(stdin), \
+                self.patch_ttyin(ttyin) as t:
+            sourcep = Path(sourced) / 'b.txt'
+            sourcep.write_text('a')
+            with NamedTemporaryFile('w+') as cf:
+                cf.write('filez4eva:\n' + config)
+                cf.seek(0)
+                Filez4EvaApp.start('--config', cf.name, 'stow-file',
+                                   str(sourcep), *args, debug=True)
+            e.seek(0)
+            return e.read(), t
+
+    @staticmethod
+    def files(dir):
+        return sorted(str(p.relative_to(dir))
+                      for p in Path(dir).rglob('*') if p.is_file())
+
+    def two_cabinets(self, a, b):
+        return (f"  cabinets:\n"
+                f"    accounts:\n"
+                f"      target: {a}\n"
+                f"      description: Personal account records\n"
+                f"    memories:\n"
+                f"      target: {b}\n")
+
+    # Legacy config: an implicit 'default' cabinet, no prompt
+
+    def test_legacy_target(self):
+        with TemporaryDirectory() as target:
+            _, t = self.run_app(f"  target: {target}\n",
+                                stdin='date: 20240213\naccount: j\npart: t\n')
+            self.assertEqual(self.files(target), ['2024/j/20240213-t.txt'])
+            t.assert_not_called()
+
+    def test_legacy_target_and_pattern(self):
+        with TemporaryDirectory() as target:
+            _, t = self.run_app(
+                f"  target: {target}\n  pattern: '{self.CUSTOM}'\n",
+                stdin='date: 20240213\naccount: j\npart: t\n')
+            self.assertEqual(self.files(target), ['j/2024/t-20240213.txt'])
+            t.assert_not_called()
+
+    def test_legacy_default_name(self):
+        a = Filez4EvaApp()
+        a.config = ConfigHandler.fake(filez4eva_target='/x',
+                                      filez4eva_pattern=self.CUSTOM)
+        c = StowFileCommand(a)
+        cabinet = c.resolve_cabinet()
+        self.assertEqual(list(c.cabinets), ['default'])
+        self.assertEqual(cabinet.name, 'default')
+        self.assertEqual(cabinet.pattern, self.CUSTOM)
+        self.assertEqual(c.cabinet, 'default')
+
+    def test_legacy_cabinet_flag(self):
+        with TemporaryDirectory() as target:
+            self.run_app(f"  target: {target}\n", '-c', 'default',
+                         stdin='date: 20240213\naccount: j\npart: t\n')
+            self.assertEqual(self.files(target), ['2024/j/20240213-t.txt'])
+
+    def test_no_target_raises(self):
+        with self.assertRaises(Filez4EvaError):
+            self.run_app("  source: /tmp\n",
+                         stdin='date: 20240213\naccount: j\npart: t\n')
+
+    def test_empty_cabinets_uses_target(self):
+        with TemporaryDirectory() as target:
+            self.run_app(f"  target: {target}\n  cabinets: {{}}\n",
+                         stdin='date: 20240213\naccount: j\npart: t\n')
+            self.assertEqual(self.files(target), ['2024/j/20240213-t.txt'])
+
+    # One cabinet: used without a prompt; top-level target ignored
+
+    def test_single_cabinet(self):
+        with TemporaryDirectory() as target, \
+                TemporaryDirectory() as ignored:
+            _, t = self.run_app(
+                f"  target: {ignored}\n"
+                f"  cabinets:\n    only:\n      target: {target}\n",
+                stdin='date: 20240213\naccount: j\npart: t\n')
+            self.assertEqual(self.files(target), ['2024/j/20240213-t.txt'])
+            self.assertEqual(self.files(ignored), [])
+            t.assert_not_called()
+
+    def test_single_cabinet_direct(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            n = Path(source) / 'b.txt'
+            n.write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(
+                filez4eva_cabinets={'only': {'target': target}})
+            c = StowFileCommand(a, file=str(n), date='20240213', account='j',
+                                part='t', use_stdin=False)
+            with self.patchout():
+                r = c.execute()
+            self.assertEqual(Path(r), Path(target) / '2024/j/20240213-t.txt')
+
+    # Several cabinets: flag, stdin or prompt
+
+    def test_cabinet_from_flag(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            _, t = self.run_app(self.two_cabinets(a, b), '--cabinet',
+                                'memories',
+                                stdin='date: 20240213\naccount: j\npart: t\n')
+            self.assertEqual(self.files(a), [])
+            self.assertEqual(self.files(b), ['2024/j/20240213-t.txt'])
+            t.assert_not_called()
+
+    def test_cabinet_from_short_flag(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            self.run_app(self.two_cabinets(a, b), '-c', 'accounts',
+                         stdin='date: 20240213\naccount: j\npart: t\n')
+            self.assertEqual(self.files(a), ['2024/j/20240213-t.txt'])
+
+    def test_cabinet_from_stdin(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            _, t = self.run_app(
+                self.two_cabinets(a, b),
+                stdin='cabinet: memories\ndate: 20240213\naccount: j\n'
+                      'part: t\n')
+            self.assertEqual(self.files(b), ['2024/j/20240213-t.txt'])
+            t.assert_not_called()
+
+    def test_flag_overrides_stdin_cabinet(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            self.run_app(self.two_cabinets(a, b), '-c', 'accounts',
+                         stdin='cabinet: memories\ndate: 20240213\n'
+                               'account: j\npart: t\n')
+            self.assertEqual(self.files(a), ['2024/j/20240213-t.txt'])
+            self.assertEqual(self.files(b), [])
+
+    def test_cabinet_from_prompt(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            self.run_app(self.two_cabinets(a, b),
+                         stdin='date: 20240213\naccount: j\npart: t\n',
+                         ttyin='memories\n')
+            self.assertEqual(self.files(b), ['2024/j/20240213-t.txt'])
+
+    def test_prompt_completes_cabinet_names(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as a, \
+                TemporaryDirectory() as b:
+            n = Path(source) / 'b.txt'
+            n.write_text('a')
+            app = Filez4EvaApp()
+            app.config = ConfigHandler.fake(filez4eva_cabinets={
+                'zeta': {'target': a}, 'alpha': {'target': b}})
+            c = StowFileCommand(app, file=str(n), date='20240213',
+                                account='j', part='t', use_stdin=False)
+            with patch.object(app.ui, 'get_text', return_value='zeta') as gt, \
+                    self.patchout():
+                r = c.execute()
+            gt.assert_called_once_with('Cabinet: ', ['alpha', 'zeta'])
+            self.assertEqual(Path(r), Path(a) / '2024/j/20240213-t.txt')
+
+    def test_cabinet_prompted_before_date(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            self.run_app(self.two_cabinets(a, b), '-a', 'j', '-p', 't',
+                         ttyin='accounts\n20240213\n')
+            self.assertEqual(self.files(a), ['2024/j/20240213-t.txt'])
+
+    def test_invalid_prompted_cabinet_reasked(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            err, _ = self.run_app(
+                self.two_cabinets(a, b),
+                stdin='date: 20240213\naccount: j\npart: t\n',
+                ttyin='nope\naccounts\n')
+            self.assertEqual(self.files(a), ['2024/j/20240213-t.txt'])
+            self.assertIn('Cabinet must be one of: accounts, memories', err)
+
+    def test_empty_prompted_cabinet_cancels(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            err, _ = self.run_app(
+                self.two_cabinets(a, b),
+                stdin='date: 20240213\naccount: j\npart: t\n', ttyin='\n')
+            self.assertEqual(self.files(a) + self.files(b), [])
+            self.assertIn('Cabinet required', err)
+
+    def test_unknown_cabinet_flag_raises(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            with self.assertRaises(Filez4EvaError) as cm:
+                self.run_app(self.two_cabinets(a, b), '-c', 'nope',
+                             stdin='date: 20240213\naccount: j\npart: t\n')
+            self.assertIn('Unknown cabinet nope', str(cm.exception))
+            self.assertIn('accounts, memories', str(cm.exception))
+            self.assertEqual(self.files(a) + self.files(b), [])
+
+    def test_unknown_cabinet_stdin_raises(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            with self.assertRaises(Filez4EvaError):
+                self.run_app(self.two_cabinets(a, b),
+                             stdin='cabinet: nope\ndate: 20240213\n'
+                                   'account: j\npart: t\n')
+            self.assertEqual(self.files(a) + self.files(b), [])
+
+    def test_unknown_cabinet_flag_single_cabinet_raises(self):
+        with TemporaryDirectory() as target:
+            with self.assertRaises(Filez4EvaError):
+                self.run_app(f"  target: {target}\n", '-c', 'nope',
+                             stdin='date: 20240213\naccount: j\npart: t\n')
+
+    def test_non_scalar_stdin_cabinet_raises(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            with self.assertRaises(Filez4EvaError):
+                self.run_app(self.two_cabinets(a, b),
+                             stdin='cabinet: [accounts]\ndate: 20240213\n'
+                                   'account: j\npart: t\n')
+
+    # Completion and pattern come from the chosen cabinet
+
+    def test_completion_uses_chosen_cabinet(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            (Path(a) / '2024/bank').mkdir(parents=True)
+            (Path(a) / '2024/bank/20240101-statement.pdf').write_text('x')
+            (Path(b) / '2023/trip').mkdir(parents=True)
+            (Path(b) / '2023/trip/20230101-photo.jpg').write_text('x')
+            app = Filez4EvaApp()
+            app.config = ConfigHandler.fake(filez4eva_cabinets={
+                'accounts': {'target': a}, 'memories': {'target': b}})
+            c = StowFileCommand(app, cabinet='memories')
+            self.assertEqual(c.get_accounts(), ['trip'])
+            self.assertEqual(c.get_parts('trip'), ['photo'])
+            c = StowFileCommand(app, cabinet='accounts')
+            self.assertEqual(c.get_accounts(), ['bank'])
+            self.assertEqual(c.get_parts('bank'), ['statement'])
+
+    def test_prompt_completion_uses_chosen_cabinet(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as a, \
+                TemporaryDirectory() as b:
+            (Path(b) / '2023/trip').mkdir(parents=True)
+            (Path(b) / '2023/trip/20230101-photo.jpg').write_text('x')
+            n = Path(source) / 'b.txt'
+            n.write_text('a')
+            app = Filez4EvaApp()
+            app.config = ConfigHandler.fake(filez4eva_cabinets={
+                'accounts': {'target': a}, 'memories': {'target': b}})
+            c = StowFileCommand(app, file=str(n), date='20240213',
+                                use_stdin=False)
+            answers = iter(['memories', 'trip', 'photo'])
+            with patch.object(app.ui, 'get_text',
+                              side_effect=lambda *x: next(answers)) as gt, \
+                    self.patchout():
+                c.execute()
+            self.assertEqual(gt.call_args_list[1].args,
+                             ('Account: ', ['trip']))
+            self.assertEqual(gt.call_args_list[2].args,
+                             ('Part: ', ['photo']))
+            self.assertTrue(
+                (Path(b) / '2024/trip/20240213-photo.txt').is_file())
+
+    def test_per_cabinet_pattern(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b:
+            config = (f"  pattern: '{{date}}-{{account}}-{{part}}{{ext}}'\n"
+                      f"  cabinets:\n"
+                      f"    accounts:\n"
+                      f"      target: {a}\n"
+                      f"    memories:\n"
+                      f"      target: {b}\n"
+                      f"      pattern: '{self.CUSTOM}'\n")
+            stdin = 'date: 20240213\naccount: j\npart: t\n'
+            self.run_app(config, '-c', 'memories', stdin=stdin)
+            self.run_app(config, '-c', 'accounts', stdin=stdin)
+            self.assertEqual(self.files(b), ['j/2024/t-20240213.txt'])
+            # The top-level pattern is the default for other cabinets
+            self.assertEqual(self.files(a), ['20240213-j-t.txt'])
+
+    def test_cabinet_default_pattern(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(
+            filez4eva_cabinets={'x': {'target': '/x', 'pattern': ''}})
+        c = StowFileCommand(app)
+        self.assertEqual(c.pattern, '{year}/{account}/{date}-{part}{ext}')
+
+    def test_description_kept(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(filez4eva_cabinets={
+            'x': {'target': '~/x', 'description': 'Things'},
+            'y': {'target': '/y'}})
+        c = StowFileCommand(app)
+        self.assertEqual(c.cabinets['x'].description, 'Things')
+        self.assertIsNone(c.cabinets['y'].description)
+        self.assertEqual(c.cabinets['x'].targetdir,
+                         Path('~/x').expanduser())
+
+    # Configuration errors raise before prompting or moving anything
+
+    def assert_config_rejected(self, cabinets, message=None):
+        with TemporaryDirectory() as source:
+            n = Path(source) / 'b.txt'
+            n.write_text('a')
+            app = Filez4EvaApp()
+            app.config = ConfigHandler.fake(filez4eva_cabinets=cabinets)
+            c = StowFileCommand(app, file=str(n), use_stdin=False)
+            with patch.object(StowFileCommand, 'prompt_value') as pv, \
+                    patch.object(app.ui, 'get_text') as gt, \
+                    self.assertRaises(Filez4EvaError) as cm:
+                c.execute()
+            pv.assert_not_called()
+            gt.assert_not_called()
+            self.assertTrue(n.is_file())
+            if message:
+                self.assertIn(message, str(cm.exception))
+
+    def test_cabinet_missing_target_raises(self):
+        self.assert_config_rejected(
+            {'a': {'target': '/a'}, 'b': {'pattern': '{part}{ext}'}},
+            'Cabinet b must have a target')
+
+    def test_cabinet_empty_entry_raises(self):
+        self.assert_config_rejected({'a': None}, 'Cabinet a must have')
+
+    def test_cabinet_non_mapping_entry_raises(self):
+        self.assert_config_rejected({'a': '/a'}, 'Cabinet a must be a')
+
+    def test_cabinets_not_mapping_raises(self):
+        self.assert_config_rejected(['a', 'b'], 'must be a mapping')
+
+    def test_cabinet_bad_name_raises(self):
+        self.assert_config_rejected({2024: {'target': '/a'}}, 'name')
+
+    def test_cabinet_bad_description_raises(self):
+        self.assert_config_rejected(
+            {'a': {'target': '/a', 'description': ['x']}}, 'description')
+
+    def test_cabinet_bad_pattern_raises(self):
+        self.assert_config_rejected(
+            {'a': {'target': '/a'},
+             'b': {'target': '/b', 'pattern': '{foo}{ext}'}}, '{foo}')
