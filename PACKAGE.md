@@ -73,6 +73,12 @@ This interactive process lets you:
 - Delete a file (d)
 - Quit processing (q)
 
+Transcripts written by `transcribe` are not offered as files of their own:
+`X.md` is skipped when `X` is in the same directory (for example
+`scan.pdf.md` next to `scan.pdf`). A `.md` file with no such companion is
+offered as usual. Deleting a file also deletes its transcript. Stowing a file
+leaves its transcript where it is.
+
 ### Transcribing Files
 
 To transcribe a file to Markdown with Claude:
