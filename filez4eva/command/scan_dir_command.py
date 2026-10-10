@@ -9,6 +9,7 @@ from wizlib.app import AppCancellation
 
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command.stow_file_command import StowFileCommand
+from filez4eva.command.transcribe_command import transcript_path
 
 
 class ScanDirCommand(Filez4EvaCommand):
@@ -43,8 +44,14 @@ class ScanDirCommand(Filez4EvaCommand):
     def handle_path(self, path: Path):
         if not path.name.startswith('.'):
             if path.is_dir():
-                for subpath in sorted(path.iterdir()):
-                    self.handle_path(subpath)
+                # Take the listing once, so a transcript is still recognised
+                # after its file (which sorts first) was stowed or deleted
+                subpaths = sorted(path.iterdir())
+                transcripts = {transcript_path(p) for p in subpaths
+                               if p.is_file()}
+                for subpath in subpaths:
+                    if subpath not in transcripts:
+                        self.handle_path(subpath)
             elif path.is_file():
                 self.handle_file(path)
 
@@ -68,6 +75,9 @@ class ScanDirCommand(Filez4EvaCommand):
                 if confirm != 'Yes':
                     continue
                 os.remove(file)
+                transcript = transcript_path(file)
+                if transcript.is_file():
+                    os.remove(transcript)
                 self.increment_result('Deleted')
             elif action == 'stow':
                 command = StowFileCommand(self.app, file=str(file),

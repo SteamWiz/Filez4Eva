@@ -242,3 +242,48 @@ class TestCommandScan(WizLibTestCase):
             self.assertTrue((Path(b) / '2024/j/20240213-t.txt').is_file())
             self.assertTrue((Path(a) / '2023/k/20231211-u.txt').is_file())
         self.assertEqual(c.status, 'Stowed 2 files')
+
+    def _run_scan(self, files, keys):
+        with \
+                TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                self.patchout() as o, \
+                self.patcherr() as e, \
+                self.patch_ttyin(keys):
+            for fn in files:
+                (Path(source) / fn).write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target)
+            c = ScanDirCommand(a, dir=str(source))
+            c.execute()
+            remaining = sorted(x.name for x in Path(source).iterdir())
+            e.seek(0)
+            out = e.read()
+        return c, remaining, out
+
+    def test_transcript_skipped(self):
+        c, remaining, out = self._run_scan(['b.txt', 'b.txt.md'], 'x')
+        self.assertEqual(c.status, 'Skipped 1 file')
+        self.assertNotIn('b.txt.md', out)
+        self.assertEqual(remaining, ['b.txt', 'b.txt.md'])
+
+    def test_standalone_md_offered(self):
+        c, remaining, out = self._run_scan(['notes.md'], 'x')
+        self.assertEqual(c.status, 'Skipped 1 file')
+        self.assertIn('notes.md', out)
+
+    def test_transcript_removed_on_delete(self):
+        c, remaining, out = self._run_scan(['b.txt', 'b.txt.md'], 'dY')
+        self.assertEqual(c.status, 'Deleted 1 file')
+        self.assertEqual(remaining, [])
+
+    def test_delete_without_transcript_keeps_other_md(self):
+        c, remaining, out = self._run_scan(['b.txt', 'c.txt.md'], 'dYx')
+        self.assertEqual(c.status, 'Deleted 1 file | Skipped 1 file')
+        self.assertEqual(remaining, ['c.txt.md'])
+
+    def test_transcript_not_offered_after_stow(self):
+        c, remaining, out = self._run_scan(
+            ['b.txt', 'b.txt.md'], 's20240213\nj\nt\n')
+        self.assertEqual(c.status, 'Stowed 1 file')
+        self.assertEqual(remaining, ['b.txt.md'])
