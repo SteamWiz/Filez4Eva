@@ -84,7 +84,7 @@ class StowFileCommand(Filez4EvaCommand):
 
     @property
     def targetdir(self):
-        return Path(self.app.config.get('filez4eva-target'))
+        return Path(self.app.config.get('filez4eva-target')).expanduser()
 
     @Filez4EvaCommand.wrap
     def execute(self):
@@ -93,7 +93,7 @@ class StowFileCommand(Filez4EvaCommand):
             raise Filez4EvaError(f"File {path} must exist")
         extension = path.suffix
         date = datetime.strptime(self.date, "%Y%m%d")
-        dirpath = self.targetdir / str(date.year) / self.account
+        dirpath = self.targetdir.absolute() / str(date.year) / self.account
         if not dirpath.exists():
             # confirm = rlinput(f"Create {dirpath}? ", default="yes")
             # if confirm.startswith('y'):
@@ -106,3 +106,4 @@ class StowFileCommand(Filez4EvaCommand):
         # if confirm.startswith('y'):
         path.rename(targetpath)
         self.status = 'Done'
+        return str(targetpath)
