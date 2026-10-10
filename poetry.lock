@@ -335,5 +335,5 @@ readchar = ">=4.0.5,<5.0.0"
 
 [metadata]
 lock-version = "2.1"
-python-versions = "^3.13"
-content-hash = "4e7db5654192d569e2c492ebd93e6940ff1c3a2465432bab1e26862955d31025"
+python-versions = "^3.14"
+content-hash = "617e89d447d1ba05eb825e826577bcb119c7a0e882d40252591bd14e5ff63e3b"

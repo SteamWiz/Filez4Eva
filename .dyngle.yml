@@ -12,7 +12,7 @@ dyngle:
 
   constants:
     coverage-target: '95'
-    python-version: '3.13'
+    python-version: '3.14'
 
   operations:
 
