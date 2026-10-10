@@ -31,6 +31,21 @@ Filez4Eva will interactively prompt for:
 - Account name (with tab-completion from existing accounts)
 - Part name (with tab-completion from existing files for that account)
 
+Values can also be piped in as a YAML mapping on stdin, which is handy for
+other tools that produce a record for the file:
+
+```bash
+printf 'date: 20240213\naccount: acct\npart: statement\n' \
+  | filez4eva stow-file ~/Desktop/statement.pdf
+```
+
+- Recognised keys are `date`, `account` and `part`; any other keys are ignored.
+- Command-line flags override values from stdin.
+- Anything still missing is prompted for as usual.
+- `date` may be `20240213`, `'20240213'` or `2024-02-13`. If it isn't a valid
+  date, `stow-file` exits with an error.
+- If stdin is empty, isn't valid YAML, or isn't a mapping, it is ignored.
+
 ### Processing Multiple Files
 
 To process all files in a directory:

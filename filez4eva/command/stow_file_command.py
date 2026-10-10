@@ -1,10 +1,11 @@
-from datetime import datetime
+from datetime import date as Date, datetime
 import os
 from pathlib import Path
 import re
 from subprocess import run
 import sys
 
+import yaml
 from wizlib.parser import WizParser
 from wizlib.command import CommandCancellation
 from wizlib.ui.shell_ui import Emphasis
@@ -14,6 +15,10 @@ from filez4eva.error import Filez4EvaError
 
 
 FILE_PATTERN = re.compile(r'\d{8}\-([a-zA-Z0-9-]+)\.(\w+)')
+
+# Keys that stow-file reads from a YAML mapping on stdin. Other keys are
+# ignored.
+STDIN_KEYS = ['date', 'account', 'part']
 
 
 class StowFileCommand(Filez4EvaCommand):
@@ -35,6 +40,7 @@ class StowFileCommand(Filez4EvaCommand):
 
     def handle_vals(self):
         super().handle_vals()
+        self.apply_stdin_record()
         if not self.provided('date'):
             while True:
                 self.date = self.app.ui.get_text('Date: ').strip()
@@ -59,6 +65,40 @@ class StowFileCommand(Filez4EvaCommand):
             if not self.part:
                 self.app.ui.send('Part required', Emphasis.PRINCIPAL)
                 raise CommandCancellation()
+
+    def stdin_record(self) -> dict:
+        """Return the YAML mapping piped on stdin, or an empty dict if stdin
+        is absent, empty, malformed, or not a mapping."""
+        stream = getattr(self.app, 'stream', None)
+        text = getattr(stream, 'text', None) if stream else None
+        if not isinstance(text, str) or not text.strip():
+            return {}
+        try:
+            record = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return {}
+        return record if isinstance(record, dict) else {}
+
+    def apply_stdin_record(self):
+        """Fill date, account and part from stdin where not provided as
+        command-line flags. A stdin date must be in YYYYMMDD format."""
+        record = self.stdin_record()
+        for key in STDIN_KEYS:
+            if self.provided(key):
+                continue
+            value = record.get(key)
+            if isinstance(value, Date):
+                value = value.strftime('%Y%m%d')
+            value = '' if value is None else str(value).strip()
+            if not value:
+                continue
+            if key == 'date':
+                try:
+                    datetime.strptime(value, '%Y%m%d')
+                except ValueError:
+                    raise Filez4EvaError(
+                        f"Date from stdin must match format YYYYMMDD: {value}")
+            setattr(self, key, value)
 
     def get_accounts(self) -> list:
         accounts = set()
