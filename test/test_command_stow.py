@@ -484,3 +484,191 @@ class TestScanDirIgnoresStdin(WizLibTestCase):
                 c.execute()
             c.apply_stdin_record.assert_not_called()
             self.assertTrue((Path(target) / '2024/j/20240213-t.txt').is_file())
+
+
+class TestStowFilePattern(WizLibTestCase):
+    """The destination layout comes from the `filez4eva: pattern:` key"""
+
+    CUSTOM = '{account}/{year}/{part}-{date}{ext}'
+
+    def stow(self, target, pattern, source):
+        n = Path(source) / 'b.txt'
+        n.write_text('a')
+        a = Filez4EvaApp()
+        a.config = ConfigHandler.fake(filez4eva_target=target,
+                                      filez4eva_pattern=pattern)
+        c = StowFileCommand(a, file=str(n), date='20240213', account='j',
+                            part='t')
+        with self.patchout():
+            return n, c.execute()
+
+    def assert_rejected(self, pattern):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            with self.assertRaises(Filez4EvaError):
+                n, _ = self.stow(target, pattern, source)
+            self.assertTrue((Path(source) / 'b.txt').is_file())
+            self.assertEqual(list(Path(target).iterdir()), [])
+
+    def test_custom_pattern(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            n, r = self.stow(target, self.CUSTOM, source)
+            expected = Path(target) / 'j/2024/t-20240213.txt'
+            self.assertEqual(Path(r), expected)
+            self.assertEqual(expected.read_text(), 'a')
+            self.assertFalse(n.exists())
+
+    def test_flat_pattern(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            _, r = self.stow(target, '{date}-{account}-{part}{ext}', source)
+            self.assertEqual(Path(r), Path(target) / '20240213-j-t.txt')
+            self.assertTrue(Path(r).is_file())
+
+    def test_explicit_default_pattern(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            _, r = self.stow(target, '{year}/{account}/{date}-{part}{ext}',
+                             source)
+            self.assertEqual(Path(r), Path(target) / '2024/j/20240213-t.txt')
+
+    def test_custom_pattern_from_app(self):
+        with TemporaryDirectory() as target, \
+                TemporaryDirectory() as sd, \
+                patch('sys.stderr', StringIO()), \
+                patch('sys.stdout', o := StringIO()):
+            sp = Path(sd) / 'b.txt'
+            sp.write_text('a')
+            with NamedTemporaryFile('w+') as cf:
+                cf.write(f"filez4eva:\n  target: {target}\n"
+                         f"  pattern: '{self.CUSTOM}'\n")
+                cf.seek(0)
+                Filez4EvaApp.start('--config', cf.name, 'stow-file', str(sp),
+                                   '--date', '20240213', '--account', 'j',
+                                   '--part', 't', debug=True)
+            actual = Path(target) / 'j/2024/t-20240213.txt'
+            self.assertEqual(actual.read_text(), 'a')
+            self.assertEqual(Path(o.getvalue().strip()), actual)
+
+    def test_unknown_placeholder_rejected(self):
+        self.assert_rejected('{year}/{foo}/{date}-{part}{ext}')
+
+    def test_unknown_placeholder_message(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            with self.assertRaises(Filez4EvaError) as cm:
+                self.stow(target, '{foo}{ext}', source)
+        self.assertIn('{foo}', str(cm.exception))
+
+    def test_malformed_pattern_rejected(self):
+        self.assert_rejected('{year/{account}{ext}')
+
+    def test_stray_close_brace_rejected(self):
+        self.assert_rejected('{year}}/{account}{ext}')
+
+    def test_positional_rejected(self):
+        self.assert_rejected('{}/{account}{ext}')
+
+    def test_numbered_rejected(self):
+        self.assert_rejected('{0}/{account}{ext}')
+
+    def test_attribute_rejected(self):
+        self.assert_rejected('{year.real}/{account}{ext}')
+
+    def test_index_rejected(self):
+        self.assert_rejected('{account[0]}/{part}{ext}')
+
+    def test_format_spec_rejected(self):
+        self.assert_rejected('{account:>10}/{part}{ext}')
+
+    def test_conversion_rejected(self):
+        self.assert_rejected('{account!r}/{part}{ext}')
+
+    def test_empty_pattern_uses_default(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            _, r = self.stow(target, '', source)
+            self.assertEqual(Path(r), Path(target) / '2024/j/20240213-t.txt')
+
+    def test_blank_pattern_rejected(self):
+        self.assert_rejected('   ')
+
+    def test_absolute_pattern_rejected(self):
+        self.assert_rejected('/tmp/{account}/{part}{ext}')
+
+    def test_home_pattern_rejected(self):
+        self.assert_rejected('~/{account}/{part}{ext}')
+
+    def test_parent_pattern_rejected(self):
+        self.assert_rejected('../{account}/{part}{ext}')
+
+    def test_inner_parent_pattern_rejected(self):
+        self.assert_rejected('{account}/../../{part}{ext}')
+
+    def test_pattern_naming_target_rejected(self):
+        self.assert_rejected('.')
+
+    def test_bad_pattern_rejected_before_prompting(self):
+        with TemporaryDirectory() as target, \
+                TemporaryDirectory() as sd, \
+                self.patchout(), \
+                self.patcherr(), \
+                self.patch_ttyin('20240213\nj\nt\n'):
+            sp = Path(sd) / 'b.txt'
+            sp.write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target,
+                                          filez4eva_pattern='{foo}{ext}')
+            c = StowFileCommand(a, file=str(sp))
+            with patch.object(StowFileCommand, 'prompt_value') as pv, \
+                    self.assertRaises(Filez4EvaError):
+                c.execute()
+            pv.assert_not_called()
+            self.assertTrue(sp.is_file())
+
+    def test_custom_pattern_prompts_without_completion(self):
+        with TemporaryDirectory() as target, \
+                TemporaryDirectory() as sd, \
+                self.patchout(), \
+                self.patcherr(), \
+                self.patch_ttyin('20240213\nj\nt\n'):
+            (Path(target) / '2023/k').mkdir(parents=True)
+            sp = Path(sd) / 'b.txt'
+            sp.write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target,
+                                          filez4eva_pattern=self.CUSTOM)
+            c = StowFileCommand(a, file=str(sp), use_stdin=False)
+            r = c.execute()
+            self.assertEqual(Path(r), Path(target) / 'j/2024/t-20240213.txt')
+            self.assertTrue(Path(r).is_file())
+
+    def test_completion_empty_for_custom_pattern(self):
+        with TemporaryDirectory() as target:
+            p = Path(target) / '2024/j/20240213-t.txt'
+            p.parent.mkdir(parents=True)
+            p.write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target,
+                                          filez4eva_pattern=self.CUSTOM)
+            c = StowFileCommand(a)
+            self.assertEqual(c.get_accounts(), [])
+            self.assertEqual(c.get_parts('j'), [])
+
+    def test_completion_for_default_pattern(self):
+        with TemporaryDirectory() as target:
+            p = Path(target) / '2024/j/20240213-t.txt'
+            p.parent.mkdir(parents=True)
+            p.write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target)
+            c = StowFileCommand(a)
+            self.assertEqual(c.get_accounts(), ['j'])
+            self.assertEqual(c.get_parts('j'), ['t'])
+
+    def test_destination_outside_target_rejected(self):
+        # Defence in depth: even if the pattern check were bypassed, the
+        # formatted destination must stay inside the target
+        with patch('filez4eva.command.stow_file_command.check_pattern'):
+            self.assert_rejected('../{account}{ext}')

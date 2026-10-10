@@ -103,3 +103,37 @@ Files will be organized in this pattern:
 ```
 ~/Dropbox/accounts/<year>/<account>/<date>-<part>.<extension>
 ```
+
+### Destination pattern
+
+The layout under `target` can be changed with the optional `pattern` key:
+
+```yaml
+filez4eva:
+  target: '~/Dropbox/accounts'
+  pattern: '{account}/{year}/{part}-{date}{ext}'
+```
+
+The default is `'{year}/{account}/{date}-{part}{ext}'`, which gives the layout
+shown above. Quote the pattern in YAML, since it starts with `{`.
+
+Placeholders:
+- `{year}`: four-digit year, e.g. `2024`
+- `{date}`: date as YYYYMMDD, e.g. `20240213`
+- `{account}`: account name
+- `{part}`: part name
+- `{ext}`: the source file's extension, including the dot (e.g. `.pdf`), or
+  nothing if the file has no extension
+
+Use `/` to create subdirectories; missing directories are created. Any other
+text is used literally. A pattern is a configuration error, and `stow-file`
+exits before moving anything or prompting, if it:
+- uses a placeholder not listed above, or a positional one like `{}` or `{0}`
+- uses format specs, conversions, attributes or indexes (e.g. `{year:>4}`,
+  `{account!r}`, `{year.x}`, `{account[0]}`)
+- has unbalanced braces
+- is absolute, starts with `~`, or contains `..`
+
+Tab completion of accounts and parts reads existing files in the default
+layout, so it only works with the default pattern. With any other pattern the
+prompts still accept typed values but offer no completion.

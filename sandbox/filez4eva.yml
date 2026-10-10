@@ -2,3 +2,4 @@ filez4eva:
   source: './sandbox/test-source'
   target: './sandbox/test-target'
   groupname: 'Account'
+  # pattern: '{account}/{year}/{part}-{date}{ext}'
