@@ -1,4 +1,4 @@
-from datetime import date as Date, datetime
+from datetime import datetime
 import os
 from pathlib import Path
 import re
@@ -20,6 +20,28 @@ FILE_PATTERN = re.compile(r'\d{8}\-([a-zA-Z0-9-]+)\.(\w+)')
 # ignored.
 STDIN_KEYS = ['date', 'account', 'part']
 
+# A part becomes part of the filename, so it must match FILE_PATTERN.
+PART_PATTERN = re.compile(r'[a-zA-Z0-9-]+')
+
+# Date formats accepted from stdin; the first is the canonical one.
+STDIN_DATE_FORMATS = ['%Y%m%d', '%Y-%m-%d']
+
+
+def check_account(account: str):
+    """Raise Filez4EvaError unless account is one safe path segment"""
+    if (not account or account in ('.', '..') or '/' in account
+            or '\\' in account or '\0' in account):
+        raise Filez4EvaError(
+            f"Account must be a single directory name: {account!r}")
+
+
+def check_part(part: str):
+    """Raise Filez4EvaError unless part contains only letters, digits and
+    hyphens"""
+    if not PART_PATTERN.fullmatch(part or ''):
+        raise Filez4EvaError(
+            f"Part must contain only letters, digits and hyphens: {part!r}")
+
 
 class StowFileCommand(Filez4EvaCommand):
     """Move filez to the right place with the right name"""
@@ -29,6 +51,10 @@ class StowFileCommand(Filez4EvaCommand):
     date: str
     account: str
     part: str
+
+    # Set False when stow-file runs inside another command (e.g. scan-dir),
+    # so a record piped to that command isn't applied to every file.
+    use_stdin: bool = True
 
     @classmethod
     def add_args(cls, parser: WizParser):
@@ -40,7 +66,8 @@ class StowFileCommand(Filez4EvaCommand):
 
     def handle_vals(self):
         super().handle_vals()
-        self.apply_stdin_record()
+        if self.use_stdin:
+            self.apply_stdin_record()
         if not self.provided('date'):
             while True:
                 self.date = self.app.ui.get_text('Date: ').strip()
@@ -68,37 +95,52 @@ class StowFileCommand(Filez4EvaCommand):
 
     def stdin_record(self) -> dict:
         """Return the YAML mapping piped on stdin, or an empty dict if stdin
-        is absent, empty, malformed, or not a mapping."""
+        is absent, empty, malformed, or not a mapping. BaseLoader keeps every
+        scalar as a string, so values like 0123 or yes are not converted."""
         stream = getattr(self.app, 'stream', None)
         text = getattr(stream, 'text', None) if stream else None
         if not isinstance(text, str) or not text.strip():
             return {}
         try:
-            record = yaml.safe_load(text)
+            record = yaml.load(text, Loader=yaml.BaseLoader)
         except yaml.YAMLError:
             return {}
         return record if isinstance(record, dict) else {}
 
     def apply_stdin_record(self):
         """Fill date, account and part from stdin where not provided as
-        command-line flags. A stdin date must be in YYYYMMDD format."""
+        command-line flags. Stdin is untrusted, so values are validated and
+        a bad value raises Filez4EvaError."""
         record = self.stdin_record()
         for key in STDIN_KEYS:
             if self.provided(key):
                 continue
             value = record.get(key)
-            if isinstance(value, Date):
-                value = value.strftime('%Y%m%d')
-            value = '' if value is None else str(value).strip()
+            if value is None or value == '':
+                continue
+            if not isinstance(value, str):
+                raise Filez4EvaError(
+                    f"{key.capitalize()} from stdin must be a single value")
+            value = value.strip()
             if not value:
                 continue
             if key == 'date':
-                try:
-                    datetime.strptime(value, '%Y%m%d')
-                except ValueError:
-                    raise Filez4EvaError(
-                        f"Date from stdin must match format YYYYMMDD: {value}")
+                value = self.normalize_stdin_date(value)
+            elif key == 'account':
+                check_account(value)
+            elif key == 'part':
+                check_part(value)
             setattr(self, key, value)
+
+    @staticmethod
+    def normalize_stdin_date(value: str) -> str:
+        for format in STDIN_DATE_FORMATS:
+            try:
+                return datetime.strptime(value, format).strftime('%Y%m%d')
+            except ValueError:
+                pass
+        raise Filez4EvaError(
+            f"Date from stdin must match format YYYYMMDD: {value}")
 
     def get_accounts(self) -> list:
         accounts = set()
@@ -132,6 +174,8 @@ class StowFileCommand(Filez4EvaCommand):
         if not path.is_file():
             raise Filez4EvaError(f"File {path} must exist")
         extension = path.suffix
+        check_account(self.account)
+        check_part(self.part)
         date = datetime.strptime(self.date, "%Y%m%d")
         dirpath = self.targetdir.absolute() / str(date.year) / self.account
         if not dirpath.exists():
