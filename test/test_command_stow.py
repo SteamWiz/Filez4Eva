@@ -429,9 +429,25 @@ class TestStowFileStdin(WizLibTestCase):
             self.stow('', '--date', '20240213', '--account', '../x',
                       '--part', 't')
 
-    def test_prompted_part_traversal_rejected(self):
-        with self.assertRaises(Filez4EvaError):
-            self.stow('', ttyin='20240213\nj\n../x\n')
+    # Prompts re-ask on an invalid value instead of raising
+
+    def test_invalid_prompted_part_reasked(self):
+        files, err, _ = self.stow(
+            '', ttyin='20240213\nj\n../x\nbank statement\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+        self.assertEqual(err.count('Part must contain only'), 2)
+
+    def test_invalid_prompted_account_reasked(self):
+        files, err, _ = self.stow('', ttyin='20240213\n../x\nj\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
+        self.assertIn('Account must be a single directory name', err)
+
+    # YAML null spellings are treated as missing
+
+    def test_null_stdin_values_prompted(self):
+        files, _, _ = self.stow('date: 20240213\naccount: ~\npart: null\n',
+                                ttyin='j\nt\n')
+        self.assertEqual(files, ['2024/j/20240213-t.txt'])
 
 
 class TestScanDirIgnoresStdin(WizLibTestCase):

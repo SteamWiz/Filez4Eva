@@ -27,20 +27,36 @@ PART_PATTERN = re.compile(r'[a-zA-Z0-9-]+')
 STDIN_DATE_FORMATS = ['%Y%m%d', '%Y-%m-%d']
 
 
+# YAML null spellings. BaseLoader returns them as strings, so treat them as
+# missing rather than as a directory or part called "null".
+YAML_NULLS = {'~', 'null', 'Null', 'NULL'}
+
+ACCOUNT_RULE = 'Account must be a single directory name'
+PART_RULE = 'Part must contain only letters, digits and hyphens'
+
+
+def valid_account(account: str) -> bool:
+    """True if account is one safe path segment"""
+    return not (not account or account in ('.', '..') or '/' in account
+                or '\\' in account or '\0' in account)
+
+
+def valid_part(part: str) -> bool:
+    """True if part contains only letters, digits and hyphens"""
+    return bool(PART_PATTERN.fullmatch(part or ''))
+
+
 def check_account(account: str):
     """Raise Filez4EvaError unless account is one safe path segment"""
-    if (not account or account in ('.', '..') or '/' in account
-            or '\\' in account or '\0' in account):
-        raise Filez4EvaError(
-            f"Account must be a single directory name: {account!r}")
+    if not valid_account(account):
+        raise Filez4EvaError(f"{ACCOUNT_RULE}: {account!r}")
 
 
 def check_part(part: str):
     """Raise Filez4EvaError unless part contains only letters, digits and
     hyphens"""
-    if not PART_PATTERN.fullmatch(part or ''):
-        raise Filez4EvaError(
-            f"Part must contain only letters, digits and hyphens: {part!r}")
+    if not valid_part(part):
+        raise Filez4EvaError(f"{PART_RULE}: {part!r}")
 
 
 class StowFileCommand(Filez4EvaCommand):
@@ -82,16 +98,25 @@ class StowFileCommand(Filez4EvaCommand):
                                      Emphasis.PRINCIPAL)
         if not self.provided('account'):
             accounts = self.get_accounts()
-            self.account = self.app.ui.get_text('Account: ', accounts)
-            if not self.account:
-                self.app.ui.send('Account required', Emphasis.PRINCIPAL)
-                raise CommandCancellation()
+            self.account = self.prompt_value(
+                'Account', accounts, valid_account, ACCOUNT_RULE)
         if not self.provided('part'):
             parts = self.get_parts(self.account)
-            self.part = self.app.ui.get_text('Part: ', parts)
-            if not self.part:
-                self.app.ui.send('Part required', Emphasis.PRINCIPAL)
+            self.part = self.prompt_value(
+                'Part', parts, valid_part, PART_RULE)
+
+    def prompt_value(self, label: str, choices: list, valid, rule: str):
+        """Prompt until a valid value is entered; cancel on an empty one.
+        Re-asking (rather than raising) keeps a typo from ending a scan-dir
+        session."""
+        while True:
+            value = self.app.ui.get_text(f'{label}: ', choices)
+            if not value:
+                self.app.ui.send(f'{label} required', Emphasis.PRINCIPAL)
                 raise CommandCancellation()
+            if valid(value):
+                return value
+            self.app.ui.send(rule, Emphasis.PRINCIPAL)
 
     def stdin_record(self) -> dict:
         """Return the YAML mapping piped on stdin, or an empty dict if stdin
@@ -122,7 +147,7 @@ class StowFileCommand(Filez4EvaCommand):
                 raise Filez4EvaError(
                     f"{key.capitalize()} from stdin must be a single value")
             value = value.strip()
-            if not value:
+            if not value or value in YAML_NULLS:
                 continue
             if key == 'date':
                 value = self.normalize_stdin_date(value)

@@ -46,12 +46,14 @@ printf 'date: 20240213\naccount: acct\npart: statement\n' \
   date, `stow-file` exits with an error.
 - If stdin is empty, isn't valid YAML, or isn't a mapping, it is ignored.
 - Values are read as plain text, so `0123` stays `0123` and `yes` stays `yes`.
+- `~` and `null` are treated as missing, so that value is prompted for.
 - Stdin is only read by `stow-file` itself. `scan-dir` ignores it.
 
 However the values are supplied (flags, stdin or prompts), `account` must be a
 single directory name (not empty, `.` or `..`, and without `/` or `\`), and
-`part` may contain only letters, digits and hyphens. Otherwise `stow-file`
-exits with an error.
+`part` may contain only letters, digits and hyphens. An invalid value from a
+flag or stdin makes `stow-file` exit with an error. An invalid value typed at
+a prompt is rejected and the prompt asks again.
 
 ### Processing Multiple Files
 

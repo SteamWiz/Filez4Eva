@@ -45,6 +45,30 @@ class TestCommandScan(WizLibTestCase):
         self.assertEqual(r1 + r2, 'aa')
         self.assertEqual(c.status, 'Stowed 2 files')
 
+    def test_invalid_prompted_part_does_not_abort(self):
+        # A typo at the part prompt re-asks; the session carries on to the
+        # next file instead of ending.
+        keys = 's20240213\nj\nbank statement\nt\ns20231211\nk\nu\n'
+        with \
+                TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                self.patchout(), \
+                self.patcherr() as e, \
+                self.patch_ttyin(keys):
+            for fn in ['b.txt', 'c.txt']:
+                (Path(source) / fn).write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target=target)
+            c = ScanDirCommand(a, dir=str(source))
+            c.execute()
+            self.assertTrue(
+                (Path(target) / '2024/j/20240213-t.txt').is_file())
+            self.assertTrue(
+                (Path(target) / '2023/k/20231211-u.txt').is_file())
+            e.seek(0)
+            self.assertIn('Part must contain only', e.read())
+        self.assertEqual(c.status, 'Stowed 2 files')
+
     def test_quit(self):
         keys = 'q'
         with \
