@@ -1083,17 +1083,437 @@ class TestStowFileTranscript(WizLibTestCase):
             n, c = self.command(source, target)
             t = Path(source) / 'b.txt.md'
             t.write_text('# transcript')
-            real_rename = Path.rename
-
-            def rename(self, other):
-                if self.name.endswith('.md'):
-                    raise OSError('boom')
-                return real_rename(self, other)
             with self.patchout(), \
-                    patch.object(Path, 'rename', rename), \
+                    patch('shutil.move', side_effect=OSError('boom')), \
                     self.assertRaises(Filez4EvaError):
                 c.execute()
             self.assertEqual(n.read_text(), 'a')
             self.assertEqual(t.read_text(), '# transcript')
             self.assertFalse(
                 (Path(target) / '2024/j/20240213-t.txt').exists())
+
+
+class TestStowFileTranscriptLocation(WizLibTestCase):
+    """The transcript goes adjacent to the file (default) or into a parallel
+    tree under a configured root"""
+
+    @staticmethod
+    def files(dir):
+        return sorted(str(p.relative_to(dir))
+                      for p in Path(dir).rglob('*') if p.is_file())
+
+    def stow(self, source, transcript=True, cabinet=None, **config):
+        """Stow source/b.txt (with a transcript if asked) using a fake
+        config; return the destination path"""
+        n = Path(source) / 'b.txt'
+        n.write_text('a')
+        if transcript:
+            (Path(source) / 'b.txt.md').write_text('# transcript')
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(**config)
+        extra = {'cabinet': cabinet} if cabinet else {}
+        c = StowFileCommand(app, file=str(n), date='20261002',
+                            account='acct', part='part', use_stdin=False,
+                            **extra)
+        with self.patchout():
+            return Path(c.execute())
+
+    def run_app(self, config, *args, transcript=True):
+        """Run stow-file via the app with a YAML config body (indented under
+        `filez4eva:`), so nested blocks are flattened as in real use"""
+        with TemporaryDirectory() as sourced, \
+                self.patchout(), self.patcherr():
+            sourcep = Path(sourced) / 'b.pdf'
+            sourcep.write_text('a')
+            if transcript:
+                (Path(sourced) / 'b.pdf.md').write_text('# transcript')
+            with NamedTemporaryFile('w+') as cf:
+                cf.write('filez4eva:\n' + config)
+                cf.seek(0)
+                Filez4EvaApp.start('--config', cf.name, 'stow-file',
+                                   str(sourcep), '-d', '20261002', '-a',
+                                   'acct', '-p', 'part', *args, debug=True)
+            return self.files(sourced)
+
+    def test_adjacent_by_default(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            dest = self.stow(source, filez4eva_target=target)
+            self.assertEqual(self.files(target),
+                             ['2026/acct/20261002-part.txt',
+                              '2026/acct/20261002-part.txt.md'])
+            self.assertEqual(dest, Path(target) /
+                             '2026/acct/20261002-part.txt')
+            self.assertEqual(self.files(source), [])
+
+    def test_explicit_adjacent(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            self.stow(source, filez4eva_target=target,
+                      filez4eva_transcripts_location='adjacent')
+            self.assertEqual(self.files(target),
+                             ['2026/acct/20261002-part.txt',
+                              '2026/acct/20261002-part.txt.md'])
+
+    def test_parallel(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                TemporaryDirectory() as root:
+            dest = self.stow(source, filez4eva_target=target,
+                             filez4eva_transcripts_location='parallel',
+                             filez4eva_transcripts_root=root)
+            self.assertEqual(dest, Path(target) /
+                             '2026/acct/20261002-part.txt')
+            self.assertEqual(self.files(target),
+                             ['2026/acct/20261002-part.txt'])
+            # The implicit cabinet is named 'default'
+            self.assertEqual(self.files(root),
+                             ['default/2026/acct/20261002-part.txt.md'])
+            self.assertEqual(
+                (Path(root) / 'default/2026/acct/20261002-part.txt.md')
+                .read_text(), '# transcript')
+            self.assertEqual(self.files(source), [])
+
+    def test_parallel_root_expands_home(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                TemporaryDirectory() as home, \
+                patch.dict('os.environ', {'HOME': home}):
+            self.stow(source, filez4eva_target=target,
+                      filez4eva_transcripts_location='parallel',
+                      filez4eva_transcripts_root='~/transcripts')
+            self.assertEqual(
+                self.files(home),
+                ['transcripts/default/2026/acct/20261002-part.txt.md'])
+
+    def test_parallel_named_cabinet_from_app(self):
+        with TemporaryDirectory() as target, TemporaryDirectory() as root:
+            left = self.run_app(f"  transcripts:\n"
+                                f"    location: parallel\n"
+                                f"    root: {root}\n"
+                                f"  cabinets:\n"
+                                f"    accounts:\n"
+                                f"      target: {target}\n")
+            self.assertEqual(left, [])
+            self.assertEqual(self.files(target),
+                             ['2026/acct/20261002-part.pdf'])
+            self.assertEqual(self.files(root),
+                             ['accounts/2026/acct/20261002-part.pdf.md'])
+
+    def test_parallel_uses_cabinet_pattern(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                TemporaryDirectory() as root:
+            self.stow(source, filez4eva_target=target,
+                      filez4eva_pattern='{account}/{part}-{date}{ext}',
+                      filez4eva_transcripts_location='parallel',
+                      filez4eva_transcripts_root=root)
+            self.assertEqual(self.files(root),
+                             ['default/acct/part-20261002.txt.md'])
+
+    def test_cabinet_overrides_to_adjacent(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b, \
+                TemporaryDirectory() as root:
+            config = (f"  transcripts:\n"
+                      f"    location: parallel\n"
+                      f"    root: {root}\n"
+                      f"  cabinets:\n"
+                      f"    accounts:\n"
+                      f"      target: {a}\n"
+                      f"    memories:\n"
+                      f"      target: {b}\n"
+                      f"      transcripts:\n"
+                      f"        location: adjacent\n")
+            self.run_app(config, '-c', 'memories')
+            self.assertEqual(self.files(b),
+                             ['2026/acct/20261002-part.pdf',
+                              '2026/acct/20261002-part.pdf.md'])
+            self.assertEqual(self.files(root), [])
+            self.run_app(config, '-c', 'accounts')
+            self.assertEqual(self.files(a), ['2026/acct/20261002-part.pdf'])
+            self.assertEqual(self.files(root),
+                             ['accounts/2026/acct/20261002-part.pdf.md'])
+
+    def test_cabinet_overrides_to_parallel(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as b, \
+                TemporaryDirectory() as root:
+            config = (f"  transcripts:\n"
+                      f"    root: {root}\n"
+                      f"  cabinets:\n"
+                      f"    accounts:\n"
+                      f"      target: {a}\n"
+                      f"    memories:\n"
+                      f"      target: {b}\n"
+                      f"      transcripts:\n"
+                      f"        location: parallel\n")
+            self.run_app(config, '-c', 'accounts')
+            self.assertEqual(self.files(a),
+                             ['2026/acct/20261002-part.pdf',
+                              '2026/acct/20261002-part.pdf.md'])
+            # The cabinet's location falls back to the top-level root
+            self.run_app(config, '-c', 'memories')
+            self.assertEqual(self.files(b), ['2026/acct/20261002-part.pdf'])
+            self.assertEqual(self.files(root),
+                             ['memories/2026/acct/20261002-part.pdf.md'])
+
+    def test_cabinet_specific_root(self):
+        with TemporaryDirectory() as a, TemporaryDirectory() as root, \
+                TemporaryDirectory() as own:
+            config = (f"  transcripts:\n"
+                      f"    location: parallel\n"
+                      f"    root: {root}\n"
+                      f"  cabinets:\n"
+                      f"    accounts:\n"
+                      f"      target: {a}\n"
+                      f"      transcripts:\n"
+                      f"        root: {own}\n")
+            self.run_app(config)
+            self.assertEqual(self.files(root), [])
+            self.assertEqual(self.files(own),
+                             ['accounts/2026/acct/20261002-part.pdf.md'])
+
+    def test_cabinet_values_resolved(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(
+            filez4eva_transcripts_location='parallel',
+            filez4eva_transcripts_root='/t',
+            filez4eva_cabinets={
+                'a': {'target': '/a'},
+                'b': {'target': '/b', 'transcripts': {'root': '~/x'}},
+                'c': {'target': '/c',
+                      'transcripts': {'location': 'adjacent'}}})
+        c = StowFileCommand(app)
+        self.assertEqual((c.cabinets['a'].transcripts_location,
+                          c.cabinets['a'].transcripts_root),
+                         ('parallel', '/t'))
+        self.assertEqual(c.cabinets['b'].transcripts_rootdir,
+                         Path('~/x').expanduser())
+        self.assertEqual(c.cabinets['c'].transcripts_location, 'adjacent')
+
+    def test_default_values(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(filez4eva_target='/x')
+        cabinet = StowFileCommand(app).cabinets['default']
+        self.assertEqual(cabinet.transcripts_location, 'adjacent')
+        self.assertIsNone(cabinet.transcripts_root)
+        self.assertIsNone(cabinet.transcripts_rootdir)
+
+    def test_parallel_no_transcript_creates_nothing(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                TemporaryDirectory() as root:
+            self.stow(source, transcript=False, filez4eva_target=target,
+                      filez4eva_transcripts_location='parallel',
+                      filez4eva_transcripts_root=root)
+            self.assertEqual(self.files(target),
+                             ['2026/acct/20261002-part.txt'])
+            self.assertEqual(list(Path(root).iterdir()), [])
+
+    def test_parallel_collision_moves_nothing(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                TemporaryDirectory() as root:
+            existing = Path(root) / 'default/2026/acct/20261002-part.txt.md'
+            existing.parent.mkdir(parents=True)
+            existing.write_text('# existing')
+            with self.assertRaises(Filez4EvaError) as cm:
+                self.stow(source, filez4eva_target=target,
+                          filez4eva_transcripts_location='parallel',
+                          filez4eva_transcripts_root=root)
+            self.assertIn(str(existing), str(cm.exception))
+            self.assertEqual(self.files(source), ['b.txt', 'b.txt.md'])
+            self.assertEqual(self.files(target), [])
+            self.assertEqual(existing.read_text(), '# existing')
+
+    def test_parallel_move_failure_rolls_back(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                TemporaryDirectory() as root:
+            def move(src, dst):
+                # Simulate a cross-filesystem copy that fails part way
+                Path(dst).write_text('# part')
+                raise OSError('boom')
+            with patch('shutil.move', move), \
+                    self.assertRaises(Filez4EvaError):
+                self.stow(source, filez4eva_target=target,
+                          filez4eva_transcripts_location='parallel',
+                          filez4eva_transcripts_root=root)
+            self.assertEqual(self.files(source), ['b.txt', 'b.txt.md'])
+            self.assertEqual((Path(source) / 'b.txt.md').read_text(),
+                             '# transcript')
+            self.assertEqual(self.files(target), [])
+            self.assertEqual(self.files(root), [])
+
+    def test_odd_cabinet_name_rejected(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                TemporaryDirectory() as root:
+            with self.assertRaises(Filez4EvaError) as cm:
+                self.stow(source, cabinet='..',
+                          filez4eva_transcripts_location='parallel',
+                          filez4eva_transcripts_root=root,
+                          filez4eva_cabinets={'..': {'target': target}})
+            self.assertIn('outside', str(cm.exception))
+            self.assertEqual(self.files(source), ['b.txt', 'b.txt.md'])
+            self.assertEqual(self.files(target), [])
+
+    # Configuration errors raise before prompting or moving anything
+
+    def assert_config_rejected(self, message, **config):
+        with TemporaryDirectory() as source:
+            n = Path(source) / 'b.txt'
+            n.write_text('a')
+            app = Filez4EvaApp()
+            app.config = ConfigHandler.fake(**config)
+            c = StowFileCommand(app, file=str(n), use_stdin=False)
+            with patch.object(StowFileCommand, 'prompt_value') as pv, \
+                    patch.object(app.ui, 'get_text') as gt, \
+                    self.assertRaises(Filez4EvaError) as cm:
+                c.execute()
+            pv.assert_not_called()
+            gt.assert_not_called()
+            self.assertTrue(n.is_file())
+            self.assertIn(message, str(cm.exception))
+
+    def test_invalid_location_raises(self):
+        self.assert_config_rejected(
+            "Top-level filez4eva has invalid transcripts location 'beside'",
+            filez4eva_target='/x', filez4eva_transcripts_location='beside')
+
+    def test_invalid_top_location_with_cabinets_names_top_level(self):
+        self.assert_config_rejected(
+            "Top-level filez4eva has invalid transcripts location 'tree'",
+            filez4eva_transcripts_location='tree',
+            filez4eva_cabinets={'accounts': {'target': '/a'}})
+
+    def test_non_text_top_root_raises(self):
+        self.assert_config_rejected(
+            "Top-level filez4eva transcripts root must be text",
+            filez4eva_target='/x', filez4eva_transcripts_root=['x'])
+
+    def test_non_mapping_top_transcripts_raises(self):
+        self.assert_config_rejected(
+            "filez4eva transcripts must be a mapping",
+            filez4eva_target='/x', filez4eva_transcripts='parallel')
+
+    def test_non_mapping_top_transcripts_from_app_raises(self):
+        with TemporaryDirectory() as target:
+            with self.assertRaises(Filez4EvaError) as cm:
+                self.run_app(f"  target: {target}\n"
+                             f"  transcripts: parallel\n")
+            self.assertIn("filez4eva transcripts must be a mapping",
+                          str(cm.exception))
+            self.assertEqual(self.files(target), [])
+
+    def test_empty_top_transcripts_from_app_is_adjacent(self):
+        with TemporaryDirectory() as target:
+            left = self.run_app(f"  target: {target}\n"
+                                f"  transcripts:\n"
+                                f"    # location: parallel\n")
+            self.assertEqual(left, [])
+            self.assertEqual(self.files(target),
+                             ['2026/acct/20261002-part.pdf',
+                              '2026/acct/20261002-part.pdf.md'])
+
+    def test_empty_top_transcripts_with_env_location(self):
+        with TemporaryDirectory() as target, TemporaryDirectory() as root, \
+                patch.dict('os.environ',
+                           {'FILEZ4EVA_TRANSCRIPTS_LOCATION': 'parallel',
+                            'FILEZ4EVA_TRANSCRIPTS_ROOT': root}):
+            self.run_app(f"  target: {target}\n"
+                         f"  transcripts:\n")
+            self.assertEqual(self.files(target),
+                             ['2026/acct/20261002-part.pdf'])
+            self.assertEqual(self.files(root),
+                             ['default/2026/acct/20261002-part.pdf.md'])
+
+    def test_falsy_top_location_raises(self):
+        self.assert_config_rejected(
+            "Top-level filez4eva has invalid transcripts location False",
+            filez4eva_target='/x', filez4eva_transcripts_location=False,
+            filez4eva_transcripts_root='/t')
+
+    def test_falsy_top_location_from_app_raises(self):
+        with TemporaryDirectory() as target:
+            with self.assertRaises(Filez4EvaError) as cm:
+                self.run_app(f"  target: {target}\n"
+                             f"  transcripts:\n"
+                             f"    location: no\n"
+                             f"    root: tr\n")
+            self.assertIn("invalid transcripts location False",
+                          str(cm.exception))
+            self.assertEqual(self.files(target), [])
+
+    def test_falsy_cabinet_location_raises(self):
+        self.assert_config_rejected(
+            "Cabinet a has invalid transcripts location 0",
+            filez4eva_cabinets={
+                'a': {'target': '/a', 'transcripts': {'location': 0}}})
+
+    def test_empty_string_location_is_unset(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(
+            filez4eva_transcripts_location='',
+            filez4eva_cabinets={
+                'a': {'target': '/a', 'transcripts': {'location': ''}}})
+        cabinet = StowFileCommand(app).cabinets['a']
+        self.assertEqual(cabinet.transcripts_location, 'adjacent')
+
+    def test_invalid_cabinet_location_raises(self):
+        self.assert_config_rejected(
+            "Cabinet b has invalid transcripts location 'nowhere'",
+            filez4eva_cabinets={
+                'a': {'target': '/a'},
+                'b': {'target': '/b',
+                      'transcripts': {'location': 'nowhere'}}})
+
+    def test_parallel_without_root_raises(self):
+        self.assert_config_rejected(
+            "Top-level filez4eva transcripts location 'parallel' needs a "
+            "root (cabinet default sets none)",
+            filez4eva_target='/x',
+            filez4eva_transcripts_location='parallel')
+
+    def test_top_parallel_root_per_cabinet(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(
+            filez4eva_transcripts_location='parallel',
+            filez4eva_cabinets={
+                'a': {'target': '/a', 'transcripts': {'root': '/ra'}}})
+        cabinet = StowFileCommand(app).cabinets['a']
+        self.assertEqual((cabinet.transcripts_location,
+                          cabinet.transcripts_root), ('parallel', '/ra'))
+
+    def test_parallel_blank_root_raises(self):
+        self.assert_config_rejected(
+            "needs a root",
+            filez4eva_target='/x',
+            filez4eva_transcripts_location='parallel',
+            filez4eva_transcripts_root='  ')
+
+    def test_cabinet_parallel_without_root_raises(self):
+        self.assert_config_rejected(
+            "Cabinet a transcripts location 'parallel' needs a root",
+            filez4eva_cabinets={
+                'a': {'target': '/a',
+                      'transcripts': {'location': 'parallel'}}})
+
+    def test_non_text_root_raises(self):
+        self.assert_config_rejected(
+            "Cabinet a transcripts root must be text",
+            filez4eva_cabinets={
+                'a': {'target': '/a', 'transcripts': {'root': ['x']}}})
+
+    def test_non_mapping_transcripts_raises(self):
+        self.assert_config_rejected(
+            "Cabinet a transcripts must be a mapping",
+            filez4eva_cabinets={'a': {'target': '/a',
+                                      'transcripts': 'parallel'}})
+
+    def test_invalid_location_from_app_raises(self):
+        with TemporaryDirectory() as target:
+            with self.assertRaises(Filez4EvaError):
+                self.run_app(f"  target: {target}\n"
+                             f"  transcripts:\n"
+                             f"    location: sideways\n")
+            self.assertEqual(self.files(target), [])
