@@ -279,8 +279,10 @@ filez4eva:
 ```
 
 A `location` other than `adjacent` or `parallel`, `parallel` without a
-`root`, or a cabinet `transcripts` value that isn't a mapping is a
-configuration error, and `stow-file` exits before prompting or moving anything.
+`root`, or a `transcripts` value (top-level or in a cabinet) that isn't a
+mapping is a configuration error, and `stow-file` exits before prompting or
+moving anything. An error in a top-level setting names the top level rather
+than a cabinet.
 
 This only affects `stow-file`. `transcribe` and `scan-dir` always write the
 transcript of an incoming file next to it, as `FILE.md`.

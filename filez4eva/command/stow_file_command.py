@@ -112,25 +112,52 @@ TRANSCRIPT_LOCATIONS = ('adjacent', 'parallel')
 DEFAULT_TRANSCRIPT_LOCATION = 'adjacent'
 
 
+def check_transcripts(owner: str, location, root):
+    """Raise Filez4EvaError if a transcripts location (when set) is unknown
+    or a root (when set) isn't text. owner names where the values come from,
+    for the error message."""
+    if location is not None and location not in TRANSCRIPT_LOCATIONS:
+        raise Filez4EvaError(
+            f"{owner} has invalid transcripts location {location!r}; "
+            "use one of: " + ', '.join(TRANSCRIPT_LOCATIONS))
+    if root is not None and not isinstance(root, str):
+        raise Filez4EvaError(f"{owner} transcripts root must be text")
+
+
+def load_top_transcripts(config) -> tuple:
+    """Return the top-level (location, root), either of which may be None.
+    Raises Filez4EvaError if `transcripts` isn't a mapping or holds an
+    invalid value."""
+    block = config.get('filez4eva-transcripts')
+    if block is not None and not isinstance(block, dict):
+        raise Filez4EvaError("filez4eva transcripts must be a mapping")
+    location = config.get('filez4eva-transcripts-location') or None
+    root = config.get('filez4eva-transcripts-root')
+    check_transcripts('Top-level filez4eva', location, root)
+    return location, root
+
+
 def resolve_transcripts(name: str, block, location=None, root=None) -> tuple:
     """Return (location, root) for a cabinet. Values in the cabinet's own
-    `transcripts` block win, key by key, over the given top-level values;
-    location defaults to 'adjacent'. Raises Filez4EvaError on a block that
-    isn't a mapping, an unknown location, or 'parallel' without a root."""
+    `transcripts` block win, key by key, over the given top-level values
+    (already checked by load_top_transcripts); location defaults to
+    'adjacent'. Raises Filez4EvaError on a block that isn't a mapping, an
+    unknown location, or 'parallel' without a root."""
+    own_location = own_root = None
     if block is not None:
         if not isinstance(block, dict):
             raise Filez4EvaError(
                 f"Cabinet {name} transcripts must be a mapping")
-        location = block.get('location') or location
-        root = block.get('root') or root
-    location = location or DEFAULT_TRANSCRIPT_LOCATION
-    if location not in TRANSCRIPT_LOCATIONS:
-        raise Filez4EvaError(
-            f"Cabinet {name} has invalid transcripts location "
-            f"{location!r}; use one of: " + ', '.join(TRANSCRIPT_LOCATIONS))
-    if root is not None and not isinstance(root, str):
-        raise Filez4EvaError(f"Cabinet {name} transcripts root must be text")
+        own_location = block.get('location') or None
+        own_root = block.get('root')
+        check_transcripts(f"Cabinet {name}", own_location, own_root)
+    location = own_location or location or DEFAULT_TRANSCRIPT_LOCATION
+    root = own_root or root
     if location == 'parallel' and not (root and root.strip()):
+        if own_location is None and own_root is None:
+            raise Filez4EvaError(
+                "Top-level filez4eva transcripts location 'parallel' needs "
+                f"a root (cabinet {name} sets none)")
         raise Filez4EvaError(
             f"Cabinet {name} transcripts location 'parallel' needs a root")
     return location, root
@@ -168,8 +195,7 @@ def load_cabinets(config) -> dict:
     `transcripts` location and root key by key. Raises Filez4EvaError on bad
     configuration, including any invalid pattern or transcripts setting."""
     pattern = config.get('filez4eva-pattern') or DEFAULT_PATTERN
-    location = config.get('filez4eva-transcripts-location')
-    root = config.get('filez4eva-transcripts-root')
+    location, root = load_top_transcripts(config)
     entries = config.get('filez4eva-cabinets')
     if not entries:
         target = config.get('filez4eva-target')

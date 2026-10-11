@@ -1377,8 +1377,33 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
 
     def test_invalid_location_raises(self):
         self.assert_config_rejected(
-            "Cabinet default has invalid transcripts location 'beside'",
+            "Top-level filez4eva has invalid transcripts location 'beside'",
             filez4eva_target='/x', filez4eva_transcripts_location='beside')
+
+    def test_invalid_top_location_with_cabinets_names_top_level(self):
+        self.assert_config_rejected(
+            "Top-level filez4eva has invalid transcripts location 'tree'",
+            filez4eva_transcripts_location='tree',
+            filez4eva_cabinets={'accounts': {'target': '/a'}})
+
+    def test_non_text_top_root_raises(self):
+        self.assert_config_rejected(
+            "Top-level filez4eva transcripts root must be text",
+            filez4eva_target='/x', filez4eva_transcripts_root=['x'])
+
+    def test_non_mapping_top_transcripts_raises(self):
+        self.assert_config_rejected(
+            "filez4eva transcripts must be a mapping",
+            filez4eva_target='/x', filez4eva_transcripts='parallel')
+
+    def test_non_mapping_top_transcripts_from_app_raises(self):
+        with TemporaryDirectory() as target:
+            with self.assertRaises(Filez4EvaError) as cm:
+                self.run_app(f"  target: {target}\n"
+                             f"  transcripts: parallel\n")
+            self.assertIn("filez4eva transcripts must be a mapping",
+                          str(cm.exception))
+            self.assertEqual(self.files(target), [])
 
     def test_invalid_cabinet_location_raises(self):
         self.assert_config_rejected(
@@ -1390,9 +1415,20 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
 
     def test_parallel_without_root_raises(self):
         self.assert_config_rejected(
-            "Cabinet default transcripts location 'parallel' needs a root",
+            "Top-level filez4eva transcripts location 'parallel' needs a "
+            "root (cabinet default sets none)",
             filez4eva_target='/x',
             filez4eva_transcripts_location='parallel')
+
+    def test_top_parallel_root_per_cabinet(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(
+            filez4eva_transcripts_location='parallel',
+            filez4eva_cabinets={
+                'a': {'target': '/a', 'transcripts': {'root': '/ra'}}})
+        cabinet = StowFileCommand(app).cabinets['a']
+        self.assertEqual((cabinet.transcripts_location,
+                          cabinet.transcripts_root), ('parallel', '/ra'))
 
     def test_parallel_blank_root_raises(self):
         self.assert_config_rejected(
