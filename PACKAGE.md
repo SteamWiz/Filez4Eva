@@ -81,7 +81,7 @@ moves its transcript with it (see [stow-file](#command-line-options)).
 
 ### Transcribing Files
 
-To transcribe a file to Markdown with Claude:
+To transcribe a file to Markdown using an AI model:
 
 ```bash
 filez4eva transcribe ~/Desktop/scan.pdf
@@ -105,9 +105,9 @@ transcribed: '2026-10-10T17:42:05+00:00'
 - Supported file types are PDF, PNG, JPEG, GIF, WebP, plain text, Markdown
   and CSV.
 - If the transcript already exists and its `sha256` matches the file, nothing
-  is sent to Claude and the existing path is printed (status `Unchanged` on
-  stderr). If the file has changed, or the transcript has no readable front
-  matter, it is transcribed again and overwritten.
+  is sent to the model and the existing path is printed (status `Unchanged`
+  on stderr). If the file has changed, or the transcript has no readable
+  front matter, it is transcribed again and overwritten.
 - `--force` (or `-f`) transcribes again even if the transcript is up to date.
 - If transcription fails (e.g. an unsupported file type or an API error),
   `transcribe` exits with an error and any existing transcript is left as it
@@ -118,14 +118,14 @@ key.
 
 ### Classifying Files
 
-To have Claude propose where a file should be filed:
+To have an AI model propose where a file should be filed:
 
 ```bash
 filez4eva classify ~/Desktop/scan.pdf
 ```
 
 `classify` transcribes the file first if needed (exactly as `transcribe`
-does, reusing an up-to-date transcript), then asks Claude to classify the
+does, reusing an up-to-date transcript), then asks the model to classify the
 transcript and prints a YAML record on stdout:
 
 ```yaml
@@ -143,15 +143,15 @@ summary: Amazon.ca order receipt for a USB hub
 - `doctype` is one of the configured [doctypes](#classification-settings),
   or `other`.
 - `summary` is a single line.
-- Claude is told the cabinet's `description`, the accounts already in the
+- The model is told the cabinet's `description`, the accounts already in the
   cabinet with the parts already used for each (the same ones offered by
   tab completion, so only with the default pattern), and asked to reuse them
   when they fit. It is also given the doctype names and descriptions.
 - The cabinet is chosen as for `stow-file`: `--cabinet NAME`, the only
   cabinet, or a prompt.
-- If transcription or classification fails, or Claude's answer isn't a valid
-  date, account, part or doctype, `classify` exits with an error and prints
-  nothing on stdout.
+- If transcription or classification fails, or the model's answer isn't a
+  valid date, account, part or doctype, `classify` exits with an error and
+  prints nothing on stdout.
 
 Nothing is moved. To file the document as proposed, pipe the record into
 `stow-file`, which reads `cabinet`, `date`, `account` and `part` and ignores
@@ -379,9 +379,9 @@ filez4eva:
 - `classify: model:` defaults to `claude-haiku-4-5`. Transcription still
   uses `transcribe: model:`.
 - `doctypes` maps each document type to an optional `description`, which is
-  shown to Claude. Names must be single words (letters, digits, `-` and
+  shown to the model. Names must be single words (letters, digits, `-` and
   `_`). `other` is always available; configure it only to change its
   description. With no `doctypes`, every document's doctype is `other`.
 - A `doctypes` value that isn't a mapping, a name that isn't a single word,
   or a description that isn't text is a configuration error, and `classify`
-  exits before calling Claude.
+  exits before calling the model.
