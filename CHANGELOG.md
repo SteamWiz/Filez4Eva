@@ -2,6 +2,63 @@
 
 <!-- version list -->
 
+## v5.1.0 (2026-10-11)
+
+### Bug Fixes
+
+- Reject non-mapping top-level transcripts config
+  ([#15](https://github.com/SteamWiz/Filez4Eva/pull/15),
+  [`d8ccb45`](https://github.com/SteamWiz/Filez4Eva/commit/d8ccb4577c3fb639a1f203233f339746bf6c4986))
+
+- **stow-file**: Treat empty top-level transcripts block as unset and reject falsy locations
+  ([`af32746`](https://github.com/SteamWiz/Filez4Eva/commit/af32746ce1e762b80bda19a2a52649cd06be9280))
+
+### Build System
+
+- **deps**: Bump the actions group across 1 directory with 4 updates
+  ([`8ef610e`](https://github.com/SteamWiz/Filez4Eva/commit/8ef610e607f43a61bf16ddc44bc26c96497419fa))
+
+### Documentation
+
+- Refer to the AI model generically instead of Claude in PACKAGE.md
+  ([`6afc30b`](https://github.com/SteamWiz/Filez4Eva/commit/6afc30bc0db440ebafe4dd1ad5e1a278a1871d3f))
+
+### Features
+
+- Add classify command proposing date, account, part and doctype
+  ([#16](https://github.com/SteamWiz/Filez4Eva/pull/16),
+  [`1895c6e`](https://github.com/SteamWiz/Filez4Eva/commit/1895c6e16009c81771e17f89ebc85ca72f977987))
+
+- Add process command to transcribe, classify, confirm and stow a file
+  ([#17](https://github.com/SteamWiz/Filez4Eva/pull/17),
+  [`01dd0ea`](https://github.com/SteamWiz/Filez4Eva/commit/01dd0eabddf179691013ccf4ca330895dc0a4872))
+
+- Add transcribe command writing a Markdown transcript next to the file
+  ([#12](https://github.com/SteamWiz/Filez4Eva/pull/12),
+  [`327377c`](https://github.com/SteamWiz/Filez4Eva/commit/327377ca27cd6c076632d8c532418738af811ffb))
+
+- Configurable transcript location for stow-file
+  ([#15](https://github.com/SteamWiz/Filez4Eva/pull/15),
+  [`9f404bc`](https://github.com/SteamWiz/Filez4Eva/commit/9f404bc7f7bbc793b6a6892fbf0d7eb189081092))
+
+- Move transcript with the file in stow-file ([#14](https://github.com/SteamWiz/Filez4Eva/pull/14),
+  [`6051899`](https://github.com/SteamWiz/Filez4Eva/commit/6051899381738989879b3102dbcf7f7ec3e1e135))
+
+- Skip transcript files in scan-dir and delete them with their file
+  ([#13](https://github.com/SteamWiz/Filez4Eva/pull/13),
+  [`d1103d4`](https://github.com/SteamWiz/Filez4Eva/commit/d1103d44c0207c0a1f09f606a4826b3c06276446))
+
+- **scan-dir**: Pre-fill stow prompts from AI transcription and classification
+  ([#18](https://github.com/SteamWiz/Filez4Eva/pull/18),
+  [`3ecc045`](https://github.com/SteamWiz/Filez4Eva/commit/3ecc0450fe4ffcd93c03996321e2b728576cd258))
+
+### Refactoring
+
+- Rename transcript locations to adjacent/parallel
+  ([#15](https://github.com/SteamWiz/Filez4Eva/pull/15),
+  [`57abf6d`](https://github.com/SteamWiz/Filez4Eva/commit/57abf6d3f83fbac50eb93964df723ca80ad35141))
+
+
 ## v5.0.0 (2026-10-10)
 
 ### Bug Fixes
