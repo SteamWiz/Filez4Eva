@@ -254,6 +254,39 @@ def load_cabinets(config) -> dict:
     return cabinets
 
 
+def list_accounts(targetdir: Path, pattern: str) -> list:
+    """Return the accounts already filed under targetdir, sorted. Only
+    supported for the default pattern; other patterns, or a target that
+    doesn't exist yet, give an empty list."""
+    if pattern != DEFAULT_PATTERN or not targetdir.is_dir():
+        return []
+    accounts = set()
+    for year in targetdir.iterdir():
+        if year.name.isdigit() and year.is_dir():
+            for dir in year.iterdir():
+                if dir.is_dir():
+                    accounts.add(dir.name)
+    return sorted(accounts)
+
+
+def list_parts(targetdir: Path, pattern: str, account: str) -> list:
+    """Return the filename parts already used for an account under
+    targetdir, sorted. Only supported for the default pattern; other
+    patterns, or a target that doesn't exist yet, give an empty list."""
+    if pattern != DEFAULT_PATTERN or not targetdir.is_dir():
+        return []
+    parts = set()
+    for year in targetdir.iterdir():
+        if year.name.isdigit():
+            subdir = year / account
+            if subdir.is_dir():
+                for file in subdir.iterdir():
+                    match = re.match(FILE_PATTERN, file.name)
+                    if match:
+                        parts.add(match.groups()[0])
+    return sorted(parts)
+
+
 class StowFileCommand(Filez4EvaCommand):
     """Move filez to the right place with the right name"""
 
@@ -371,33 +404,12 @@ class StowFileCommand(Filez4EvaCommand):
             f"Date from stdin must match format YYYYMMDD: {value}")
 
     def get_accounts(self) -> list:
-        """Return past accounts for tab completion. Only supported for the
-        default pattern; other patterns return an empty list."""
-        if self.pattern != DEFAULT_PATTERN:
-            return []
-        accounts = set()
-        for year in self.targetdir.iterdir():
-            if year.name.isdigit() and year.is_dir():
-                for dir in year.iterdir():
-                    if dir.is_dir():
-                        accounts.add(dir.name)
-        return sorted(accounts)
+        """Return past accounts for tab completion"""
+        return list_accounts(self.targetdir, self.pattern)
 
     def get_parts(self, sub: str) -> list:
-        """Return past filename parts for tab completion. Only supported for
-        the default pattern; other patterns return an empty list."""
-        if self.pattern != DEFAULT_PATTERN:
-            return []
-        parts = set()
-        for year in self.targetdir.iterdir():
-            if year.name.isdigit():
-                subdir = year / sub
-                if subdir.is_dir():
-                    for file in subdir.iterdir():
-                        match = re.match(FILE_PATTERN, file.name)
-                        if match:
-                            parts.add(match.groups()[0])
-        return sorted(parts)
+        """Return past filename parts of an account for tab completion"""
+        return list_parts(self.targetdir, self.pattern, sub)
 
     @cached_property
     def cabinets(self) -> dict:
