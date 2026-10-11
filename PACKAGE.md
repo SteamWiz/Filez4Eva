@@ -116,6 +116,51 @@ transcribed: '2026-10-10T17:42:05+00:00'
 See [Transcription settings](#transcription-settings) for the model and API
 key.
 
+### Classifying Files
+
+To have Claude propose where a file should be filed:
+
+```bash
+filez4eva classify ~/Desktop/scan.pdf
+```
+
+`classify` transcribes the file first if needed (exactly as `transcribe`
+does, reusing an up-to-date transcript), then asks Claude to classify the
+transcript and prints a YAML record on stdout:
+
+```yaml
+file: /Users/me/Desktop/scan.pdf
+transcript: /Users/me/Desktop/scan.pdf.md
+cabinet: accounts
+date: '20261002'
+account: amazon
+part: receipt
+doctype: receipt
+summary: Amazon.ca order receipt for a USB hub
+```
+
+- `date` is the document's own date, as YYYYMMDD.
+- `doctype` is one of the configured [doctypes](#classification-settings),
+  or `other`.
+- `summary` is a single line.
+- Claude is told the cabinet's `description`, the accounts already in the
+  cabinet with the parts already used for each (the same ones offered by
+  tab completion, so only with the default pattern), and asked to reuse them
+  when they fit. It is also given the doctype names and descriptions.
+- The cabinet is chosen as for `stow-file`: `--cabinet NAME`, the only
+  cabinet, or a prompt.
+- If transcription or classification fails, or Claude's answer isn't a valid
+  date, account, part or doctype, `classify` exits with an error and prints
+  nothing on stdout.
+
+Nothing is moved. To file the document as proposed, pipe the record into
+`stow-file`, which reads `cabinet`, `date`, `account` and `part` and ignores
+the other keys:
+
+```bash
+filez4eva classify ~/Desktop/scan.pdf | filez4eva stow-file ~/Desktop/scan.pdf
+```
+
 ### Command Line Options
 
 Global options:
@@ -146,6 +191,10 @@ scan-dir command:
 transcribe command:
 - `--force, -f`: Transcribe again even if the transcript is up to date
 - `file`: Path to the file to transcribe
+
+classify command:
+- `--cabinet, -c NAME`: Specify the cabinet to classify for
+- `file`: Path to the file to classify
 
 ## Configuration
 
@@ -310,3 +359,29 @@ filez4eva:
 
 Filez4Eva only reads its own configuration; Kwark's configuration is never
 used.
+
+### Classification settings
+
+`classify` uses these optional keys, as well as the `transcribe` model and
+the `anthropic` key above:
+
+```yaml
+filez4eva:
+  classify:
+    model: claude-haiku-4-5     # Anthropic model ID (the default)
+  doctypes:
+    receipt:
+      description: Proof of purchase or payment
+    bill:
+      description: A request for payment, usually with a due date
+```
+
+- `classify: model:` defaults to `claude-haiku-4-5`. Transcription still
+  uses `transcribe: model:`.
+- `doctypes` maps each document type to an optional `description`, which is
+  shown to Claude. Names must be single words (letters, digits, `-` and
+  `_`). `other` is always available; configure it only to change its
+  description. With no `doctypes`, every document's doctype is `other`.
+- A `doctypes` value that isn't a mapping, a name that isn't a single word,
+  or a description that isn't text is a configuration error, and `classify`
+  exits before calling Claude.
