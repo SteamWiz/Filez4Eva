@@ -1094,7 +1094,7 @@ class TestStowFileTranscript(WizLibTestCase):
 
 
 class TestStowFileTranscriptLocation(WizLibTestCase):
-    """The transcript goes alongside the file (default) or into a parallel
+    """The transcript goes adjacent to the file (default) or into a parallel
     tree under a configured root"""
 
     @staticmethod
@@ -1135,7 +1135,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
                                    'acct', '-p', 'part', *args, debug=True)
             return self.files(sourced)
 
-    def test_alongside_by_default(self):
+    def test_adjacent_by_default(self):
         with TemporaryDirectory() as source, \
                 TemporaryDirectory() as target:
             dest = self.stow(source, filez4eva_target=target)
@@ -1146,21 +1146,21 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
                              '2026/acct/20261002-part.txt')
             self.assertEqual(self.files(source), [])
 
-    def test_explicit_alongside(self):
+    def test_explicit_adjacent(self):
         with TemporaryDirectory() as source, \
                 TemporaryDirectory() as target:
             self.stow(source, filez4eva_target=target,
-                      filez4eva_transcripts_location='alongside')
+                      filez4eva_transcripts_location='adjacent')
             self.assertEqual(self.files(target),
                              ['2026/acct/20261002-part.txt',
                               '2026/acct/20261002-part.txt.md'])
 
-    def test_tree(self):
+    def test_parallel(self):
         with TemporaryDirectory() as source, \
                 TemporaryDirectory() as target, \
                 TemporaryDirectory() as root:
             dest = self.stow(source, filez4eva_target=target,
-                             filez4eva_transcripts_location='tree',
+                             filez4eva_transcripts_location='parallel',
                              filez4eva_transcripts_root=root)
             self.assertEqual(dest, Path(target) /
                              '2026/acct/20261002-part.txt')
@@ -1174,22 +1174,22 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
                 .read_text(), '# transcript')
             self.assertEqual(self.files(source), [])
 
-    def test_tree_root_expands_home(self):
+    def test_parallel_root_expands_home(self):
         with TemporaryDirectory() as source, \
                 TemporaryDirectory() as target, \
                 TemporaryDirectory() as home, \
                 patch.dict('os.environ', {'HOME': home}):
             self.stow(source, filez4eva_target=target,
-                      filez4eva_transcripts_location='tree',
+                      filez4eva_transcripts_location='parallel',
                       filez4eva_transcripts_root='~/transcripts')
             self.assertEqual(
                 self.files(home),
                 ['transcripts/default/2026/acct/20261002-part.txt.md'])
 
-    def test_tree_named_cabinet_from_app(self):
+    def test_parallel_named_cabinet_from_app(self):
         with TemporaryDirectory() as target, TemporaryDirectory() as root:
             left = self.run_app(f"  transcripts:\n"
-                                f"    location: tree\n"
+                                f"    location: parallel\n"
                                 f"    root: {root}\n"
                                 f"  cabinets:\n"
                                 f"    accounts:\n"
@@ -1200,22 +1200,22 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
             self.assertEqual(self.files(root),
                              ['accounts/2026/acct/20261002-part.pdf.md'])
 
-    def test_tree_uses_cabinet_pattern(self):
+    def test_parallel_uses_cabinet_pattern(self):
         with TemporaryDirectory() as source, \
                 TemporaryDirectory() as target, \
                 TemporaryDirectory() as root:
             self.stow(source, filez4eva_target=target,
                       filez4eva_pattern='{account}/{part}-{date}{ext}',
-                      filez4eva_transcripts_location='tree',
+                      filez4eva_transcripts_location='parallel',
                       filez4eva_transcripts_root=root)
             self.assertEqual(self.files(root),
                              ['default/acct/part-20261002.txt.md'])
 
-    def test_cabinet_overrides_to_alongside(self):
+    def test_cabinet_overrides_to_adjacent(self):
         with TemporaryDirectory() as a, TemporaryDirectory() as b, \
                 TemporaryDirectory() as root:
             config = (f"  transcripts:\n"
-                      f"    location: tree\n"
+                      f"    location: parallel\n"
                       f"    root: {root}\n"
                       f"  cabinets:\n"
                       f"    accounts:\n"
@@ -1223,7 +1223,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
                       f"    memories:\n"
                       f"      target: {b}\n"
                       f"      transcripts:\n"
-                      f"        location: alongside\n")
+                      f"        location: adjacent\n")
             self.run_app(config, '-c', 'memories')
             self.assertEqual(self.files(b),
                              ['2026/acct/20261002-part.pdf',
@@ -1234,7 +1234,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
             self.assertEqual(self.files(root),
                              ['accounts/2026/acct/20261002-part.pdf.md'])
 
-    def test_cabinet_overrides_to_tree(self):
+    def test_cabinet_overrides_to_parallel(self):
         with TemporaryDirectory() as a, TemporaryDirectory() as b, \
                 TemporaryDirectory() as root:
             config = (f"  transcripts:\n"
@@ -1245,7 +1245,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
                       f"    memories:\n"
                       f"      target: {b}\n"
                       f"      transcripts:\n"
-                      f"        location: tree\n")
+                      f"        location: parallel\n")
             self.run_app(config, '-c', 'accounts')
             self.assertEqual(self.files(a),
                              ['2026/acct/20261002-part.pdf',
@@ -1260,7 +1260,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
         with TemporaryDirectory() as a, TemporaryDirectory() as root, \
                 TemporaryDirectory() as own:
             config = (f"  transcripts:\n"
-                      f"    location: tree\n"
+                      f"    location: parallel\n"
                       f"    root: {root}\n"
                       f"  cabinets:\n"
                       f"    accounts:\n"
@@ -1275,40 +1275,41 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
     def test_cabinet_values_resolved(self):
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(
-            filez4eva_transcripts_location='tree',
+            filez4eva_transcripts_location='parallel',
             filez4eva_transcripts_root='/t',
             filez4eva_cabinets={
                 'a': {'target': '/a'},
                 'b': {'target': '/b', 'transcripts': {'root': '~/x'}},
                 'c': {'target': '/c',
-                      'transcripts': {'location': 'alongside'}}})
+                      'transcripts': {'location': 'adjacent'}}})
         c = StowFileCommand(app)
         self.assertEqual((c.cabinets['a'].transcripts_location,
-                          c.cabinets['a'].transcripts_root), ('tree', '/t'))
+                          c.cabinets['a'].transcripts_root),
+                         ('parallel', '/t'))
         self.assertEqual(c.cabinets['b'].transcripts_rootdir,
                          Path('~/x').expanduser())
-        self.assertEqual(c.cabinets['c'].transcripts_location, 'alongside')
+        self.assertEqual(c.cabinets['c'].transcripts_location, 'adjacent')
 
     def test_default_values(self):
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(filez4eva_target='/x')
         cabinet = StowFileCommand(app).cabinets['default']
-        self.assertEqual(cabinet.transcripts_location, 'alongside')
+        self.assertEqual(cabinet.transcripts_location, 'adjacent')
         self.assertIsNone(cabinet.transcripts_root)
         self.assertIsNone(cabinet.transcripts_rootdir)
 
-    def test_tree_no_transcript_creates_nothing(self):
+    def test_parallel_no_transcript_creates_nothing(self):
         with TemporaryDirectory() as source, \
                 TemporaryDirectory() as target, \
                 TemporaryDirectory() as root:
             self.stow(source, transcript=False, filez4eva_target=target,
-                      filez4eva_transcripts_location='tree',
+                      filez4eva_transcripts_location='parallel',
                       filez4eva_transcripts_root=root)
             self.assertEqual(self.files(target),
                              ['2026/acct/20261002-part.txt'])
             self.assertEqual(list(Path(root).iterdir()), [])
 
-    def test_tree_collision_moves_nothing(self):
+    def test_parallel_collision_moves_nothing(self):
         with TemporaryDirectory() as source, \
                 TemporaryDirectory() as target, \
                 TemporaryDirectory() as root:
@@ -1317,14 +1318,14 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
             existing.write_text('# existing')
             with self.assertRaises(Filez4EvaError) as cm:
                 self.stow(source, filez4eva_target=target,
-                          filez4eva_transcripts_location='tree',
+                          filez4eva_transcripts_location='parallel',
                           filez4eva_transcripts_root=root)
             self.assertIn(str(existing), str(cm.exception))
             self.assertEqual(self.files(source), ['b.txt', 'b.txt.md'])
             self.assertEqual(self.files(target), [])
             self.assertEqual(existing.read_text(), '# existing')
 
-    def test_tree_move_failure_rolls_back(self):
+    def test_parallel_move_failure_rolls_back(self):
         with TemporaryDirectory() as source, \
                 TemporaryDirectory() as target, \
                 TemporaryDirectory() as root:
@@ -1335,7 +1336,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
             with patch('shutil.move', move), \
                     self.assertRaises(Filez4EvaError):
                 self.stow(source, filez4eva_target=target,
-                          filez4eva_transcripts_location='tree',
+                          filez4eva_transcripts_location='parallel',
                           filez4eva_transcripts_root=root)
             self.assertEqual(self.files(source), ['b.txt', 'b.txt.md'])
             self.assertEqual((Path(source) / 'b.txt.md').read_text(),
@@ -1349,7 +1350,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
                 TemporaryDirectory() as root:
             with self.assertRaises(Filez4EvaError) as cm:
                 self.stow(source, cabinet='..',
-                          filez4eva_transcripts_location='tree',
+                          filez4eva_transcripts_location='parallel',
                           filez4eva_transcripts_root=root,
                           filez4eva_cabinets={'..': {'target': target}})
             self.assertIn('outside', str(cm.exception))
@@ -1387,22 +1388,25 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
                 'b': {'target': '/b',
                       'transcripts': {'location': 'nowhere'}}})
 
-    def test_tree_without_root_raises(self):
+    def test_parallel_without_root_raises(self):
         self.assert_config_rejected(
-            "Cabinet default transcripts location 'tree' needs a root",
-            filez4eva_target='/x', filez4eva_transcripts_location='tree')
+            "Cabinet default transcripts location 'parallel' needs a root",
+            filez4eva_target='/x',
+            filez4eva_transcripts_location='parallel')
 
-    def test_tree_blank_root_raises(self):
+    def test_parallel_blank_root_raises(self):
         self.assert_config_rejected(
             "needs a root",
-            filez4eva_target='/x', filez4eva_transcripts_location='tree',
+            filez4eva_target='/x',
+            filez4eva_transcripts_location='parallel',
             filez4eva_transcripts_root='  ')
 
-    def test_cabinet_tree_without_root_raises(self):
+    def test_cabinet_parallel_without_root_raises(self):
         self.assert_config_rejected(
-            "Cabinet a transcripts location 'tree' needs a root",
+            "Cabinet a transcripts location 'parallel' needs a root",
             filez4eva_cabinets={
-                'a': {'target': '/a', 'transcripts': {'location': 'tree'}}})
+                'a': {'target': '/a',
+                      'transcripts': {'location': 'parallel'}}})
 
     def test_non_text_root_raises(self):
         self.assert_config_rejected(
@@ -1413,7 +1417,8 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
     def test_non_mapping_transcripts_raises(self):
         self.assert_config_rejected(
             "Cabinet a transcripts must be a mapping",
-            filez4eva_cabinets={'a': {'target': '/a', 'transcripts': 'tree'}})
+            filez4eva_cabinets={'a': {'target': '/a',
+                                      'transcripts': 'parallel'}})
 
     def test_invalid_location_from_app_raises(self):
         with TemporaryDirectory() as target:

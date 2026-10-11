@@ -106,17 +106,17 @@ def check_pattern(pattern: str):
 DEFAULT_CABINET = 'default'
 
 # Where stow-file puts a file's transcript: next to the stowed file
-# ('alongside') or under a separate root that mirrors the cabinet layout
-# ('tree').
-TRANSCRIPT_LOCATIONS = ('alongside', 'tree')
-DEFAULT_TRANSCRIPT_LOCATION = 'alongside'
+# ('adjacent') or under a separate root that mirrors the cabinet layout
+# ('parallel').
+TRANSCRIPT_LOCATIONS = ('adjacent', 'parallel')
+DEFAULT_TRANSCRIPT_LOCATION = 'adjacent'
 
 
 def resolve_transcripts(name: str, block, location=None, root=None) -> tuple:
     """Return (location, root) for a cabinet. Values in the cabinet's own
     `transcripts` block win, key by key, over the given top-level values;
-    location defaults to 'alongside'. Raises Filez4EvaError on a block that
-    isn't a mapping, an unknown location, or 'tree' without a root."""
+    location defaults to 'adjacent'. Raises Filez4EvaError on a block that
+    isn't a mapping, an unknown location, or 'parallel' without a root."""
     if block is not None:
         if not isinstance(block, dict):
             raise Filez4EvaError(
@@ -130,9 +130,9 @@ def resolve_transcripts(name: str, block, location=None, root=None) -> tuple:
             f"{location!r}; use one of: " + ', '.join(TRANSCRIPT_LOCATIONS))
     if root is not None and not isinstance(root, str):
         raise Filez4EvaError(f"Cabinet {name} transcripts root must be text")
-    if location == 'tree' and not (root and root.strip()):
+    if location == 'parallel' and not (root and root.strip()):
         raise Filez4EvaError(
-            f"Cabinet {name} transcripts location 'tree' needs a root")
+            f"Cabinet {name} transcripts location 'parallel' needs a root")
     return location, root
 
 
@@ -389,12 +389,12 @@ class StowFileCommand(Filez4EvaCommand):
         return self.resolve_cabinet().pattern
 
     def target_transcript(self, relative: str, targetpath: Path) -> Path:
-        """Return where the stowed file's transcript goes. 'alongside' puts
-        it next to the stowed file; 'tree' puts it at
+        """Return where the stowed file's transcript goes. 'adjacent' puts
+        it next to the stowed file; 'parallel' puts it at
         <root>/<cabinet>/<relative>.md, where relative is the stowed file's
         path under the cabinet target."""
         cabinet = self.resolve_cabinet()
-        if cabinet.transcripts_location != 'tree':
+        if cabinet.transcripts_location != 'parallel':
             return transcript_path(targetpath)
         base = cabinet.transcripts_rootdir.absolute() / cabinet.name
         result = base / (str(Path(relative)) + '.md')
