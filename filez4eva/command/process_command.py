@@ -7,6 +7,34 @@ from filez4eva.command.stow_file_command import (
     valid_date, valid_part)
 
 
+def confirm_record(app, classifier: ClassifyCommand, record: dict) -> dict:
+    """Show the summary and doctype, then prompt for each value, pre-filled
+    with the proposed one. Return the confirmed cabinet, date, account and
+    part. An empty answer raises CommandCancellation. classifier is the
+    ClassifyCommand that produced the record."""
+    app.ui.send(f"Summary: {record['summary']}")
+    app.ui.send(f"Doctype: {record['doctype']}")
+    stow = classifier.stow
+    cabinet = record['cabinet']
+    # Cabinet comes first, so account and part completion use the final
+    # cabinet. Skip it if there is only one, or it was just chosen.
+    if len(stow.cabinets) > 1 and not classifier.cabinet_prompted:
+        names = sorted(stow.cabinets)
+        cabinet = stow.prompt_value(
+            'Cabinet', names, lambda v: v in stow.cabinets,
+            'Cabinet must be one of: ' + ', '.join(names), cabinet)
+        stow.cabinet = cabinet
+    date = stow.prompt_value('Date', [], valid_date, DATE_RULE,
+                             record['date'])
+    account = stow.prompt_value('Account', stow.get_accounts(),
+                                valid_account, ACCOUNT_RULE,
+                                record['account'])
+    part = stow.prompt_value('Part', stow.get_parts(account), valid_part,
+                             PART_RULE, record['part'])
+    return {'cabinet': cabinet, 'date': date, 'account': account,
+            'part': part}
+
+
 class ProcessCommand(Filez4EvaCommand):
     """Transcribe and classify a file, confirm the proposed values in the
     shell, then stow it with its transcript"""
@@ -32,30 +60,8 @@ class ProcessCommand(Filez4EvaCommand):
         self.classifier.handle_vals()
 
     def confirm(self, record: dict) -> dict:
-        """Show the summary and doctype, then prompt for each value,
-        pre-filled with the proposed one. Return the confirmed cabinet,
-        date, account and part. An empty answer cancels."""
-        self.app.ui.send(f"Summary: {record['summary']}")
-        self.app.ui.send(f"Doctype: {record['doctype']}")
-        stow = self.classifier.stow
-        cabinet = record['cabinet']
-        # Cabinet comes first, so account and part completion use the final
-        # cabinet. Skip it if there is only one, or it was just chosen.
-        if len(stow.cabinets) > 1 and not self.classifier.cabinet_prompted:
-            names = sorted(stow.cabinets)
-            cabinet = stow.prompt_value(
-                'Cabinet', names, lambda v: v in stow.cabinets,
-                'Cabinet must be one of: ' + ', '.join(names), cabinet)
-            stow.cabinet = cabinet
-        date = stow.prompt_value('Date', [], valid_date, DATE_RULE,
-                                 record['date'])
-        account = stow.prompt_value('Account', stow.get_accounts(),
-                                    valid_account, ACCOUNT_RULE,
-                                    record['account'])
-        part = stow.prompt_value('Part', stow.get_parts(account), valid_part,
-                                 PART_RULE, record['part'])
-        return {'cabinet': cabinet, 'date': date, 'account': account,
-                'part': part}
+        """Confirm the proposed values; see confirm_record"""
+        return confirm_record(self.app, self.classifier, record)
 
     @Filez4EvaCommand.wrap
     def execute(self):

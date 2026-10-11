@@ -6,10 +6,14 @@ from wizlib.parser import WizParser
 from wizlib.ui import Chooser
 from wizlib.ui.shell_ui import Emphasis
 from wizlib.app import AppCancellation
+from wizlib.command import CommandCancellation
 
 from filez4eva.command import Filez4EvaCommand
+from filez4eva.command.classify_command import ClassifyCommand
+from filez4eva.command.process_command import confirm_record
 from filez4eva.command.stow_file_command import StowFileCommand
 from filez4eva.command.transcribe_command import transcript_path
+from filez4eva.error import Filez4EvaError
 
 
 class ScanDirCommand(Filez4EvaCommand):
@@ -80,10 +84,7 @@ class ScanDirCommand(Filez4EvaCommand):
                     os.remove(transcript)
                 self.increment_result('Deleted')
             elif action == 'stow':
-                command = StowFileCommand(self.app, file=str(file),
-                                          use_stdin=False)
-                command.execute()
-                if command.status:
+                if self.stow_file(file):
                     self.increment_result('Stowed')
                 else:
                     self.app.ui.send(file.name)
@@ -95,6 +96,39 @@ class ScanDirCommand(Filez4EvaCommand):
             elif action == 'skip':
                 self.increment_result('Skipped')
             break
+
+    def stow_file(self, file: Path) -> bool:
+        """Transcribe and classify the file, confirm the proposed values at
+        pre-filled prompts, then stow it with its transcript. If the AI step
+        fails, report why and fall back to empty prompts. Return True if the
+        file was stowed, False if a prompt was cancelled."""
+        classifier = ClassifyCommand(self.app, file=str(file))
+        try:
+            classifier.handle_vals()
+            self.app.ui.send('Classifying...', Emphasis.INFO)
+            record = classifier.classify()
+        except CommandCancellation:
+            # Empty answer at the cabinet prompt
+            return False
+        except Filez4EvaError as error:
+            self.app.ui.send(str(error), Emphasis.ERROR)
+            # Keep a cabinet chosen before the failure, so it isn't asked
+            # for again
+            chosen = getattr(classifier, 'chosen', None)
+            command = StowFileCommand(
+                self.app, file=str(file), use_stdin=False,
+                cabinet=chosen.name if chosen else None)
+            command.execute()
+            return bool(command.status)
+        self.app.ui.send(classifier.status, Emphasis.INFO)
+        try:
+            values = confirm_record(self.app, classifier, record)
+        except CommandCancellation:
+            return False
+        command = StowFileCommand(self.app, file=record['file'],
+                                  use_stdin=False, **values)
+        command.execute()
+        return bool(command.status)
 
     def increment_result(self, result):
         self.results[result] = (self.results.get(result) or 0) + 1

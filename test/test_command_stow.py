@@ -8,6 +8,7 @@ from filez4eva import Filez4EvaApp
 from filez4eva.command.stow_file_command import StowFileCommand
 from filez4eva.error import Filez4EvaError
 
+from kwark.ai import APIError
 from wizlib.stream_handler import StreamHandler
 from wizlib.config_handler import ConfigHandler
 from wizlib.test_case import WizLibTestCase
@@ -473,10 +474,14 @@ class TestScanDirIgnoresStdin(WizLibTestCase):
             with patch('filez4eva.command.scan_dir_command.StowFileCommand')\
                     as s, \
                     patch.object(a.ui, 'get_option', return_value='stow'), \
-                    patch.object(a.ui, 'send'):
+                    patch.object(a.ui, 'send'), \
+                    patch('filez4eva.command.transcribe_command.transcribe',
+                          side_effect=APIError('offline')):
                 c.execute()
+            # The AI step fails, so stow-file prompts as before (for the
+            # only cabinet), without reading stdin
             s.assert_called_once_with(a, file=str(Path(source) / 'b.txt'),
-                                      use_stdin=False)
+                                      use_stdin=False, cabinet='default')
 
     def test_use_stdin_false_skips_record(self):
         with TemporaryDirectory() as source, \

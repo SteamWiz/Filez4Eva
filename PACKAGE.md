@@ -73,6 +73,19 @@ This interactive process lets you:
 - Delete a file (d)
 - Quit processing (q)
 
+Stowing a file works like [`process`](#processing-a-file-with-ai): the file
+is transcribed (reusing an up-to-date transcript) and classified, then the
+summary and doctype are shown and the `Date:`, `Account:` and `Part:` prompts
+are pre-filled with the proposed values. Press Enter to accept a value, or
+type a new one. With several cabinets, the cabinet is asked for once, before
+anything is sent to the model.
+
+- If transcription or classification fails (for example, no API key or an
+  unsupported file type), the error is shown and the prompts start empty, as
+  they would without AI.
+- Empty input at any prompt returns to the action choice for the same file,
+  without moving anything.
+
 Transcripts written by `transcribe` are not offered as files of their own:
 `X.md` is skipped when `X` is in the same directory (for example
 `scan.pdf.md` next to `scan.pdf`). A `.md` file with no such companion is
@@ -311,7 +324,7 @@ is more than one cabinet, `stow-file` prompts for one, with tab-completion of
 the names. With only one cabinet it is used without asking. An unknown name
 from the flag or stdin is an error; an unknown name typed at the prompt is
 rejected and the prompt asks again. `scan-dir` asks for a cabinet for each
-file it stows.
+file it stows (once per file, before classifying it).
 
 Tab completion of accounts and parts reads the chosen cabinet's target.
 
