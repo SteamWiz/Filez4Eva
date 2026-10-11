@@ -14,6 +14,7 @@ from wizlib.command import CommandCancellation
 from wizlib.ui.shell_ui import Emphasis
 
 from filez4eva.command import Filez4EvaCommand
+from filez4eva.command.transcribe_command import transcript_path
 from filez4eva.error import Filez4EvaError
 
 
@@ -362,7 +363,24 @@ class StowFileCommand(Filez4EvaCommand):
                 f"Destination {targetpath} is outside target {targetdir}")
         if targetpath.exists():
             raise Filez4EvaError(f"File already exists at {targetpath}")
+        # A transcript (FILE.md) travels with the file, named after it
+        source_transcript = transcript_path(path)
+        target_transcript = None
+        if source_transcript.is_file():
+            target_transcript = transcript_path(targetpath)
+            if target_transcript.exists():
+                raise Filez4EvaError(
+                    f"File already exists at {target_transcript}")
         targetpath.parent.mkdir(parents=True, exist_ok=True)
         path.rename(targetpath)
+        if target_transcript:
+            try:
+                source_transcript.rename(target_transcript)
+            except OSError as error:
+                # Roll back so the file and its transcript stay together
+                targetpath.rename(path)
+                raise Filez4EvaError(
+                    f"Could not move transcript {source_transcript}: "
+                    f"{error}") from error
         self.status = 'Done'
         return str(targetpath)

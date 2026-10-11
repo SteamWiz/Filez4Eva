@@ -77,7 +77,7 @@ Transcripts written by `transcribe` are not offered as files of their own:
 `X.md` is skipped when `X` is in the same directory (for example
 `scan.pdf.md` next to `scan.pdf`). A `.md` file with no such companion is
 offered as usual. Deleting a file also deletes its transcript. Stowing a file
-leaves its transcript where it is.
+moves its transcript with it (see [stow-file](#command-line-options)).
 
 ### Transcribing Files
 
@@ -132,6 +132,11 @@ stow-file command:
 After a successful move, `stow-file` prints the absolute destination path on
 stdout (the `Done` status goes to stderr), so scripts can capture it, e.g.
 `dest=$(filez4eva stow-file -d 20240213 -a acct -p part file.pdf)`.
+
+If the file has a transcript (`FILE.md`, written by `transcribe`), `stow-file`
+moves it alongside the stowed file, named after it: `.../20261002-receipt.pdf`
+gets `.../20261002-receipt.pdf.md`. If a transcript already exists at that
+destination, `stow-file` fails before moving anything.
 
 scan-dir command:
 - `dir`: Optional path to directory to scan (defaults to configured source)
