@@ -271,6 +271,15 @@ class TestStowCommand(WizLibTestCase):
             x = c.get_parts('j')
         self.assertEqual(x, ['c', 't'])
 
+    def test_completion_empty_for_missing_target(self):
+        with TemporaryDirectory() as dir:
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(
+                filez4eva_target=str(Path(dir) / 'missing'))
+            c = StowFileCommand(a)
+            self.assertEqual(c.get_accounts(), [])
+            self.assertEqual(c.get_parts('j'), [])
+
 
 class TestStowFileStdin(WizLibTestCase):
     """stow-file reads date, account and part from a YAML mapping on stdin"""
