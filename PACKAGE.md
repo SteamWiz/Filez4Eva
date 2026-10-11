@@ -134,9 +134,11 @@ stdout (the `Done` status goes to stderr), so scripts can capture it, e.g.
 `dest=$(filez4eva stow-file -d 20240213 -a acct -p part file.pdf)`.
 
 If the file has a transcript (`FILE.md`, written by `transcribe`), `stow-file`
-moves it alongside the stowed file, named after it: `.../20261002-receipt.pdf`
-gets `.../20261002-receipt.pdf.md`. If a transcript already exists at that
-destination, `stow-file` fails before moving anything.
+moves it too, named after the stowed file. By default it goes alongside the
+stowed file: `.../20261002-receipt.pdf` gets `.../20261002-receipt.pdf.md`.
+It can instead go into a separate tree; see
+[Transcript location](#transcript-location). If a transcript already exists at
+its destination, `stow-file` fails before moving anything.
 
 scan-dir command:
 - `dir`: Optional path to directory to scan (defaults to configured source)
@@ -216,6 +218,9 @@ Each cabinet has:
   Defaults to the top-level `pattern` if set, otherwise
   `'{year}/{account}/{date}-{part}{ext}'`
 - `description` (optional): a note on what the cabinet holds
+- `transcripts` (optional): where transcripts of files stowed in this cabinet
+  go, with `location` and `root` keys. Each key defaults to the top-level
+  `transcripts` value; see [Transcript location](#transcript-location)
 
 Choose the cabinet with `--cabinet NAME` (or `-c NAME`), or with a `cabinet`
 key on stdin; the flag wins if both are given. If neither is given and there
@@ -232,8 +237,53 @@ If there is no `cabinets` section (or it is empty), the top-level `target` and
 work unchanged. If `cabinets` is present, the top-level `target` is ignored.
 
 The whole configuration is checked before any prompt: a cabinet with no
-`target`, or with an invalid pattern, is an error even if it isn't the one
-being used.
+`target`, or with an invalid pattern or transcripts setting, is an error even
+if it isn't the one being used.
+
+### Transcript location
+
+When `stow-file` stows a file that has a transcript, the transcript goes
+alongside the stowed file by default. To keep transcripts in a separate tree
+instead:
+
+```yaml
+filez4eva:
+  transcripts:
+    location: tree               # or 'alongside' (the default)
+    root: ~/Dropbox/transcripts
+```
+
+With `location: tree`, the transcript goes to
+`<root>/<cabinet>/<path under the cabinet target>.md`. For example, stowing
+into the `accounts` cabinet at `2026/amazon/20261002-receipt.pdf` puts the
+transcript at `~/Dropbox/transcripts/accounts/2026/amazon/20261002-receipt.pdf.md`.
+Missing directories are created, and the root may be on another filesystem.
+Without a `cabinets` section the single cabinet is named `default`, so
+transcripts go under `<root>/default/`.
+
+A cabinet can override either key with its own `transcripts` block; a key it
+doesn't set falls back to the top-level value:
+
+```yaml
+filez4eva:
+  transcripts:
+    location: tree
+    root: ~/Dropbox/transcripts
+  cabinets:
+    accounts:
+      target: ~/Dropbox/accounts         # transcripts in the tree
+    memories:
+      target: ~/Dropbox/memories
+      transcripts:
+        location: alongside              # transcripts next to the files
+```
+
+A `location` other than `alongside` or `tree`, `tree` without a `root`, or a
+cabinet `transcripts` value that isn't a mapping is a configuration error, and
+`stow-file` exits before prompting or moving anything.
+
+This only affects `stow-file`. `transcribe` and `scan-dir` always write the
+transcript of an incoming file next to it, as `FILE.md`.
 
 ### Transcription settings
 

@@ -4,6 +4,7 @@ from functools import cached_property
 import os
 from pathlib import Path
 import re
+import shutil
 from string import Formatter
 from subprocess import run
 import sys
@@ -104,6 +105,36 @@ def check_pattern(pattern: str):
 # `pattern` keys when no `cabinets` section is configured.
 DEFAULT_CABINET = 'default'
 
+# Where stow-file puts a file's transcript: next to the stowed file
+# ('alongside') or under a separate root that mirrors the cabinet layout
+# ('tree').
+TRANSCRIPT_LOCATIONS = ('alongside', 'tree')
+DEFAULT_TRANSCRIPT_LOCATION = 'alongside'
+
+
+def resolve_transcripts(name: str, block, location=None, root=None) -> tuple:
+    """Return (location, root) for a cabinet. Values in the cabinet's own
+    `transcripts` block win, key by key, over the given top-level values;
+    location defaults to 'alongside'. Raises Filez4EvaError on a block that
+    isn't a mapping, an unknown location, or 'tree' without a root."""
+    if block is not None:
+        if not isinstance(block, dict):
+            raise Filez4EvaError(
+                f"Cabinet {name} transcripts must be a mapping")
+        location = block.get('location') or location
+        root = block.get('root') or root
+    location = location or DEFAULT_TRANSCRIPT_LOCATION
+    if location not in TRANSCRIPT_LOCATIONS:
+        raise Filez4EvaError(
+            f"Cabinet {name} has invalid transcripts location "
+            f"{location!r}; use one of: " + ', '.join(TRANSCRIPT_LOCATIONS))
+    if root is not None and not isinstance(root, str):
+        raise Filez4EvaError(f"Cabinet {name} transcripts root must be text")
+    if location == 'tree' and not (root and root.strip()):
+        raise Filez4EvaError(
+            f"Cabinet {name} transcripts location 'tree' needs a root")
+    return location, root
+
 
 @dataclass(frozen=True)
 class Cabinet:
@@ -113,19 +144,32 @@ class Cabinet:
     target: str
     pattern: str = DEFAULT_PATTERN
     description: str = None
+    transcripts_location: str = DEFAULT_TRANSCRIPT_LOCATION
+    transcripts_root: str = None
 
     @property
     def targetdir(self) -> Path:
         return Path(self.target).expanduser()
+
+    @property
+    def transcripts_rootdir(self) -> Path:
+        """The transcript tree root, expanded, or None if not set"""
+        if not self.transcripts_root:
+            return None
+        return Path(self.transcripts_root).expanduser()
 
 
 def load_cabinets(config) -> dict:
     """Return the configured cabinets as a dict of name -> Cabinet. Without a
     `cabinets` section, the top-level `target` and `pattern` form a single
     cabinet named 'default'. With one, the top-level `target` is ignored and
-    the top-level `pattern` is the default for cabinets that set none. Raises
-    Filez4EvaError on bad configuration, including any invalid pattern."""
+    the top-level `pattern` is the default for cabinets that set none. A
+    cabinet's `transcripts` block likewise overrides the top-level
+    `transcripts` location and root key by key. Raises Filez4EvaError on bad
+    configuration, including any invalid pattern or transcripts setting."""
     pattern = config.get('filez4eva-pattern') or DEFAULT_PATTERN
+    location = config.get('filez4eva-transcripts-location')
+    root = config.get('filez4eva-transcripts-root')
     entries = config.get('filez4eva-cabinets')
     if not entries:
         target = config.get('filez4eva-target')
@@ -133,8 +177,10 @@ def load_cabinets(config) -> dict:
             raise Filez4EvaError(
                 "No target configured: set filez4eva target or cabinets")
         check_pattern(pattern)
+        transcripts = resolve_transcripts(DEFAULT_CABINET, None, location,
+                                          root)
         return {DEFAULT_CABINET: Cabinet(DEFAULT_CABINET, str(target),
-                                         pattern)}
+                                         pattern, None, *transcripts)}
     if not isinstance(entries, dict):
         raise Filez4EvaError(
             "filez4eva cabinets must be a mapping of name to settings")
@@ -156,7 +202,10 @@ def load_cabinets(config) -> dict:
                 f"Cabinet {name} description must be text")
         cabinet_pattern = entry.get('pattern') or pattern
         check_pattern(cabinet_pattern)
-        cabinets[name] = Cabinet(name, target, cabinet_pattern, description)
+        transcripts = resolve_transcripts(name, entry.get('transcripts'),
+                                          location, root)
+        cabinets[name] = Cabinet(name, target, cabinet_pattern, description,
+                                 *transcripts)
     return cabinets
 
 
@@ -339,6 +388,28 @@ class StowFileCommand(Filez4EvaCommand):
     def pattern(self) -> str:
         return self.resolve_cabinet().pattern
 
+    def target_transcript(self, relative: str, targetpath: Path) -> Path:
+        """Return where the stowed file's transcript goes. 'alongside' puts
+        it next to the stowed file; 'tree' puts it at
+        <root>/<cabinet>/<relative>.md, where relative is the stowed file's
+        path under the cabinet target."""
+        cabinet = self.resolve_cabinet()
+        if cabinet.transcripts_location != 'tree':
+            return transcript_path(targetpath)
+        base = cabinet.transcripts_rootdir.absolute() / cabinet.name
+        result = base / (str(Path(relative)) + '.md')
+        # Checked lexically, like the target, in case of odd cabinet names
+        root = os.path.normpath(cabinet.transcripts_rootdir.absolute())
+        base_norm = os.path.normpath(base)
+        dest = os.path.normpath(result)
+        if os.path.commonpath([root, base_norm]) != root \
+                or base_norm == root \
+                or os.path.commonpath([base_norm, dest]) != base_norm \
+                or dest == base_norm:
+            raise Filez4EvaError(
+                f"Transcript destination {result} is outside {base}")
+        return result
+
     @Filez4EvaCommand.wrap
     def execute(self):
         pattern = self.pattern
@@ -367,7 +438,7 @@ class StowFileCommand(Filez4EvaCommand):
         source_transcript = transcript_path(path)
         target_transcript = None
         if source_transcript.is_file():
-            target_transcript = transcript_path(targetpath)
+            target_transcript = self.target_transcript(relative, targetpath)
             if target_transcript.exists():
                 raise Filez4EvaError(
                     f"File already exists at {target_transcript}")
@@ -375,9 +446,17 @@ class StowFileCommand(Filez4EvaCommand):
         path.rename(targetpath)
         if target_transcript:
             try:
-                source_transcript.rename(target_transcript)
+                target_transcript.parent.mkdir(parents=True, exist_ok=True)
+                # shutil.move copes with a transcript root on another
+                # filesystem, where a rename would fail
+                shutil.move(source_transcript, target_transcript)
             except OSError as error:
-                # Roll back so the file and its transcript stay together
+                # Roll back so the file and its transcript stay together.
+                # A failed cross-filesystem move can leave a partial copy;
+                # nothing was at the destination before, so remove it.
+                if source_transcript.is_file() and \
+                        target_transcript.is_file():
+                    target_transcript.unlink()
                 targetpath.rename(path)
                 raise Filez4EvaError(
                     f"Could not move transcript {source_transcript}: "
