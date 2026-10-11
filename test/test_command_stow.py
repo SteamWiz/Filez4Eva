@@ -1405,6 +1405,60 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
                           str(cm.exception))
             self.assertEqual(self.files(target), [])
 
+    def test_empty_top_transcripts_from_app_is_adjacent(self):
+        with TemporaryDirectory() as target:
+            left = self.run_app(f"  target: {target}\n"
+                                f"  transcripts:\n"
+                                f"    # location: parallel\n")
+            self.assertEqual(left, [])
+            self.assertEqual(self.files(target),
+                             ['2026/acct/20261002-part.pdf',
+                              '2026/acct/20261002-part.pdf.md'])
+
+    def test_empty_top_transcripts_with_env_location(self):
+        with TemporaryDirectory() as target, TemporaryDirectory() as root, \
+                patch.dict('os.environ',
+                           {'FILEZ4EVA_TRANSCRIPTS_LOCATION': 'parallel',
+                            'FILEZ4EVA_TRANSCRIPTS_ROOT': root}):
+            self.run_app(f"  target: {target}\n"
+                         f"  transcripts:\n")
+            self.assertEqual(self.files(target),
+                             ['2026/acct/20261002-part.pdf'])
+            self.assertEqual(self.files(root),
+                             ['default/2026/acct/20261002-part.pdf.md'])
+
+    def test_falsy_top_location_raises(self):
+        self.assert_config_rejected(
+            "Top-level filez4eva has invalid transcripts location False",
+            filez4eva_target='/x', filez4eva_transcripts_location=False,
+            filez4eva_transcripts_root='/t')
+
+    def test_falsy_top_location_from_app_raises(self):
+        with TemporaryDirectory() as target:
+            with self.assertRaises(Filez4EvaError) as cm:
+                self.run_app(f"  target: {target}\n"
+                             f"  transcripts:\n"
+                             f"    location: no\n"
+                             f"    root: tr\n")
+            self.assertIn("invalid transcripts location False",
+                          str(cm.exception))
+            self.assertEqual(self.files(target), [])
+
+    def test_falsy_cabinet_location_raises(self):
+        self.assert_config_rejected(
+            "Cabinet a has invalid transcripts location 0",
+            filez4eva_cabinets={
+                'a': {'target': '/a', 'transcripts': {'location': 0}}})
+
+    def test_empty_string_location_is_unset(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(
+            filez4eva_transcripts_location='',
+            filez4eva_cabinets={
+                'a': {'target': '/a', 'transcripts': {'location': ''}}})
+        cabinet = StowFileCommand(app).cabinets['a']
+        self.assertEqual(cabinet.transcripts_location, 'adjacent')
+
     def test_invalid_cabinet_location_raises(self):
         self.assert_config_rejected(
             "Cabinet b has invalid transcripts location 'nowhere'",

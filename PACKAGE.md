@@ -282,7 +282,9 @@ A `location` other than `adjacent` or `parallel`, `parallel` without a
 `root`, or a `transcripts` value (top-level or in a cabinet) that isn't a
 mapping is a configuration error, and `stow-file` exits before prompting or
 moving anything. An error in a top-level setting names the top level rather
-than a cabinet.
+than a cabinet. An empty `transcripts:` block, or an empty `location`, counts
+as unset, but other values such as `no` or `0` are rejected as invalid
+locations.
 
 This only affects `stow-file`. `transcribe` and `scan-dir` always write the
 transcript of an incoming file next to it, as `FILE.md`.

@@ -124,15 +124,32 @@ def check_transcripts(owner: str, location, root):
         raise Filez4EvaError(f"{owner} transcripts root must be text")
 
 
+def blank_to_none(value):
+    """Treat an empty string as unset. Other falsy values (False, 0) are
+    kept so that validation rejects them."""
+    return None if value == '' else value
+
+
+def get_top_transcripts_value(config, key: str):
+    """Return filez4eva-transcripts-<key>, or None if unset. An empty (null)
+    `transcripts:` block makes wizlib's nested lookup walk into None and
+    raise TypeError; that means the key is unset (environment variables are
+    checked before the walk, so they still apply)."""
+    try:
+        return config.get(f'filez4eva-transcripts-{key}')
+    except TypeError:
+        return None
+
+
 def load_top_transcripts(config) -> tuple:
     """Return the top-level (location, root), either of which may be None.
-    Raises Filez4EvaError if `transcripts` isn't a mapping or holds an
-    invalid value."""
+    An empty `transcripts:` block counts as unset. Raises Filez4EvaError if
+    `transcripts` isn't a mapping or holds an invalid value."""
     block = config.get('filez4eva-transcripts')
     if block is not None and not isinstance(block, dict):
         raise Filez4EvaError("filez4eva transcripts must be a mapping")
-    location = config.get('filez4eva-transcripts-location') or None
-    root = config.get('filez4eva-transcripts-root')
+    location = blank_to_none(get_top_transcripts_value(config, 'location'))
+    root = get_top_transcripts_value(config, 'root')
     check_transcripts('Top-level filez4eva', location, root)
     return location, root
 
@@ -148,10 +165,12 @@ def resolve_transcripts(name: str, block, location=None, root=None) -> tuple:
         if not isinstance(block, dict):
             raise Filez4EvaError(
                 f"Cabinet {name} transcripts must be a mapping")
-        own_location = block.get('location') or None
+        own_location = blank_to_none(block.get('location'))
         own_root = block.get('root')
         check_transcripts(f"Cabinet {name}", own_location, own_root)
-    location = own_location or location or DEFAULT_TRANSCRIPT_LOCATION
+    if own_location is not None:
+        location = own_location
+    location = location or DEFAULT_TRANSCRIPT_LOCATION
     root = own_root or root
     if location == 'parallel' and not (root and root.strip()):
         if own_location is None and own_root is None:
