@@ -1,4 +1,3 @@
-from datetime import datetime
 from pathlib import Path
 import re
 
@@ -9,7 +8,7 @@ from wizlib.parser import WizParser
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command.stow_file_command import (
     Cabinet, StowFileCommand, check_account, check_part, list_accounts,
-    list_parts)
+    list_parts, valid_date)
 from filez4eva.command.transcribe_command import (
     FRONT_MATTER_DELIMITER, TranscribeCommand)
 from filez4eva.error import Filez4EvaError
@@ -24,8 +23,6 @@ OTHER_DESCRIPTION = "Anything that doesn't fit the other types"
 
 # Doctype names are single words (hyphens and underscores allowed)
 DOCTYPE_PATTERN = re.compile(r'[A-Za-z0-9_-]+')
-
-DATE_PATTERN = re.compile(r'\d{8}')
 
 # Order of the keys in the printed record
 RECORD_KEYS = ['file', 'transcript', 'cabinet', 'date', 'account', 'part',
@@ -152,14 +149,10 @@ def check_result(result, doctypes) -> dict:
                 f"Classification failed: no {key} in result")
         values[key] = value.strip()
     date = values['date']
-    try:
-        if not DATE_PATTERN.fullmatch(date):
-            raise ValueError
-        datetime.strptime(date, '%Y%m%d')
-    except ValueError:
+    if not valid_date(date):
         raise Filez4EvaError(
             f"Classification failed: date must match format YYYYMMDD: "
-            f"{date!r}") from None
+            f"{date!r}")
     check_account(values['account'])
     check_part(values['part'])
     if values['doctype'] not in doctypes:
@@ -191,6 +184,9 @@ class ClassifyCommand(Filez4EvaCommand):
         self.stow = StowFileCommand(self.app, cabinet=self.cabinet,
                                     use_stdin=False)
         self.stow.cabinets
+        # True if the cabinet is about to be chosen at a prompt
+        self.cabinet_prompted = not self.stow.provided('cabinet') \
+            and len(self.stow.cabinets) > 1
         self.chosen = self.stow.resolve_cabinet()
 
     @property
@@ -217,8 +213,10 @@ class ClassifyCommand(Filez4EvaCommand):
         return {account: list_parts(targetdir, pattern, account)
                 for account in list_accounts(targetdir, pattern)}
 
-    @Filez4EvaCommand.wrap
-    def execute(self):
+    def classify(self) -> dict:
+        """Transcribe the file if needed, then classify it. Return the
+        record (keys in RECORD_KEYS order) and set the status. Call
+        handle_vals first."""
         path = Path(self.file).expanduser().absolute()
         if not path.is_file():
             raise Filez4EvaError(f"File {path} must exist")
@@ -246,6 +244,11 @@ class ClassifyCommand(Filez4EvaCommand):
         statuses = [transcriber.status] \
             if transcriber.status == 'Transcribed' else []
         self.status = ' | '.join(statuses + ['Classified'])
+        return record
+
+    @Filez4EvaCommand.wrap
+    def execute(self):
+        record = self.classify()
         return yaml.safe_dump(record, sort_keys=False, allow_unicode=True,
                               default_flow_style=False,
                               width=float('inf')).rstrip('\n')

@@ -161,6 +161,35 @@ the other keys:
 filez4eva classify ~/Desktop/scan.pdf | filez4eva stow-file ~/Desktop/scan.pdf
 ```
 
+### Processing a File with AI
+
+To transcribe, classify, confirm and stow a file in one go:
+
+```bash
+filez4eva process ~/Desktop/scan.pdf
+```
+
+`process`:
+1. transcribes the file if needed (as `transcribe` does, reusing an
+   up-to-date transcript)
+2. classifies it (as `classify` does)
+3. shows the summary and doctype, then prompts for `Cabinet:` (only if
+   several cabinets are configured and it wasn't just chosen), `Date:`,
+   `Account:` and `Part:`, each pre-filled with the proposed value. Press
+   Enter to accept it, or type a new value (backspace clears the pre-filled
+   value first). Tab completion works as for `stow-file`.
+4. stows the file and its transcript, exactly as `stow-file` does, and prints
+   the destination path on stdout
+
+- Confirmation is always interactive.
+- Empty input at any prompt cancels without moving anything. An invalid value
+  is rejected and the prompt asks again.
+- The cabinet is chosen as for `classify` (`--cabinet NAME`, the only
+  cabinet, or a prompt) before anything is sent to the model, and the whole
+  configuration is checked first.
+- `--dry-run` transcribes, classifies and prompts as usual, then prints where
+  the file (and its transcript) would go, without moving anything.
+
 ### Command Line Options
 
 Global options:
@@ -195,6 +224,11 @@ transcribe command:
 classify command:
 - `--cabinet, -c NAME`: Specify the cabinet to classify for
 - `file`: Path to the file to classify
+
+process command:
+- `--cabinet, -c NAME`: Specify the cabinet to classify for and stow into
+- `--dry-run`: Show where the file would go without moving anything
+- `file`: Path to the file to process
 
 ## Configuration
 
