@@ -25,6 +25,8 @@ FILE_PATTERN = re.compile(r'\d{8}\-([a-zA-Z0-9-]+)\.(\w+)')
 # ignored.
 STDIN_KEYS = ['cabinet', 'date', 'account', 'part']
 
+DATE_PATTERN = re.compile(r'\d{8}')
+
 # A part becomes part of the filename, so it must match FILE_PATTERN.
 PART_PATTERN = re.compile(r'[a-zA-Z0-9-]+')
 
@@ -51,12 +53,24 @@ PATTERN_RULE = ('Pattern may only use the placeholders '
 
 ACCOUNT_RULE = 'Account must be a single directory name'
 PART_RULE = 'Part must contain only letters, digits and hyphens'
+DATE_RULE = 'Date must match format YYYYMMDD'
 
 
 def valid_account(account: str) -> bool:
     """True if account is one safe path segment"""
     return not (not account or account in ('.', '..') or '/' in account
                 or '\\' in account or '\0' in account)
+
+
+def valid_date(date: str) -> bool:
+    """True if date is a real date written as YYYYMMDD"""
+    if not DATE_PATTERN.fullmatch(date or ''):
+        return False
+    try:
+        datetime.strptime(date, '%Y%m%d')
+    except ValueError:
+        return False
+    return True
 
 
 def valid_part(part: str) -> bool:
@@ -328,8 +342,7 @@ class StowFileCommand(Filez4EvaCommand):
                     datetime.strptime(self.date, "%Y%m%d")
                     break
                 except ValueError:
-                    self.app.ui.send('Date must match format YYYYMMDD',
-                                     Emphasis.PRINCIPAL)
+                    self.app.ui.send(DATE_RULE, Emphasis.PRINCIPAL)
         if not self.provided('account'):
             accounts = self.get_accounts()
             self.account = self.prompt_value(
@@ -339,12 +352,16 @@ class StowFileCommand(Filez4EvaCommand):
             self.part = self.prompt_value(
                 'Part', parts, valid_part, PART_RULE)
 
-    def prompt_value(self, label: str, choices: list, valid, rule: str):
+    def prompt_value(self, label: str, choices: list, valid, rule: str,
+                     default: str = ''):
         """Prompt until a valid value is entered; cancel on an empty one.
         Re-asking (rather than raising) keeps a typo from ending a scan-dir
-        session."""
+        session. A default is shown pre-filled, so Enter accepts it."""
+        # Only pass a default when there is one, so callers without one see
+        # the same get_text call as before
+        extra = (default,) if default else ()
         while True:
-            value = self.app.ui.get_text(f'{label}: ', choices)
+            value = self.app.ui.get_text(f'{label}: ', choices, *extra)
             if not value:
                 self.app.ui.send(f'{label} required', Emphasis.PRINCIPAL)
                 raise CommandCancellation()
@@ -467,8 +484,13 @@ class StowFileCommand(Filez4EvaCommand):
                 f"Transcript destination {result} is outside {base}")
         return result
 
-    @Filez4EvaCommand.wrap
-    def execute(self):
+    def plan(self) -> tuple:
+        """Work out where the file (and its transcript, if any) would go,
+        without moving anything. Return (source, targetpath,
+        source_transcript, target_transcript); the transcript paths are None
+        if the file has no transcript. Raises Filez4EvaError if the file is
+        missing, a value is invalid, a destination is outside its tree, or
+        something already exists at a destination."""
         pattern = self.pattern
         check_pattern(pattern)
         path = Path(self.file).expanduser().absolute()
@@ -499,6 +521,13 @@ class StowFileCommand(Filez4EvaCommand):
             if target_transcript.exists():
                 raise Filez4EvaError(
                     f"File already exists at {target_transcript}")
+        else:
+            source_transcript = None
+        return path, targetpath, source_transcript, target_transcript
+
+    @Filez4EvaCommand.wrap
+    def execute(self):
+        path, targetpath, source_transcript, target_transcript = self.plan()
         targetpath.parent.mkdir(parents=True, exist_ok=True)
         path.rename(targetpath)
         if target_transcript:
