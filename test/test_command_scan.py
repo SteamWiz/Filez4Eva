@@ -286,4 +286,4 @@ class TestCommandScan(WizLibTestCase):
         c, remaining, out = self._run_scan(
             ['b.txt', 'b.txt.md'], 's20240213\nj\nt\n')
         self.assertEqual(c.status, 'Stowed 1 file')
-        self.assertEqual(remaining, ['b.txt.md'])
+        self.assertEqual(remaining, [])

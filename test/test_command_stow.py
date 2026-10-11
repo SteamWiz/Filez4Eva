@@ -1015,3 +1015,85 @@ class TestStowFileCabinets(WizLibTestCase):
         self.assert_config_rejected(
             {'a': {'target': '/a'},
              'b': {'target': '/b', 'pattern': '{foo}{ext}'}}, '{foo}')
+
+
+class TestStowFileTranscript(WizLibTestCase):
+    """A transcript (FILE.md) is moved with the file, named after it"""
+
+    def command(self, source, target):
+        n = Path(source) / 'b.txt'
+        n.write_text('a')
+        a = Filez4EvaApp()
+        a.config = ConfigHandler.fake(filez4eva_target=target)
+        c = StowFileCommand(a, file=str(n), date='20240213', account='j',
+                            part='t', use_stdin=False)
+        return n, c
+
+    def test_transcript_moved_and_renamed(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            n, c = self.command(source, target)
+            t = Path(source) / 'b.txt.md'
+            t.write_text('# transcript')
+            with self.patchout():
+                r = c.execute()
+            dest = Path(target) / '2024/j/20240213-t.txt'
+            self.assertEqual(Path(r), dest)
+            self.assertEqual(dest.read_text(), 'a')
+            self.assertEqual(Path(str(dest) + '.md').read_text(),
+                             '# transcript')
+            self.assertFalse(n.exists())
+            self.assertFalse(t.exists())
+
+    def test_no_transcript_unchanged(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            n, c = self.command(source, target)
+            with self.patchout():
+                r = c.execute()
+            dest = Path(target) / '2024/j/20240213-t.txt'
+            self.assertEqual(Path(r), dest)
+            files = sorted(str(p.relative_to(target))
+                           for p in Path(target).rglob('*') if p.is_file())
+            self.assertEqual(files, ['2024/j/20240213-t.txt'])
+            self.assertEqual(list(Path(source).iterdir()), [])
+
+    def test_transcript_collision_moves_nothing(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            n, c = self.command(source, target)
+            t = Path(source) / 'b.txt.md'
+            t.write_text('# new')
+            dest = Path(target) / '2024/j/20240213-t.txt'
+            dest_t = Path(str(dest) + '.md')
+            dest_t.parent.mkdir(parents=True)
+            dest_t.write_text('# existing')
+            with self.patchout(), \
+                    self.assertRaises(Filez4EvaError) as cm:
+                c.execute()
+            self.assertIn(str(dest_t), str(cm.exception))
+            self.assertEqual(n.read_text(), 'a')
+            self.assertEqual(t.read_text(), '# new')
+            self.assertFalse(dest.exists())
+            self.assertEqual(dest_t.read_text(), '# existing')
+
+    def test_transcript_move_failure_rolls_back(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target:
+            n, c = self.command(source, target)
+            t = Path(source) / 'b.txt.md'
+            t.write_text('# transcript')
+            real_rename = Path.rename
+
+            def rename(self, other):
+                if self.name.endswith('.md'):
+                    raise OSError('boom')
+                return real_rename(self, other)
+            with self.patchout(), \
+                    patch.object(Path, 'rename', rename), \
+                    self.assertRaises(Filez4EvaError):
+                c.execute()
+            self.assertEqual(n.read_text(), 'a')
+            self.assertEqual(t.read_text(), '# transcript')
+            self.assertFalse(
+                (Path(target) / '2024/j/20240213-t.txt').exists())
