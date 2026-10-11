@@ -186,11 +186,10 @@ class ClassifyCommand(Filez4EvaCommand):
     def handle_vals(self):
         super().handle_vals()
         # Check all the configuration (and choose the cabinet) before any
-        # call to Claude
+        # call to the model
         self.doctypes = load_doctypes(self.app.config)
         self.stow = StowFileCommand(self.app, cabinet=self.cabinet,
                                     use_stdin=False)
-        self.stow.cabinets
         self.chosen = self.stow.resolve_cabinet()
 
     @property
@@ -203,12 +202,6 @@ class ClassifyCommand(Filez4EvaCommand):
         except TypeError:
             model = None
         return model or DEFAULT_MODEL
-
-    @property
-    def api_key(self):
-        """Key from `filez4eva: anthropic: key:`, or None for the SDK
-        default"""
-        return self.app.config.get('filez4eva-anthropic-key') or None
 
     def vocabulary(self) -> dict:
         """Existing accounts in the cabinet, each with its existing parts"""

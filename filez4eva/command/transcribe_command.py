@@ -91,8 +91,8 @@ def write_atomically(path: Path, content: str):
 
 
 class TranscribeCommand(Filez4EvaCommand):
-    """Transcribe a file to Markdown with Claude, writing FILE.md next to
-    FILE"""
+    """Transcribe a file to Markdown using an AI model, writing FILE.md next
+    to FILE"""
 
     name = 'transcribe'
 
@@ -109,13 +109,6 @@ class TranscribeCommand(Filez4EvaCommand):
         """Model from `filez4eva: transcribe: model:`, or the default"""
         return self.app.config.get('filez4eva-transcribe-model') \
             or DEFAULT_MODEL
-
-    @property
-    def api_key(self):
-        """Key from `filez4eva: anthropic: key:` (or the
-        FILEZ4EVA_ANTHROPIC_KEY environment variable). None if unset, so the
-        Anthropic SDK falls back to ANTHROPIC_API_KEY."""
-        return self.app.config.get('filez4eva-anthropic-key') or None
 
     @Filez4EvaCommand.wrap
     def execute(self):
