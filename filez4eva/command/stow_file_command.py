@@ -206,9 +206,6 @@ class Cabinet:
     description: str = None
     transcripts_location: str = DEFAULT_TRANSCRIPT_LOCATION
     transcripts_root: str = None
-    # Guidance for the model on what counts as a document's date in this
-    # cabinet, or None
-    date: str = None
 
     @property
     def targetdir(self) -> Path:
@@ -228,8 +225,7 @@ def load_cabinets(config) -> dict:
     cabinet named 'default'. With one, the top-level `target` is ignored and
     the top-level `pattern` is the default for cabinets that set none. A
     cabinet's `transcripts` block likewise overrides the top-level
-    `transcripts` location and root key by key. A cabinet may also give
-    `date` guidance for classification. Raises Filez4EvaError on bad
+    `transcripts` location and root key by key. Raises Filez4EvaError on bad
     configuration, including any invalid pattern or transcripts setting."""
     pattern = config.get('filez4eva-pattern') or DEFAULT_PATTERN
     location, root = load_top_transcripts(config)
@@ -263,15 +259,12 @@ def load_cabinets(config) -> dict:
         if description is not None and not isinstance(description, str):
             raise Filez4EvaError(
                 f"Cabinet {name} description must be text")
-        date = entry.get('date')
-        if date is not None and not isinstance(date, str):
-            raise Filez4EvaError(f"Cabinet {name} date must be text")
         cabinet_pattern = entry.get('pattern') or pattern
         check_pattern(cabinet_pattern)
         transcripts = resolve_transcripts(name, entry.get('transcripts'),
                                           location, root)
         cabinets[name] = Cabinet(name, target, cabinet_pattern, description,
-                                 *transcripts, date=date or None)
+                                 *transcripts)
     return cabinets
 
 

@@ -106,9 +106,6 @@ def build_instructions(cabinet: Cabinet, vocabulary: dict,
     if cabinet.description:
         cabinet_text += f': {cabinet.description.strip()}'
     sections.append(cabinet_text)
-    if cabinet.date and cabinet.date.strip():
-        sections.append(f'For this cabinet, the date is: '
-                        f'{cabinet.date.strip()}')
     if vocabulary:
         lines = ['Existing accounts, each with its existing parts. Reuse an '
                  'existing account and part when they fit; only make up a '

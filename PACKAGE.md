@@ -160,8 +160,7 @@ summary: Amazon.ca order receipt for a USB hub
 - `doctype` is one of the configured [doctypes](#classification-settings),
   or `other`.
 - `summary` is a single line.
-- The model is told the cabinet's `description` and `date` guidance, the
-  accounts already in the
+- The model is told the cabinet's `description`, the accounts already in the
   cabinet with the parts already used for each (the same ones offered by
   tab completion, so only with the default pattern), and asked to reuse them
   when they fit. It is also given the doctype names and descriptions.
@@ -312,11 +311,9 @@ filez4eva:
       target: ~/Dropbox/accounts
       pattern: '{year}/{account}/{date}-{part}{ext}'
       description: Personal account records
-      date: The date of the invoice or statement
     memories:
       target: ~/Dropbox/memories
       pattern: '{account}/{year}/{part}-{date}{ext}'
-      date: The date already in the photo's filename, if any
 ```
 
 Each cabinet has:
@@ -325,9 +322,6 @@ Each cabinet has:
   Defaults to the top-level `pattern` if set, otherwise
   `'{year}/{account}/{date}-{part}{ext}'`
 - `description` (optional): a note on what the cabinet holds
-- `date` (optional): what counts as a document's date in this cabinet. It is
-  passed to the model by `classify` (and so `process` and `scan-dir`) as
-  "For this cabinet, the date is: ...". It must be text
 - `transcripts` (optional): where transcripts of files stowed in this cabinet
   go, with `location` and `root` keys. Each key defaults to the top-level
   `transcripts` value; see [Transcript location](#transcript-location)
@@ -347,8 +341,8 @@ If there is no `cabinets` section (or it is empty), the top-level `target` and
 work unchanged. If `cabinets` is present, the top-level `target` is ignored.
 
 The whole configuration is checked before any prompt: a cabinet with no
-`target`, a `description` or `date` that isn't text, or an invalid pattern or
-transcripts setting, is an error even if it isn't the one being used.
+`target`, or with an invalid pattern or transcripts setting, is an error even
+if it isn't the one being used.
 
 ### Transcript location
 

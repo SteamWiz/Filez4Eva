@@ -418,43 +418,6 @@ class TestClassifyCommand(WizLibTestCase):
         self.assertIn('return an empty string', text)
         self.assertIn("do not use today's date", text)
 
-    # Cabinet date guidance
-
-    def test_cabinet_date_in_instructions(self):
-        config = (f"filez4eva:\n"
-                  f"  cabinets:\n"
-                  f"    memories:\n"
-                  f"      target: {self.target}\n"
-                  f"      date: '  The date in the photo filename  '\n")
-        _, _, e = self.run_app(config, result=dict(RESULT, doctype='other'))
-        text = e.call_args.kwargs['instructions']
-        self.assertIn(
-            'For this cabinet, the date is: The date in the photo filename',
-            text)
-
-    def test_no_cabinet_date_in_instructions(self):
-        for date in ['', "'  '"]:
-            config = (f"filez4eva:\n"
-                      f"  cabinets:\n"
-                      f"    memories:\n"
-                      f"      target: {self.target}\n"
-                      f"      date: {date}\n")
-            with self.subTest(date=date):
-                _, _, e = self.run_app(config,
-                                       result=dict(RESULT, doctype='other'))
-                self.assertNotIn('For this cabinet',
-                                 e.call_args.kwargs['instructions'])
-
-    def test_cabinet_date_must_be_text(self):
-        for date in [5, ['a'], {'x': 'y'}, True]:
-            config = self.config(filez4eva_cabinets={
-                'memories': {'target': str(self.target), 'date': date}})
-            with self.subTest(date=date), \
-                    self.assertRaises(Filez4EvaError) as raised:
-                self.run_command(config)
-            self.assertIn('Cabinet memories date must be text',
-                          str(raised.exception))
-
 
 class TestClassifyPipe(WizLibTestCase):
     """classify's output can be piped into stow-file"""
