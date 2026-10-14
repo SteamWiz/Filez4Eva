@@ -9,7 +9,8 @@ from filez4eva.command.stow_file_command import (
 
 def confirm_record(app, classifier: ClassifyCommand, record: dict) -> dict:
     """Show the summary and doctype, then prompt for each value, pre-filled
-    with the proposed one. Return the confirmed cabinet, date, account and
+    with the proposed one (the Date prompt starts empty if the record has
+    no date). Return the confirmed cabinet, date, account and
     part. An empty answer raises CommandCancellation. classifier is the
     ClassifyCommand that produced the record."""
     app.ui.send(f"Summary: {record['summary']}")
@@ -25,7 +26,7 @@ def confirm_record(app, classifier: ClassifyCommand, record: dict) -> dict:
             'Cabinet must be one of: ' + ', '.join(names), cabinet)
         stow.cabinet = cabinet
     date = stow.prompt_value('Date', [], valid_date, DATE_RULE,
-                             record['date'])
+                             record['date'] or '')
     account = stow.prompt_value('Account', stow.get_accounts(),
                                 valid_account, ACCOUNT_RULE,
                                 record['account'])

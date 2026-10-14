@@ -243,3 +243,37 @@ class TestProcessCommand(WizLibTestCase):
             ProcessCommand(app, file=str(self.source),
                            cabinet='nope').execute()
         t.assert_not_called()
+
+    def test_no_date_prompt_starts_empty(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(filez4eva_target=str(self.target))
+        command = ProcessCommand(app, file=str(self.source))
+        answers = iter(['20261002', 'amazon', 'receipt'])
+        result = dict(RESULT, doctype='other', date='<UNKNOWN>')
+        with patch(EXTRACT, return_value=result), \
+                patch(TRANSCRIBE, return_value='# Receipt'), \
+                patch.object(app.ui, 'get_text',
+                             side_effect=lambda *a: next(answers)) as gt, \
+                self.patchout(), self.patcherr():
+            out = command.execute()
+        self.assertEqual([c.args for c in gt.call_args_list], [
+            ('Date: ', []),
+            ('Account: ', ['amazon'], 'amazon'),
+            ('Part: ', ['refund'], 'receipt')])
+        self.assertEqual(out, str(self.stowed))
+        self.assertTrue(self.stowed.is_file())
+
+    def test_no_date_typed_at_prompt(self):
+        out, err, _, _ = self.run_app(self.config(), ttyin='20250704\n\n\n',
+                                      result=dict(RESULT, date=''))
+        stowed = self.target / '2025/amazon/20250704-receipt.pdf'
+        self.assertEqual(out.strip(), str(stowed))
+        self.assertTrue(stowed.is_file())
+        self.assertNotIn('Classification failed', err)
+
+    def test_no_date_empty_answer_cancels(self):
+        out, err, _, _ = self.run_app(self.config(), ttyin='\n',
+                                      result=dict(RESULT, date='<UNKNOWN>'))
+        self.assertEqual(out.strip(), '')
+        self.assertIn('Date required', err)
+        self.assert_not_moved()

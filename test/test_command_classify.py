@@ -213,7 +213,7 @@ class TestClassifyCommand(WizLibTestCase):
         props = schema['properties']
         for key in props:
             self.assertEqual(props[key]['type'], 'string')
-        self.assertEqual(props['date']['pattern'], r'^\d{8}$')
+        self.assertEqual(props['date']['pattern'], r'^(\d{8})?$')
         self.assertEqual(props['part']['pattern'], r'^[a-zA-Z0-9-]+$')
         self.assertEqual(props['doctype']['enum'],
                          ['receipt', 'bill', 'other'])
@@ -364,16 +364,59 @@ class TestClassifyCommand(WizLibTestCase):
         self.assertIsInstance(raised.exception.__cause__, APIError)
 
     def test_invalid_results_rejected(self):
-        bad = [None, dict(RESULT, date='2026-10-02'),
-               dict(RESULT, date='20261302'), dict(RESULT, account='../x'),
+        bad = [None, dict(RESULT, account='../x'),
                dict(RESULT, part='a b'), dict(RESULT, doctype='bill'),
-               dict(RESULT, summary=''), dict(RESULT, date=20261002),
-               {k: v for k, v in RESULT.items() if k != 'part'}]
+               dict(RESULT, summary=''), dict(RESULT, account=''),
+               {k: v for k, v in RESULT.items() if k != 'part'},
+               dict(RESULT, date='<UNKNOWN>', part='a b')]
         for result in bad:
             with self.subTest(result=result), \
                     self.assertRaises(Filez4EvaError):
                 self.run_command(self.config(
                     filez4eva_doctypes={'receipt': None}), result=result)
+
+    # Documents without a date of their own
+
+    def test_no_date_gives_null(self):
+        without = {k: v for k, v in RESULT.items() if k != 'date'}
+        for result in [dict(RESULT, date='<UNKNOWN>'), dict(RESULT, date=''),
+                       dict(RESULT, date='  '), dict(RESULT, date=None),
+                       without, dict(RESULT, date='2026-10-02'),
+                       dict(RESULT, date='20261302'),
+                       dict(RESULT, date=20261002)]:
+            with self.subTest(result=result):
+                out, command, _, _ = self.run_command(
+                    self.config(filez4eva_doctypes={'receipt': None}),
+                    result=result)
+                record = yaml.safe_load(out)
+                self.assertIsNone(record['date'])
+                self.assertIn('\ndate: null\n', out)
+                self.assertEqual(record['account'], 'amazon')
+                self.assertEqual(list(record), [
+                    'file', 'transcript', 'cabinet', 'date', 'account',
+                    'part', 'doctype', 'summary'])
+                self.assertTrue(command.status.endswith('Classified'))
+
+    def test_no_date_record_from_classify(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(**self.config())
+        command = ClassifyCommand(app, file=str(self.source))
+        command.handle_vals()
+        with patch(EXTRACT, return_value=dict(RESULT, date='<UNKNOWN>')), \
+                patch(TRANSCRIBE, return_value='# Hi'):
+            record = command.classify()
+        self.assertIsNone(record['date'])
+
+    def test_date_padded_with_spaces(self):
+        out, _, _, _ = self.run_command(
+            result=dict(RESULT, date=' 20261002 '))
+        self.assertEqual(yaml.safe_load(out)['date'], '20261002')
+
+    def test_instructions_allow_empty_date(self):
+        _, _, e, _ = self.run_command()
+        text = e.call_args.kwargs['instructions']
+        self.assertIn('return an empty string', text)
+        self.assertIn("do not use today's date", text)
 
 
 class TestClassifyPipe(WizLibTestCase):
@@ -407,3 +450,37 @@ class TestClassifyPipe(WizLibTestCase):
             self.assertTrue(stowed.is_file())
             self.assertTrue(Path(str(stowed) + '.md').is_file())
             self.assertFalse(source.exists())
+
+    def test_pipe_without_date_prompts_for_it(self):
+        with TemporaryDirectory() as d:
+            dir = Path(d)
+            target = dir / 'target'
+            source = dir / 'scan.pdf'
+            source.write_bytes(b'%PDF')
+            with NamedTemporaryFile('w+', suffix='.yml') as cf:
+                cf.write(f"filez4eva:\n  target: {target}\n"
+                         "  doctypes:\n    receipt:\n")
+                cf.flush()
+                with patch(EXTRACT,
+                           return_value=dict(RESULT, date='<UNKNOWN>')), \
+                        patch(TRANSCRIBE, return_value='# Profile'), \
+                        self.patchout() as o, self.patcherr():
+                    Filez4EvaApp.start('--config', cf.name, 'classify',
+                                       str(source), debug=True)
+                    o.seek(0)
+                    record = o.read()
+                self.assertIn('date: null', record)
+                with self.patch_stream(record), self.patchout() as o, \
+                        self.patcherr() as e, \
+                        self.patch_ttyin('20250704\n'):
+                    Filez4EvaApp.start('--config', cf.name, 'stow-file',
+                                       str(source), debug=True)
+                    o.seek(0)
+                    e.seek(0)
+                    out = o.read()
+                    err = e.read()
+            stowed = target / '2025/amazon/20250704-receipt.pdf'
+            self.assertIn('Date: ', err)
+            self.assertNotIn('Account: ', err)
+            self.assertEqual(out.strip(), str(stowed))
+            self.assertTrue(stowed.is_file())

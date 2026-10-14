@@ -31,7 +31,8 @@ RECORD_KEYS = ['file', 'transcript', 'cabinet', 'date', 'account', 'part',
 TASK = """\
 Classify the document below so it can be filed. Return:
 - date: the document's own date (such as its issue, statement or \
-transaction date) as YYYYMMDD, not today's date
+transaction date) as YYYYMMDD. If you can't determine the document's own \
+date, return an empty string. Do not guess and do not use today's date.
 - account: the organisation, person or account the document belongs to, as \
 a single directory name (no slashes)
 - part: a short label for this kind of document within the account, using \
@@ -74,8 +75,9 @@ def build_schema(doctypes: list) -> dict:
         'type': 'object',
         'properties': {
             'date': {
-                'type': 'string', 'pattern': r'^\d{8}$',
-                'description': "The document's own date as YYYYMMDD"},
+                'type': 'string', 'pattern': r'^(\d{8})?$',
+                'description': "The document's own date as YYYYMMDD, or "
+                "an empty string if it can't be determined"},
             'account': {
                 'type': 'string',
                 'description': 'The account the document belongs to'},
@@ -137,22 +139,21 @@ def transcript_body(text: str) -> str:
 
 
 def check_result(result, doctypes) -> dict:
-    """Return the model's classification, validated and cleaned up. Raises
-    Filez4EvaError if it can't be used."""
+    """Return the model's classification, validated and cleaned up. The
+    date is None if the model gave none, or gave anything that isn't a valid
+    YYYYMMDD date (a document may have no date of its own). Raises
+    Filez4EvaError if any other value can't be used."""
     if not isinstance(result, dict):
         raise Filez4EvaError("Classification failed: result isn't a mapping")
-    values = {}
-    for key in ['date', 'account', 'part', 'doctype', 'summary']:
+    date = result.get('date')
+    date = date.strip() if isinstance(date, str) else None
+    values = {'date': date if valid_date(date) else None}
+    for key in ['account', 'part', 'doctype', 'summary']:
         value = result.get(key)
         if not isinstance(value, str) or not value.strip():
             raise Filez4EvaError(
                 f"Classification failed: no {key} in result")
         values[key] = value.strip()
-    date = values['date']
-    if not valid_date(date):
-        raise Filez4EvaError(
-            f"Classification failed: date must match format YYYYMMDD: "
-            f"{date!r}")
     check_account(values['account'])
     check_part(values['part'])
     if values['doctype'] not in doctypes:
