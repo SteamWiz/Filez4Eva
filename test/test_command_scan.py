@@ -413,8 +413,22 @@ class TestCommandScanAI(WizLibTestCase):
     def test_bad_result_falls_back(self):
         c, gt, err, _ = self.run_scan(
             ['20250101', 'acme', 'bill'],
-            extract={'return_value': dict(RESULT, date='soon')})
-        self.assert_fallback(c, gt, err, 'Classification failed: date')
+            extract={'return_value': dict(RESULT, part='a b')})
+        self.assert_fallback(c, gt, err, 'Part must contain only')
+
+    def test_no_date_prompt_starts_empty(self):
+        c, gt, err, _ = self.run_scan(
+            ['20250704', 'amazon', 'receipt'],
+            extract={'return_value': dict(RESULT, date='<UNKNOWN>')})
+        self.assertEqual(self.prompts(gt), [
+            ('Date: ', []),
+            ('Account: ', ['amazon'], 'amazon'),
+            ('Part: ', ['refund'], 'receipt')])
+        self.assertNotIn('Classification failed', err)
+        self.assertIn('Summary: Amazon.ca order receipt', err)
+        stowed = self.target / '2025/amazon/20250704-receipt.pdf'
+        self.assertTrue(stowed.is_file())
+        self.assertEqual(c.status, 'Stowed 1 file')
 
     def test_bad_doctypes_falls_back(self):
         c, gt, err, x = self.run_scan(

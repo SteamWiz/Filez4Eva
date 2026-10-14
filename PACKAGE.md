@@ -76,7 +76,8 @@ This interactive process lets you:
 Stowing a file works like [`process`](#processing-a-file-with-ai): the file
 is transcribed (reusing an up-to-date transcript) and classified, then the
 summary and doctype are shown and the `Date:`, `Account:` and `Part:` prompts
-are pre-filled with the proposed values. Press Enter to accept a value, or
+are pre-filled with the proposed values (the `Date:` prompt starts empty if
+the document has no date of its own). Press Enter to accept a value, or
 type a new one. With several cabinets, the cabinet is asked for once, before
 anything is sent to the model.
 
@@ -152,19 +153,24 @@ doctype: receipt
 summary: Amazon.ca order receipt for a USB hub
 ```
 
-- `date` is the document's own date, as YYYYMMDD.
+- `date` is the document's own date, as YYYYMMDD. If the document has no
+  date of its own (or the model can't tell what it is), `date` is `null`
+  rather than a guess. Today's date and the file's modified time are never
+  used.
 - `doctype` is one of the configured [doctypes](#classification-settings),
   or `other`.
 - `summary` is a single line.
-- The model is told the cabinet's `description`, the accounts already in the
+- The model is told the cabinet's `description` and `date` guidance, the
+  accounts already in the
   cabinet with the parts already used for each (the same ones offered by
   tab completion, so only with the default pattern), and asked to reuse them
   when they fit. It is also given the doctype names and descriptions.
 - The cabinet is chosen as for `stow-file`: `--cabinet NAME`, the only
   cabinet, or a prompt.
 - If transcription or classification fails, or the model's answer isn't a
-  valid date, account, part or doctype, `classify` exits with an error and
-  prints nothing on stdout.
+  valid account, part or doctype, `classify` exits with an error and prints
+  nothing on stdout. A date that isn't a valid YYYYMMDD date becomes `null`
+  instead of an error.
 
 Nothing is moved. To file the document as proposed, pipe the record into
 `stow-file`, which reads `cabinet`, `date`, `account` and `part` and ignores
@@ -173,6 +179,8 @@ the other keys:
 ```bash
 filez4eva classify ~/Desktop/scan.pdf | filez4eva stow-file ~/Desktop/scan.pdf
 ```
+
+If the record has `date: null`, `stow-file` prompts for the date.
 
 ### Processing a File with AI
 
@@ -190,7 +198,8 @@ filez4eva process ~/Desktop/scan.pdf
    several cabinets are configured and it wasn't just chosen), `Date:`,
    `Account:` and `Part:`, each pre-filled with the proposed value. Press
    Enter to accept it, or type a new value (backspace clears the pre-filled
-   value first). Tab completion works as for `stow-file`.
+   value first). If the classification has no date, the `Date:` prompt
+   starts empty. Tab completion works as for `stow-file`.
 4. stows the file and its transcript, exactly as `stow-file` does, and prints
    the destination path on stdout
 
@@ -303,9 +312,11 @@ filez4eva:
       target: ~/Dropbox/accounts
       pattern: '{year}/{account}/{date}-{part}{ext}'
       description: Personal account records
+      date: The date of the invoice or statement
     memories:
       target: ~/Dropbox/memories
       pattern: '{account}/{year}/{part}-{date}{ext}'
+      date: The date already in the photo's filename, if any
 ```
 
 Each cabinet has:
@@ -314,6 +325,9 @@ Each cabinet has:
   Defaults to the top-level `pattern` if set, otherwise
   `'{year}/{account}/{date}-{part}{ext}'`
 - `description` (optional): a note on what the cabinet holds
+- `date` (optional): what counts as a document's date in this cabinet. It is
+  passed to the model by `classify` (and so `process` and `scan-dir`) as
+  "For this cabinet, the date is: ...". It must be text
 - `transcripts` (optional): where transcripts of files stowed in this cabinet
   go, with `location` and `root` keys. Each key defaults to the top-level
   `transcripts` value; see [Transcript location](#transcript-location)
@@ -333,8 +347,8 @@ If there is no `cabinets` section (or it is empty), the top-level `target` and
 work unchanged. If `cabinets` is present, the top-level `target` is ignored.
 
 The whole configuration is checked before any prompt: a cabinet with no
-`target`, or with an invalid pattern or transcripts setting, is an error even
-if it isn't the one being used.
+`target`, a `description` or `date` that isn't text, or an invalid pattern or
+transcripts setting, is an error even if it isn't the one being used.
 
 ### Transcript location
 
