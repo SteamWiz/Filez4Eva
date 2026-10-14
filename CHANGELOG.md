@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v5.1.1 (2026-10-14)
+
+### Bug Fixes
+
+- **classify**: Drop per-cabinet date guidance and keep only the null-date fix
+  ([#45](https://github.com/SteamWiz/Filez4Eva/pull/45),
+  [`22f26c8`](https://github.com/SteamWiz/Filez4Eva/commit/22f26c8a62790e6aed48c2831bbaf87fcc700d34))
+
+- **classify**: Treat a missing or invalid date as null instead of failing
+  ([#45](https://github.com/SteamWiz/Filez4Eva/pull/45),
+  [`9b5e00f`](https://github.com/SteamWiz/Filez4Eva/commit/9b5e00f75d55205bbccaaf2ddeed1f0c5217dbf7))
+
+
 ## v5.1.0 (2026-10-11)
 
 ### Bug Fixes
