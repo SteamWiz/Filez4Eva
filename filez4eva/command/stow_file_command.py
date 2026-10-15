@@ -361,9 +361,10 @@ class StowFileCommand(Filez4EvaCommand):
             return
         if not isinstance(data, dict):
             raise Filez4EvaError("Data from stdin must be a mapping")
+        cabinet = self.resolve_cabinet()
         for name, value in data.items():
             if stdin_null(value) or not isinstance(name, str) \
-                    or not FIELD_NAME.fullmatch(name):
+                    or cabinet.field(name) is None:
                 continue
             if not isinstance(value, str):
                 raise Filez4EvaError(

@@ -116,7 +116,7 @@ class TestClassifyCommand(WizLibTestCase):
         self.assertEqual(record['summary'],
                          'Amazon.ca order receipt for a USB hub')
         # Fields in pattern order
-        self.assertEqual(list(record['data']), ['account', 'date', 'part'])
+        self.assertEqual(list(record['data']), ['date', 'account', 'part'])
         self.assertEqual(record['data'], DATA)
         self.assertIn("  date: '20261002'", out)
         self.assertEqual(command.status, 'Transcribed | Classified')
@@ -243,9 +243,9 @@ class TestClassifyCommand(WizLibTestCase):
         data = schema['properties']['data']
         self.assertEqual(data['type'], 'object')
         self.assertFalse(data['additionalProperties'])
-        self.assertEqual(data['required'], ['account', 'date', 'part'])
+        self.assertEqual(data['required'], ['date', 'account', 'part'])
         props = data['properties']
-        self.assertEqual(list(props), ['account', 'date', 'part'])
+        self.assertEqual(list(props), ['date', 'account', 'part'])
         for key in props:
             self.assertEqual(props[key]['type'], 'string')
         self.assertEqual(props['date']['pattern'], r'^(\d{8})?$')
@@ -323,8 +323,8 @@ class TestClassifyCommand(WizLibTestCase):
         self.assertIn('): refund, receipt\n', text)
         self.assertNotIn('once', text)
         self.assertNotIn('statement,', text)
-        self.assertLess(text.index('- account:'), text.index('- date:'))
-        self.assertLess(text.index('- date:'), text.index('- part:'))
+        self.assertLess(text.index('- date:'), text.index('- account:'))
+        self.assertLess(text.index('- account:'), text.index('- part:'))
         self.assertIn('- receipt: Proof of purchase or payment', text)
         self.assertIn('- bill: A request for payment', text)
         self.assertIn('- memo\n', text)
@@ -489,7 +489,7 @@ class TestClassifyCommand(WizLibTestCase):
                 self.assertIn('\n  date: null\n', out)
                 self.assertEqual(record['data']['account'], 'amazon')
                 self.assertEqual(list(record['data']),
-                                 ['account', 'date', 'part'])
+                                 ['date', 'account', 'part'])
                 self.assertTrue(command.status.endswith('Classified'))
 
     def test_no_date_record_from_classify(self):

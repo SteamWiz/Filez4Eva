@@ -239,6 +239,14 @@ class TestStowCommand(WizLibTestCase):
         self.assertLess(err.index('Account: '), err.index('Date: '))
         self.assertLess(err.index('Date: '), err.index('Title: '))
 
+    def test_prompts_date_year_first(self):
+        result, _, err = self.run_app(
+            ttyin='20240213\nj\nt\n',
+            config="  pattern: '{date.year}/{account}/{date}_{title}'\n")
+        self.assertEqual(result, ['2024/j/20240213_t.txt'])
+        self.assertLess(err.index('Date: '), err.index('Account: '))
+        self.assertLess(err.index('Account: '), err.index('Title: '))
+
     def test_field_label(self):
         self.assertEqual(Field('due_date').label, 'Due date')
 
@@ -326,6 +334,12 @@ class TestStowFileStdin(WizLibTestCase):
             + record(date='20240213', title='t', other='x', Bad='y'))
         self.assertEqual(result, ['20240213-t.txt'])
         t.assert_not_called()
+
+    def test_unknown_field_not_validated(self):
+        # A value that would be rejected is ignored if it isn't a field
+        result, _, _ = self.stow(
+            record(date='20240213', title='t', bogus='"!!!"'))
+        self.assertEqual(result, ['20240213-t.txt'])
 
     def test_top_level_fields_ignored(self):
         # Fields must be under data:
@@ -572,8 +586,18 @@ class TestStowFilePattern(WizLibTestCase):
         a.config = ConfigHandler.fake(filez4eva_target='/x',
                                       filez4eva_pattern=self.CUSTOM)
         cabinet = StowFileCommand(a).resolve_cabinet()
+        # {date.year} places date before part
         self.assertEqual([f.name for f in cabinet.fields],
-                         ['account', 'part', 'date'])
+                         ['account', 'date', 'part'])
+
+    def test_date_year_first_sets_date_position(self):
+        a = Filez4EvaApp()
+        a.config = ConfigHandler.fake(
+            filez4eva_target='/x',
+            filez4eva_pattern='{date.year}/{account}/{date}_{part}')
+        cabinet = StowFileCommand(a).resolve_cabinet()
+        self.assertEqual([f.name for f in cabinet.fields],
+                         ['date', 'account', 'part'])
 
     def test_custom_pattern_from_app(self):
         with TemporaryDirectory() as target, \

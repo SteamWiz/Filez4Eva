@@ -309,11 +309,14 @@ starts with `{`.
 
 The pattern is the only place the cabinet's fields are named: each
 placeholder is a field, and the fields are prompted for (and shown to the
-AI) in the order they first appear. Placeholders:
+AI) in the order they first appear. A field's first placeholder sets its
+position, whether or not it has a modifier, so with
+`'{date.year}/{account}/{date}_{part}'` the order is date, account, part.
+Placeholders:
 - `{date}`: the date as YYYYMMDD, e.g. `20240213`. Every pattern must
   contain `{date}`.
 - `{date.year}`: the date's four-digit year, e.g. `2024`. It doesn't count
-  as `{date}`.
+  as `{date}`, but it does set the date's position in the field order.
 - `{name}`: any other field, where `name` is lowercase letters, digits and
   underscores, starting with a letter (e.g. `{title}`, `{account}`,
   `{event}`). Its value is hyphen-separated-lower.
@@ -561,6 +564,7 @@ Version 6 replaces the fixed `account` and `part` with fields named by each
 cabinet's pattern:
 - The default pattern is now `{date}-{title}`, directly under the target. To
   keep the old layout, set `pattern: '{date.year}/{account}/{date}-{part}'`.
+  The prompts then come in the same order as before: date, account, part.
 - `{year}` is now `{date.year}`, and `{ext}` is no longer used: the
   extension is always added. In a version 6 pattern, `{year}` or `{ext}`
   would be an ordinary field that you are prompted for.

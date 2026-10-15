@@ -126,12 +126,11 @@ def check_pattern(pattern) -> list:
         parts = parse_pattern(pattern)
     except ValueError as err:
         raise error(str(err)) from None
-    names = []
-    for part in parts:
-        if isinstance(part, Placeholder) and part.modifier is None \
-                and part.name not in names:
-            names.append(part.name)
-    if DATE_FIELD not in names:
+    # A field's first appearance, with or without a modifier (e.g.
+    # {date.year}), sets its position
+    placeholders = [part for part in parts if isinstance(part, Placeholder)]
+    names = list(dict.fromkeys(part.name for part in placeholders))
+    if Placeholder(DATE_FIELD) not in placeholders:
         raise error("must contain {date}")
     pure = Path(pattern)
     if pure.is_absolute() or pattern.startswith('~') or '..' in pure.parts:

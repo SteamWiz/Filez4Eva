@@ -102,8 +102,8 @@ class TestProcessCommand(WizLibTestCase):
         self.assertIn('Summary: Amazon.ca order receipt for a USB hub', err)
         self.assertIn('Doctype: receipt', err)
         # Fields in pattern order
-        self.assertLess(err.index('Account: '), err.index('Date: '))
-        self.assertLess(err.index('Date: '), err.index('Part: '))
+        self.assertLess(err.index('Date: '), err.index('Account: '))
+        self.assertLess(err.index('Account: '), err.index('Part: '))
         self.assertNotIn('Cabinet: ', err)
         self.assertIn('Transcribed | Classified | Done', err)
         self.assertEqual(t.call_count, 3)
@@ -113,7 +113,7 @@ class TestProcessCommand(WizLibTestCase):
         app.config = ConfigHandler.fake(filez4eva_target=str(self.target),
                                         filez4eva_pattern=PATTERN)
         command = ProcessCommand(app, file=str(self.source))
-        answers = iter(['amazon', '20261002', 'receipt'])
+        answers = iter(['20261002', 'amazon', 'receipt'])
         with patch(EXTRACT, return_value=dict(RESULT, doctype='other')), \
                 patch(TRANSCRIBE, return_value='# Receipt'), \
                 patch.object(app.ui, 'get_text',
@@ -121,8 +121,8 @@ class TestProcessCommand(WizLibTestCase):
                 self.patchout(), self.patcherr():
             command.execute()
         self.assertEqual([c.args for c in gt.call_args_list], [
-            ('Account: ', ['amazon'], 'amazon'),
             ('Date: ', [], '20261002'),
+            ('Account: ', ['amazon'], 'amazon'),
             ('Part: ', ['refund'], 'receipt')])
         self.assertTrue(self.stowed.is_file())
 
@@ -137,7 +137,7 @@ class TestProcessCommand(WizLibTestCase):
 
     def test_edit_date(self):
         out, _, _, _ = self.run_app(self.config(),
-                                    ttyin='\n' + S.BACKSPACE + '20250102\n\n')
+                                    ttyin=S.BACKSPACE + '20250102\n\n\n')
         stowed = self.target / '2025/amazon/20250102-receipt.pdf'
         self.assertEqual(out.strip(), str(stowed))
         self.assertTrue(stowed.is_file())
@@ -151,15 +151,15 @@ class TestProcessCommand(WizLibTestCase):
 
     def test_invalid_date_reprompts(self):
         out, err, _, _ = self.run_app(self.config(),
-                                      ttyin='\nx\n\n\n')
+                                      ttyin='x\n\n\n\n')
         self.assertIn('Date must match format YYYYMMDD', err)
         self.assertTrue(self.stowed.is_file())
 
     def test_cancel_at_date(self):
-        out, err, _, t = self.run_app(self.config(), ttyin='\n' + CANCEL)
+        out, err, _, t = self.run_app(self.config(), ttyin=CANCEL)
         self.assertEqual(out.strip(), '')
         self.assertIn('Date required', err)
-        self.assertNotIn('Part: ', err)
+        self.assertNotIn('Account: ', err)
         self.assert_not_moved()
 
     def test_cancel_at_part(self):
@@ -311,7 +311,7 @@ class TestProcessCommand(WizLibTestCase):
         app.config = ConfigHandler.fake(filez4eva_target=str(self.target),
                                         filez4eva_pattern=PATTERN)
         command = ProcessCommand(app, file=str(self.source))
-        answers = iter(['amazon', '20261002', 'receipt'])
+        answers = iter(['20261002', 'amazon', 'receipt'])
         value = dict(result(date='<UNKNOWN>'), doctype='other')
         with patch(EXTRACT, return_value=value), \
                 patch(TRANSCRIBE, return_value='# Receipt'), \
@@ -320,14 +320,14 @@ class TestProcessCommand(WizLibTestCase):
                 self.patchout(), self.patcherr():
             out = command.execute()
         self.assertEqual([c.args for c in gt.call_args_list], [
-            ('Account: ', ['amazon'], 'amazon'),
             ('Date: ', []),
+            ('Account: ', ['amazon'], 'amazon'),
             ('Part: ', ['refund'], 'receipt')])
         self.assertEqual(out, str(self.stowed))
         self.assertTrue(self.stowed.is_file())
 
     def test_no_date_typed_at_prompt(self):
-        out, err, _, _ = self.run_app(self.config(), ttyin='\n20250704\n\n',
+        out, err, _, _ = self.run_app(self.config(), ttyin='20250704\n\n\n',
                                       result=result(date=''))
         stowed = self.target / '2025/amazon/20250704-receipt.pdf'
         self.assertEqual(out.strip(), str(stowed))
@@ -335,7 +335,7 @@ class TestProcessCommand(WizLibTestCase):
         self.assertNotIn('Classification failed', err)
 
     def test_no_date_empty_answer_cancels(self):
-        out, err, _, _ = self.run_app(self.config(), ttyin='\n\n',
+        out, err, _, _ = self.run_app(self.config(), ttyin='\n',
                                       result=result(date='<UNKNOWN>'))
         self.assertEqual(out.strip(), '')
         self.assertIn('Date required', err)
