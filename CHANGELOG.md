@@ -2,6 +2,28 @@
 
 <!-- version list -->
 
+## v5.2.0 (2026-10-15)
+
+### Bug Fixes
+
+- **stow-file**: Order fields by first placeholder including {date.year}; ignore unknown stdin data
+  keys
+  ([`d7d3e91`](https://github.com/SteamWiz/Filez4Eva/commit/d7d3e917c4a7b89b7ddcb36df567c723ea4a0fb5))
+
+### Features
+
+- Cabinet-specific fields from the pattern, with guidance and learned values
+  ([#43](https://github.com/SteamWiz/Filez4Eva/pull/43),
+  [`4e507b7`](https://github.com/SteamWiz/Filez4Eva/commit/4e507b782f13b3cf645ad5f0dbf022957acd4966))
+
+### Breaking Changes
+
+- The fixed account and part fields are removed. The default pattern is now '{date}-{title}'; {year}
+  is now {date.year} and {ext} is no longer used (the extension is always appended). stow-file
+  --account/-a and --part/-p are replaced by --field/-f NAME=VALUE. In classify output and stow-file
+  stdin, fields (including date) are under `data:`. Tab completion no longer scans existing folders.
+
+
 ## v5.1.1 (2026-10-14)
 
 ### Bug Fixes
