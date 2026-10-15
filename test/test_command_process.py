@@ -10,14 +10,23 @@ from wizlib.ui.shell import S
 from filez4eva import Filez4EvaApp
 from filez4eva.command.process_command import ProcessCommand
 from filez4eva.error import Filez4EvaError
+from filez4eva.fields import values_path
 
 
 EXTRACT = 'filez4eva.command.classify_command.extract'
 TRANSCRIBE = 'filez4eva.command.transcribe_command.transcribe'
 
-RESULT = {'date': '20261002', 'account': 'amazon', 'part': 'receipt',
+PATTERN = '{date.year}/{account}/{date}-{part}'
+
+RESULT = {'data': {'date': '20261002', 'account': 'amazon',
+                   'part': 'receipt'},
           'doctype': 'receipt',
           'summary': 'Amazon.ca order receipt for a USB hub'}
+
+
+def result(**data):
+    return dict(RESULT, data=dict(RESULT['data'], **data))
+
 
 # Clear the pre-filled default, then press Enter
 CANCEL = S.BACKSPACE + S.RETURN
@@ -30,9 +39,10 @@ class TestProcessCommand(WizLibTestCase):
         self.tempdir = TemporaryDirectory()
         self.dir = Path(self.tempdir.name)
         self.target = self.dir / 'target'
-        p = self.target / '2026/amazon/20260301-refund.pdf'
-        p.parent.mkdir(parents=True)
-        p.write_text('x')
+        store = values_path(self.target)
+        store.parent.mkdir(parents=True)
+        store.write_text('account:\n  amazon:\n    count: 2\n'
+                         'part:\n  refund:\n    count: 2\n')
         self.source = self.dir / 'in' / 'scan.pdf'
         self.source.parent.mkdir()
         self.source.write_bytes(b'%PDF fake')
@@ -45,11 +55,13 @@ class TestProcessCommand(WizLibTestCase):
 
     def config(self):
         return (f"filez4eva:\n  target: {self.target}\n"
+                f"  pattern: '{PATTERN}'\n"
                 "  doctypes:\n    receipt:\n      description: Proof\n")
 
     def two_cabinets(self):
         self.other = self.dir / 'memories'
         return (f"filez4eva:\n"
+                f"  pattern: '{PATTERN}'\n"
                 f"  cabinets:\n"
                 f"    accounts:\n"
                 f"      target: {self.target}\n"
@@ -89,16 +101,17 @@ class TestProcessCommand(WizLibTestCase):
         self.assertFalse(self.transcript.exists())
         self.assertIn('Summary: Amazon.ca order receipt for a USB hub', err)
         self.assertIn('Doctype: receipt', err)
-        self.assertIn('Date: ', err)
-        self.assertIn('Account: ', err)
-        self.assertIn('Part: ', err)
+        # Fields in pattern order
+        self.assertLess(err.index('Date: '), err.index('Account: '))
+        self.assertLess(err.index('Account: '), err.index('Part: '))
         self.assertNotIn('Cabinet: ', err)
         self.assertIn('Transcribed | Classified | Done', err)
         self.assertEqual(t.call_count, 3)
 
     def test_prompts_prefilled(self):
         app = Filez4EvaApp()
-        app.config = ConfigHandler.fake(filez4eva_target=str(self.target))
+        app.config = ConfigHandler.fake(filez4eva_target=str(self.target),
+                                        filez4eva_pattern=PATTERN)
         command = ProcessCommand(app, file=str(self.source))
         answers = iter(['20261002', 'amazon', 'receipt'])
         with patch(EXTRACT, return_value=dict(RESULT, doctype='other')), \
@@ -131,8 +144,8 @@ class TestProcessCommand(WizLibTestCase):
 
     def test_invalid_value_reprompts(self):
         out, err, _, _ = self.run_app(self.config(),
-                                      ttyin='\n\nbad part\n\n')
-        self.assertIn('Part must contain only', err)
+                                      ttyin='\n\n//\n\n')
+        self.assertIn('Part must contain letters or digits', err)
         self.assertEqual(out.strip(), str(self.stowed))
         self.assertTrue(self.stowed.is_file())
 
@@ -168,7 +181,8 @@ class TestProcessCommand(WizLibTestCase):
     def test_dry_run_without_transcript(self):
         # The transcript is removed between classifying and planning
         app = Filez4EvaApp()
-        app.config = ConfigHandler.fake(filez4eva_target=str(self.target))
+        app.config = ConfigHandler.fake(filez4eva_target=str(self.target),
+                                        filez4eva_pattern=PATTERN)
         command = ProcessCommand(app, file=str(self.source), dry_run=True)
         with patch(EXTRACT, return_value=dict(RESULT, doctype='other')), \
                 patch(TRANSCRIBE, return_value='# Receipt'), \
@@ -181,12 +195,16 @@ class TestProcessCommand(WizLibTestCase):
 
     def drop_transcript(self, record):
         self.transcript.unlink()
-        return {k: record[k] for k in ['cabinet', 'date', 'account', 'part']}
+        data = dict(record['data'])
+        return {'cabinet': record['cabinet'], 'date': data.pop('date'),
+                'data': data}
 
     def test_dry_run_existing_destination(self):
+        self.stowed.parent.mkdir(parents=True)
         self.stowed.write_text('already')
         app = Filez4EvaApp()
-        app.config = ConfigHandler.fake(filez4eva_target=str(self.target))
+        app.config = ConfigHandler.fake(filez4eva_target=str(self.target),
+                                        filez4eva_pattern=PATTERN)
         command = ProcessCommand(app, file=str(self.source), dry_run=True)
         with patch(EXTRACT, return_value=dict(RESULT, doctype='other')), \
                 patch(TRANSCRIBE, return_value='# Receipt'), \
@@ -229,6 +247,49 @@ class TestProcessCommand(WizLibTestCase):
         stowed = self.other / '2026/amazon/20261002-receipt.pdf'
         self.assertEqual(out.strip(), str(stowed))
 
+    def test_changed_cabinet_prompts_its_own_fields(self):
+        other = self.dir / 'memories'
+        config = (f"filez4eva:\n"
+                  f"  cabinets:\n"
+                  f"    accounts:\n"
+                  f"      target: {self.target}\n"
+                  f"      pattern: '{PATTERN}'\n"
+                  f"    memories:\n"
+                  f"      target: {other}\n"
+                  f"      pattern: '{{event}}/{{date}}-{{part}}'\n")
+        app = Filez4EvaApp()
+        command = ProcessCommand(app, file=str(self.source),
+                                 cabinet='accounts')
+        answers = iter(['memories', 'Grandma Bday', '20261002', 'photo'])
+        with patch(EXTRACT, return_value=dict(RESULT, doctype='other')), \
+                patch(TRANSCRIBE, return_value='# Photo'), \
+                NamedTemporaryFile('w+', suffix='.yml') as cf, \
+                patch.object(app.ui, 'get_text',
+                             side_effect=lambda *a: next(answers)) as gt, \
+                self.patchout(), self.patcherr():
+            cf.write(config)
+            cf.flush()
+            app.config = ConfigHandler(cf.name)
+            out = command.execute()
+        # Only fields with the same name are pre-filled
+        self.assertEqual([c.args for c in gt.call_args_list], [
+            ('Cabinet: ', ['accounts', 'memories'], 'accounts'),
+            ('Event: ', []),
+            ('Date: ', [], '20261002'),
+            ('Part: ', [], 'receipt')])
+        self.assertEqual(out, str(other / 'grandma-bday/20261002-photo.pdf'))
+
+    def test_values_recorded_after_stowing(self):
+        self.run_app(self.config(), ttyin='\n\n\n')
+        store = values_path(self.target).read_text()
+        self.assertIn('count: 3', store)
+        self.assertIn('receipt:', store)
+
+    def test_values_not_recorded_on_dry_run(self):
+        before = values_path(self.target).read_text()
+        self.run_app(self.config(), '--dry-run', ttyin='\n\n\n')
+        self.assertEqual(values_path(self.target).read_text(), before)
+
     def test_cancel_at_cabinet_choice_before_ai(self):
         _, err, x, _ = self.run_app(self.two_cabinets(), ttyin='\n')
         x.assert_not_called()
@@ -238,7 +299,8 @@ class TestProcessCommand(WizLibTestCase):
 
     def test_unknown_cabinet_raises_before_transcribing(self):
         app = Filez4EvaApp()
-        app.config = ConfigHandler.fake(filez4eva_target=str(self.target))
+        app.config = ConfigHandler.fake(filez4eva_target=str(self.target),
+                                        filez4eva_pattern=PATTERN)
         with patch(TRANSCRIBE) as t, self.assertRaises(Filez4EvaError):
             ProcessCommand(app, file=str(self.source),
                            cabinet='nope').execute()
@@ -246,11 +308,12 @@ class TestProcessCommand(WizLibTestCase):
 
     def test_no_date_prompt_starts_empty(self):
         app = Filez4EvaApp()
-        app.config = ConfigHandler.fake(filez4eva_target=str(self.target))
+        app.config = ConfigHandler.fake(filez4eva_target=str(self.target),
+                                        filez4eva_pattern=PATTERN)
         command = ProcessCommand(app, file=str(self.source))
         answers = iter(['20261002', 'amazon', 'receipt'])
-        result = dict(RESULT, doctype='other', date='<UNKNOWN>')
-        with patch(EXTRACT, return_value=result), \
+        value = dict(result(date='<UNKNOWN>'), doctype='other')
+        with patch(EXTRACT, return_value=value), \
                 patch(TRANSCRIBE, return_value='# Receipt'), \
                 patch.object(app.ui, 'get_text',
                              side_effect=lambda *a: next(answers)) as gt, \
@@ -265,7 +328,7 @@ class TestProcessCommand(WizLibTestCase):
 
     def test_no_date_typed_at_prompt(self):
         out, err, _, _ = self.run_app(self.config(), ttyin='20250704\n\n\n',
-                                      result=dict(RESULT, date=''))
+                                      result=result(date=''))
         stowed = self.target / '2025/amazon/20250704-receipt.pdf'
         self.assertEqual(out.strip(), str(stowed))
         self.assertTrue(stowed.is_file())
@@ -273,7 +336,7 @@ class TestProcessCommand(WizLibTestCase):
 
     def test_no_date_empty_answer_cancels(self):
         out, err, _, _ = self.run_app(self.config(), ttyin='\n',
-                                      result=dict(RESULT, date='<UNKNOWN>'))
+                                      result=result(date='<UNKNOWN>'))
         self.assertEqual(out.strip(), '')
         self.assertIn('Date required', err)
         self.assert_not_moved()

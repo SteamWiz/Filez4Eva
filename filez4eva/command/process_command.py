@@ -3,37 +3,42 @@ from wizlib.parser import WizParser
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command.classify_command import ClassifyCommand
 from filez4eva.command.stow_file_command import (
-    ACCOUNT_RULE, DATE_RULE, PART_RULE, StowFileCommand, valid_account,
-    valid_date, valid_part)
+    DATE_RULE, StowFileCommand)
+from filez4eva.fields import normalize_value, value_rule
 
 
 def confirm_record(app, classifier: ClassifyCommand, record: dict) -> dict:
-    """Show the summary and doctype, then prompt for each value, pre-filled
-    with the proposed one (the Date prompt starts empty if the record has
-    no date). Return the confirmed cabinet, date, account and
-    part. An empty answer raises CommandCancellation. classifier is the
-    ClassifyCommand that produced the record."""
+    """Show the summary and doctype, then prompt for the cabinet and each
+    of its fields in pattern order, pre-filled with the proposed value (a
+    prompt starts empty if the record has no value for it, such as a
+    document without a date). Return the confirmed cabinet, date and data
+    (the other fields). An empty answer raises CommandCancellation.
+    classifier is the ClassifyCommand that produced the record."""
     app.ui.send(f"Summary: {record['summary']}")
     app.ui.send(f"Doctype: {record['doctype']}")
     stow = classifier.stow
     cabinet = record['cabinet']
-    # Cabinet comes first, so account and part completion use the final
-    # cabinet. Skip it if there is only one, or it was just chosen.
+    # Cabinet comes first, so the fields and completion are the final
+    # cabinet's. Skip it if there is only one, or it was just chosen.
     if len(stow.cabinets) > 1 and not classifier.cabinet_prompted:
         names = sorted(stow.cabinets)
         cabinet = stow.prompt_value(
-            'Cabinet', names, lambda v: v in stow.cabinets,
+            'Cabinet', names, lambda v: v if v in stow.cabinets else None,
             'Cabinet must be one of: ' + ', '.join(names), cabinet)
         stow.cabinet = cabinet
-    date = stow.prompt_value('Date', [], valid_date, DATE_RULE,
-                             record['date'] or '')
-    account = stow.prompt_value('Account', stow.get_accounts(),
-                                valid_account, ACCOUNT_RULE,
-                                record['account'])
-    part = stow.prompt_value('Part', stow.get_parts(account), valid_part,
-                             PART_RULE, record['part'])
-    return {'cabinet': cabinet, 'date': date, 'account': account,
-            'part': part}
+    proposed = record.get('data') or {}
+    date = None
+    data = {}
+    for field in stow.resolve_cabinet().fields:
+        default = proposed.get(field.name) or ''
+        if field.is_date:
+            date = stow.prompt_value('Date', [], stow.clean_date, DATE_RULE,
+                                     default)
+        else:
+            data[field.name] = stow.prompt_value(
+                field.label, stow.choices(field), normalize_value,
+                value_rule(field), default)
+    return {'cabinet': cabinet, 'date': date, 'data': data}
 
 
 class ProcessCommand(Filez4EvaCommand):
