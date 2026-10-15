@@ -13,20 +13,37 @@ from filez4eva import Filez4EvaApp
 from filez4eva.command.classify_command import (
     DEFAULT_MODEL, ClassifyCommand, build_schema, load_doctypes,
     transcript_body)
+from filez4eva.command.stow_file_command import Cabinet
 from filez4eva.command.transcribe_command import format_transcript
 from filez4eva.error import Filez4EvaError
+from filez4eva.fields import values_path
 
 
 EXTRACT = 'filez4eva.command.classify_command.extract'
 TRANSCRIBE = 'filez4eva.command.transcribe_command.transcribe'
 
-RESULT = {'date': '20261002', 'account': 'amazon', 'part': 'receipt',
-          'doctype': 'receipt',
+PATTERN = '{date.year}/{account}/{date}-{part}'
+
+DATA = {'date': '20261002', 'account': 'amazon', 'part': 'receipt'}
+
+RESULT = {'data': DATA, 'doctype': 'receipt',
           'summary': 'Amazon.ca order receipt for a USB hub'}
 
 DOCTYPES = {'receipt': {'description': 'Proof of purchase or payment'},
             'bill': {'description':
                      'A request for payment, usually with a due date'}}
+
+
+def result(**data):
+    """RESULT with some data values replaced ('DROP' removes one)"""
+    values = {k: v for k, v in dict(DATA, **data).items() if v != 'DROP'}
+    return dict(RESULT, data=values)
+
+
+def write_store(target, store):
+    path = values_path(Path(target))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(store))
 
 
 class TestClassifyCommand(WizLibTestCase):
@@ -35,13 +52,11 @@ class TestClassifyCommand(WizLibTestCase):
         self.tempdir = TemporaryDirectory()
         self.dir = Path(self.tempdir.name)
         self.target = self.dir / 'target'
-        for path in ['2025/amazon/20250101-receipt.pdf',
-                     '2026/amazon/20260301-refund.pdf',
-                     '2026/bank/20260131-statement.pdf',
-                     '2026/empty/notes.txt']:
-            p = self.target / path
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text('x')
+        write_store(self.target, {
+            'account': {'amazon': {'count': 3}, 'bank': {'count': 2},
+                        'once': {'count': 1}},
+            'part': {'receipt': {'count': 2}, 'refund': {'count': 4},
+                     'statement': {'count': 1}}})
         self.source = self.dir / 'in' / 'scan.pdf'
         self.source.parent.mkdir()
         self.source.write_bytes(b'%PDF fake')
@@ -52,6 +67,7 @@ class TestClassifyCommand(WizLibTestCase):
 
     def config(self, **extra):
         values = {'filez4eva_target': str(self.target),
+                  'filez4eva_pattern': PATTERN,
                   'filez4eva_doctypes': DOCTYPES}
         values.update(extra)
         return values
@@ -89,44 +105,59 @@ class TestClassifyCommand(WizLibTestCase):
     # Record
 
     def test_record(self):
-        out, command, _, _ = self.run_command(
-            self.config(filez4eva_doctypes=DOCTYPES))
+        out, command, _, _ = self.run_command()
         record = yaml.safe_load(out)
         self.assertEqual(list(record), [
-            'file', 'transcript', 'cabinet', 'date', 'account', 'part',
-            'doctype', 'summary'])
+            'file', 'transcript', 'cabinet', 'doctype', 'summary', 'data'])
         self.assertEqual(record['file'], str(self.source))
         self.assertEqual(record['transcript'], str(self.transcript))
         self.assertEqual(record['cabinet'], 'default')
-        self.assertEqual(record['date'], '20261002')
-        self.assertEqual(record['account'], 'amazon')
-        self.assertEqual(record['part'], 'receipt')
         self.assertEqual(record['doctype'], 'receipt')
         self.assertEqual(record['summary'],
                          'Amazon.ca order receipt for a USB hub')
-        self.assertIn("date: '20261002'", out)
+        # Fields in pattern order
+        self.assertEqual(list(record['data']), ['account', 'date', 'part'])
+        self.assertEqual(record['data'], DATA)
+        self.assertIn("  date: '20261002'", out)
         self.assertEqual(command.status, 'Transcribed | Classified')
 
     def test_record_on_stdout(self):
         out, err, _ = self.run_app(
             f"filez4eva:\n  target: {self.target}\n"
+            f"  pattern: '{PATTERN}'\n"
             "  doctypes:\n    receipt:\n      description: Proof\n")
         record = yaml.safe_load(out)
-        self.assertEqual(record['account'], 'amazon')
+        self.assertEqual(record['data']['account'], 'amazon')
         self.assertEqual(record['file'], str(self.source))
         self.assertEqual(err.strip(), 'Transcribed | Classified')
 
+    def test_default_fields(self):
+        out, _, e, _ = self.run_command(
+            {'filez4eva_target': str(self.target)},
+            result={'data': {'date': '20261002', 'title': 'USB Hub Receipt'},
+                    'doctype': 'other', 'summary': 'x'})
+        self.assertEqual(yaml.safe_load(out)['data'],
+                         {'date': '20261002', 'title': 'usb-hub-receipt'})
+        props = e.call_args.args[1]['properties']['data']['properties']
+        self.assertEqual(list(props), ['date', 'title'])
+
+    def test_values_normalized(self):
+        out, _, _, _ = self.run_command(
+            result=result(account='Royal Bank of Canada', part='Visa  Stmt'))
+        data = yaml.safe_load(out)['data']
+        self.assertEqual(data['account'], 'royal-bank-of-canada')
+        self.assertEqual(data['part'], 'visa-stmt')
+
     def test_summary_one_line(self):
-        result = dict(RESULT, summary='  A long\nsummary\n\nhere ',
-                      doctype='other')
-        out, _, _, _ = self.run_command(result=result)
+        out, _, _, _ = self.run_command(result=dict(
+            RESULT, summary='  A long\nsummary\n\nhere ', doctype='other'))
         self.assertEqual(yaml.safe_load(out)['summary'], 'A long summary here')
 
     def test_long_unicode_summary_not_wrapped(self):
         summary = 'Reçu ' + 'très long ' * 20
         out, _, _, _ = self.run_command(
             result=dict(RESULT, summary=summary, doctype='other'))
-        self.assertEqual(len(out.splitlines()), 8)
+        self.assertEqual(len(out.splitlines()), 9)
         self.assertIn('Reçu', out)
         self.assertEqual(yaml.safe_load(out)['summary'], summary.strip())
 
@@ -202,25 +233,45 @@ class TestClassifyCommand(WizLibTestCase):
     # Schema
 
     def test_schema(self):
-        _, _, e, _ = self.run_command(
-            self.config(filez4eva_doctypes=DOCTYPES))
+        _, _, e, _ = self.run_command(self.config(filez4eva_fields={
+            'account': {'guidance': 'The other party, never me'}}))
         schema = e.call_args.args[1]
         self.assertEqual(schema['type'], 'object')
-        self.assertEqual(set(schema['required']),
-                         {'date', 'account', 'part', 'doctype', 'summary'})
+        self.assertEqual(schema['required'], ['data', 'doctype', 'summary'])
         self.assertEqual(set(schema['properties']), set(schema['required']))
         self.assertFalse(schema['additionalProperties'])
-        props = schema['properties']
+        data = schema['properties']['data']
+        self.assertEqual(data['type'], 'object')
+        self.assertFalse(data['additionalProperties'])
+        self.assertEqual(data['required'], ['account', 'date', 'part'])
+        props = data['properties']
+        self.assertEqual(list(props), ['account', 'date', 'part'])
         for key in props:
             self.assertEqual(props[key]['type'], 'string')
         self.assertEqual(props['date']['pattern'], r'^(\d{8})?$')
-        self.assertEqual(props['part']['pattern'], r'^[a-zA-Z0-9-]+$')
-        self.assertEqual(props['doctype']['enum'],
-                         ['receipt', 'bill', 'other'])
+        self.assertIn('YYYYMMDD', props['date']['description'])
+        self.assertTrue(props['account']['description'].startswith(
+            'The other party, never me. Use lowercase'))
+        self.assertTrue(props['part']['description'].startswith(
+            'Use lowercase'))
+        self.assertNotIn('pattern', props['part'])
+        doctype = schema['properties']['doctype']
+        self.assertEqual(doctype['enum'], ['receipt', 'bill', 'other'])
+
+    def test_field_names_cannot_clash_with_record_keys(self):
+        out, _, e, _ = self.run_command(
+            self.config(filez4eva_pattern='{date}-{summary}-{doctype}'),
+            result={'data': {'date': '20261002', 'summary': 'short',
+                             'doctype': 'x'},
+                    'doctype': 'receipt', 'summary': 'Long summary'})
+        record = yaml.safe_load(out)
+        self.assertEqual(record['summary'], 'Long summary')
+        self.assertEqual(record['data']['summary'], 'short')
 
     def test_schema_without_doctypes(self):
         _, _, e, _ = self.run_command(
-            {'filez4eva_target': str(self.target)},
+            {'filez4eva_target': str(self.target),
+             'filez4eva_pattern': PATTERN},
             result=dict(RESULT, doctype='other'))
         enum = e.call_args.args[1]['properties']['doctype']['enum']
         self.assertEqual(enum, ['other'])
@@ -228,7 +279,7 @@ class TestClassifyCommand(WizLibTestCase):
     def test_configured_other_not_duplicated(self):
         doctypes = {'other': {'description': 'Misc'}, 'bill': None}
         self.assertEqual(
-            build_schema(load_doctypes(ConfigHandler.fake(
+            build_schema(Cabinet('x', '/x'), load_doctypes(ConfigHandler.fake(
                 filez4eva_doctypes=doctypes)))['properties']['doctype']
             ['enum'], ['bill', 'other'])
 
@@ -236,10 +287,17 @@ class TestClassifyCommand(WizLibTestCase):
 
     def test_instructions(self):
         config = (f"filez4eva:\n"
+                  f"  fields:\n"
+                  f"    date:\n"
+                  f"      guidance: The statement date, not the print date\n"
                   f"  cabinets:\n"
                   f"    accounts:\n"
                   f"      target: {self.target}\n"
+                  f"      pattern: '{PATTERN}'\n"
                   f"      description: Personal account records\n"
+                  f"      fields:\n"
+                  f"        account:\n"
+                  f"          guidance: The organization on the other side\n"
                   f"  doctypes:\n"
                   f"    receipt:\n"
                   f"      description: Proof of purchase or payment\n"
@@ -250,13 +308,23 @@ class TestClassifyCommand(WizLibTestCase):
         text = e.call_args.kwargs['instructions']
         self.assertIn('Personal account records', text)
         self.assertIn('"accounts"', text)
-        self.assertIn("document's own date", text)
-        self.assertIn('YYYYMMDD', text)
         self.assertIn('one-line summary', text)
-        self.assertIn('Reuse an existing account and part', text)
-        self.assertIn('- amazon: receipt, refund\n', text)
-        self.assertIn('- bank: statement\n', text)
-        self.assertIn('- empty\n', text)
+        self.assertIn('- account: The organization on the other side. Use '
+                      'lowercase', text)
+        # Configured date guidance replaces the default text, but the fixed
+        # rules stay
+        self.assertIn('- date: The statement date, not the print date. '
+                      'Give it as YYYYMMDD.', text)
+        self.assertNotIn("document's own date, such as", text)
+        self.assertIn('- part: Use lowercase', text)
+        # Common learned values, most-used first
+        self.assertIn('reuse one when it fits', text)
+        self.assertIn('): amazon, bank\n', text)
+        self.assertIn('): refund, receipt\n', text)
+        self.assertNotIn('once', text)
+        self.assertNotIn('statement,', text)
+        self.assertLess(text.index('- account:'), text.index('- date:'))
+        self.assertLess(text.index('- date:'), text.index('- part:'))
         self.assertIn('- receipt: Proof of purchase or payment', text)
         self.assertIn('- bill: A request for payment', text)
         self.assertIn('- memo\n', text)
@@ -264,20 +332,26 @@ class TestClassifyCommand(WizLibTestCase):
         self.assertLess(text.index('- receipt:'), text.index('- other:'))
         self.assertEqual(yaml.safe_load(out)['cabinet'], 'accounts')
 
-    def test_instructions_without_accounts(self):
+    def test_instructions_default_fields(self):
         _, _, e, _ = self.run_command(
             {'filez4eva_target': str(self.dir / 'new')},
-            result=dict(RESULT, doctype='other'))
+            result={'data': {'date': '', 'title': 't'}, 'doctype': 'other',
+                    'summary': 'x'})
         text = e.call_args.kwargs['instructions']
-        self.assertIn('no existing accounts', text)
         self.assertIn('"default"', text)
+        self.assertIn("- date: The document's own date, such as its issue, "
+                      "statement or transaction date. Give it as YYYYMMDD.",
+                      text)
+        self.assertIn('- title: A short title describing the document. Use '
+                      'lowercase', text)
+        self.assertNotIn('Existing values', text)
 
-    def test_custom_pattern_has_no_vocabulary(self):
-        _, _, e, _ = self.run_command(
-            self.config(filez4eva_pattern='{account}/{date}-{part}{ext}'),
-            result=dict(RESULT, doctype='other'))
-        self.assertIn('no existing accounts',
-                      e.call_args.kwargs['instructions'])
+    def test_no_values_offered_for_unlearned_field(self):
+        _, _, e, _ = self.run_command(self.config(
+            filez4eva_fields={'account': {'values': 'none'}}))
+        text = e.call_args.kwargs['instructions']
+        self.assertNotIn('amazon', text)
+        self.assertIn('refund', text)
 
     # Model
 
@@ -290,13 +364,15 @@ class TestClassifyCommand(WizLibTestCase):
     def test_configured_model_from_file(self):
         _, _, e = self.run_app(
             f"filez4eva:\n  target: {self.target}\n"
+            f"  pattern: '{PATTERN}'\n"
             "  classify:\n    model: claude-from-file\n",
             result=dict(RESULT, doctype='other'))
         self.assertEqual(e.call_args.kwargs['model'], 'claude-from-file')
 
     def test_empty_classify_block_uses_default_model(self):
         _, _, e = self.run_app(
-            f"filez4eva:\n  target: {self.target}\n  classify:\n",
+            f"filez4eva:\n  target: {self.target}\n"
+            f"  pattern: '{PATTERN}'\n  classify:\n",
             result=dict(RESULT, doctype='other'))
         self.assertEqual(e.call_args.kwargs['model'], DEFAULT_MODEL)
 
@@ -304,27 +380,37 @@ class TestClassifyCommand(WizLibTestCase):
 
     def two_cabinets(self):
         other = self.dir / 'memories'
-        (other / '2026' / 'grandma').mkdir(parents=True)
+        write_store(other, {'event': {'grandma-bday': {'count': 2}}})
         return (f"filez4eva:\n"
                 f"  cabinets:\n"
                 f"    accounts:\n"
                 f"      target: {self.target}\n"
+                f"      pattern: '{PATTERN}'\n"
                 f"    memories:\n"
                 f"      target: {other}\n"
+                f"      pattern: '{{event}}/{{date}}'\n"
                 f"      description: Family photos\n")
+
+    MEMORY = {'data': {'date': '20261002', 'event': 'Grandma Bday'},
+              'doctype': 'other', 'summary': 'Photo'}
 
     def test_cabinet_flag(self):
         out, _, e = self.run_app(self.two_cabinets(), '--cabinet', 'memories',
-                                 result=dict(RESULT, doctype='other'))
+                                 result=self.MEMORY)
         text = e.call_args.kwargs['instructions']
         self.assertIn('Family photos', text)
-        self.assertIn('- grandma', text)
+        self.assertIn('- event: ', text)
+        self.assertIn('grandma-bday', text)
         self.assertNotIn('amazon', text)
-        self.assertEqual(yaml.safe_load(out)['cabinet'], 'memories')
+        self.assertNotIn('- account', text)
+        record = yaml.safe_load(out)
+        self.assertEqual(record['cabinet'], 'memories')
+        self.assertEqual(record['data'], {'event': 'grandma-bday',
+                                          'date': '20261002'})
 
     def test_cabinet_prompted(self):
         out, _, e = self.run_app(self.two_cabinets(), ttyin='memories\n',
-                                 result=dict(RESULT, doctype='other'))
+                                 result=self.MEMORY)
         self.assertEqual(yaml.safe_load(out)['cabinet'], 'memories')
 
     def test_unknown_cabinet_raises_before_transcribing(self):
@@ -364,37 +450,46 @@ class TestClassifyCommand(WizLibTestCase):
         self.assertIsInstance(raised.exception.__cause__, APIError)
 
     def test_invalid_results_rejected(self):
-        bad = [None, dict(RESULT, account='../x'),
-               dict(RESULT, part='a b'), dict(RESULT, doctype='bill'),
-               dict(RESULT, summary=''), dict(RESULT, account=''),
-               {k: v for k, v in RESULT.items() if k != 'part'},
-               dict(RESULT, date='<UNKNOWN>', part='a b')]
-        for result in bad:
-            with self.subTest(result=result), \
-                    self.assertRaises(Filez4EvaError):
+        bad = [(None, "result isn't a mapping"),
+               (dict(RESULT, data=None), 'no data in result'),
+               (dict(RESULT, data=['x']), 'no data in result'),
+               (result(account='../'),
+                'Account must contain letters or digits'),
+               (result(account=''), 'no account in result'),
+               (result(account=5), 'no account in result'),
+               (result(part='DROP'), 'no part in result'),
+               (dict(RESULT, doctype='bill'), "unknown doctype 'bill'"),
+               (dict(RESULT, summary=''), 'no summary in result'),
+               (result(date='<UNKNOWN>', part='//'), 'Part must contain')]
+        for value, message in bad:
+            with self.subTest(result=value), \
+                    self.assertRaises(Filez4EvaError) as raised:
                 self.run_command(self.config(
-                    filez4eva_doctypes={'receipt': None}), result=result)
+                    filez4eva_doctypes={'receipt': None}), result=value)
+            self.assertIn(f'Classification failed: {message}',
+                          str(raised.exception))
+
+    def test_extra_data_ignored(self):
+        out, _, _, _ = self.run_command(result=result(extra='x'))
+        self.assertNotIn('extra', yaml.safe_load(out)['data'])
 
     # Documents without a date of their own
 
     def test_no_date_gives_null(self):
-        without = {k: v for k, v in RESULT.items() if k != 'date'}
-        for result in [dict(RESULT, date='<UNKNOWN>'), dict(RESULT, date=''),
-                       dict(RESULT, date='  '), dict(RESULT, date=None),
-                       without, dict(RESULT, date='2026-10-02'),
-                       dict(RESULT, date='20261302'),
-                       dict(RESULT, date=20261002)]:
-            with self.subTest(result=result):
+        for value in [result(date='<UNKNOWN>'), result(date=''),
+                      result(date='  '), result(date=None),
+                      result(date='DROP'), result(date='2026-10-02'),
+                      result(date='20261302'), result(date=20261002)]:
+            with self.subTest(result=value):
                 out, command, _, _ = self.run_command(
                     self.config(filez4eva_doctypes={'receipt': None}),
-                    result=result)
+                    result=value)
                 record = yaml.safe_load(out)
-                self.assertIsNone(record['date'])
-                self.assertIn('\ndate: null\n', out)
-                self.assertEqual(record['account'], 'amazon')
-                self.assertEqual(list(record), [
-                    'file', 'transcript', 'cabinet', 'date', 'account',
-                    'part', 'doctype', 'summary'])
+                self.assertIsNone(record['data']['date'])
+                self.assertIn('\n  date: null\n', out)
+                self.assertEqual(record['data']['account'], 'amazon')
+                self.assertEqual(list(record['data']),
+                                 ['account', 'date', 'part'])
                 self.assertTrue(command.status.endswith('Classified'))
 
     def test_no_date_record_from_classify(self):
@@ -402,15 +497,14 @@ class TestClassifyCommand(WizLibTestCase):
         app.config = ConfigHandler.fake(**self.config())
         command = ClassifyCommand(app, file=str(self.source))
         command.handle_vals()
-        with patch(EXTRACT, return_value=dict(RESULT, date='<UNKNOWN>')), \
+        with patch(EXTRACT, return_value=result(date='<UNKNOWN>')), \
                 patch(TRANSCRIBE, return_value='# Hi'):
             record = command.classify()
-        self.assertIsNone(record['date'])
+        self.assertIsNone(record['data']['date'])
 
     def test_date_padded_with_spaces(self):
-        out, _, _, _ = self.run_command(
-            result=dict(RESULT, date=' 20261002 '))
-        self.assertEqual(yaml.safe_load(out)['date'], '20261002')
+        out, _, _, _ = self.run_command(result=result(date=' 20261002 '))
+        self.assertEqual(yaml.safe_load(out)['data']['date'], '20261002')
 
     def test_instructions_allow_empty_date(self):
         _, _, e, _ = self.run_command()
@@ -422,7 +516,9 @@ class TestClassifyCommand(WizLibTestCase):
 class TestClassifyPipe(WizLibTestCase):
     """classify's output can be piped into stow-file"""
 
-    def test_pipe_into_stow_file(self):
+    def pipe(self, extract_result, ttyin=''):
+        """Run classify, then pipe its output into stow-file. Return
+        (record text, stow-file stdout, stow-file stderr, target)."""
         with TemporaryDirectory() as d:
             dir = Path(d)
             target = dir / 'target'
@@ -430,9 +526,10 @@ class TestClassifyPipe(WizLibTestCase):
             source.write_bytes(b'%PDF')
             with NamedTemporaryFile('w+', suffix='.yml') as cf:
                 cf.write(f"filez4eva:\n  target: {target}\n"
+                         f"  pattern: '{PATTERN}'\n"
                          "  doctypes:\n    receipt:\n")
                 cf.flush()
-                with patch(EXTRACT, return_value=RESULT), \
+                with patch(EXTRACT, return_value=extract_result), \
                         patch(TRANSCRIBE, return_value='# Receipt'), \
                         self.patchout() as o, self.patcherr():
                     Filez4EvaApp.start('--config', cf.name, 'classify',
@@ -440,47 +537,30 @@ class TestClassifyPipe(WizLibTestCase):
                     o.seek(0)
                     record = o.read()
                 with self.patch_stream(record), self.patchout() as o, \
-                        self.patcherr(), self.patch_ttyin(''):
-                    Filez4EvaApp.start('--config', cf.name, 'stow-file',
-                                       str(source), debug=True)
-                    o.seek(0)
-                    out = o.read()
-            stowed = target / '2026/amazon/20261002-receipt.pdf'
-            self.assertEqual(out.strip(), str(stowed))
-            self.assertTrue(stowed.is_file())
-            self.assertTrue(Path(str(stowed) + '.md').is_file())
-            self.assertFalse(source.exists())
-
-    def test_pipe_without_date_prompts_for_it(self):
-        with TemporaryDirectory() as d:
-            dir = Path(d)
-            target = dir / 'target'
-            source = dir / 'scan.pdf'
-            source.write_bytes(b'%PDF')
-            with NamedTemporaryFile('w+', suffix='.yml') as cf:
-                cf.write(f"filez4eva:\n  target: {target}\n"
-                         "  doctypes:\n    receipt:\n")
-                cf.flush()
-                with patch(EXTRACT,
-                           return_value=dict(RESULT, date='<UNKNOWN>')), \
-                        patch(TRANSCRIBE, return_value='# Profile'), \
-                        self.patchout() as o, self.patcherr():
-                    Filez4EvaApp.start('--config', cf.name, 'classify',
-                                       str(source), debug=True)
-                    o.seek(0)
-                    record = o.read()
-                self.assertIn('date: null', record)
-                with self.patch_stream(record), self.patchout() as o, \
-                        self.patcherr() as e, \
-                        self.patch_ttyin('20250704\n'):
+                        self.patcherr() as e, self.patch_ttyin(ttyin):
                     Filez4EvaApp.start('--config', cf.name, 'stow-file',
                                        str(source), debug=True)
                     o.seek(0)
                     e.seek(0)
-                    out = o.read()
-                    err = e.read()
-            stowed = target / '2025/amazon/20250704-receipt.pdf'
-            self.assertIn('Date: ', err)
-            self.assertNotIn('Account: ', err)
-            self.assertEqual(out.strip(), str(stowed))
-            self.assertTrue(stowed.is_file())
+                    out, err = o.read(), e.read()
+            stowed = sorted(str(p.relative_to(target))
+                            for p in target.rglob('*') if p.is_file())
+            self.assertFalse(source.exists())
+            return record, out, err, stowed, target
+
+    def test_pipe_into_stow_file(self):
+        _, out, _, stowed, target = self.pipe(RESULT)
+        self.assertEqual(stowed, [
+            '.filez4eva/values.yaml',
+            '2026/amazon/20261002-receipt.pdf',
+            '2026/amazon/20261002-receipt.pdf.md'])
+        self.assertEqual(out.strip(),
+                         str(target / '2026/amazon/20261002-receipt.pdf'))
+
+    def test_pipe_without_date_prompts_for_it(self):
+        record, _, err, stowed, _ = self.pipe(result(date='<UNKNOWN>'),
+                                              ttyin='20250704\n')
+        self.assertIn('date: null', record)
+        self.assertIn('Date: ', err)
+        self.assertNotIn('Account: ', err)
+        self.assertIn('2025/amazon/20250704-receipt.pdf', stowed)

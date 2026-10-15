@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from filez4eva.command.scan_dir_command import ScanDirCommand
 from filez4eva.command import Filez4EvaCommand
 from filez4eva import Filez4EvaApp
+from filez4eva.fields import values_path
 
 from kwark.ai import APIError
 from wizlib.config_handler import ConfigHandler
@@ -34,9 +35,9 @@ class TestCommandScan(WizLibTestCase):
         sourcefn1: str = 'b.txt'
         sourcefn2: str = 'c.txt'
         sourcecontent: str = 'a'
-        stowedpath1: str = '/2024/j/20240213-t.txt'
-        stowedpath2: str = '/2023/k/20231211-u.txt'
-        keys = 's20240213\nj\nt\ns20231211\nk\nu\n'
+        stowedpath1: str = '/20240213-t.txt'
+        stowedpath2: str = '/20231211-u.txt'
+        keys = 's20240213\nt\ns20231211\nu\n'
         with \
                 TemporaryDirectory() as source, \
                 TemporaryDirectory() as target, \
@@ -60,9 +61,9 @@ class TestCommandScan(WizLibTestCase):
         self.assertEqual(c.status, 'Stowed 2 files')
 
     def test_invalid_prompted_part_does_not_abort(self):
-        # A typo at the part prompt re-asks; the session carries on to the
-        # next file instead of ending.
-        keys = 's20240213\nj\nbank statement\nt\ns20231211\nk\nu\n'
+        # A value with no letters or digits re-asks; the session carries on
+        # to the next file instead of ending.
+        keys = 's20240213\n//\nt\ns20231211\nu\n'
         with \
                 TemporaryDirectory() as source, \
                 TemporaryDirectory() as target, \
@@ -76,11 +77,11 @@ class TestCommandScan(WizLibTestCase):
             c = ScanDirCommand(a, dir=str(source))
             c.execute()
             self.assertTrue(
-                (Path(target) / '2024/j/20240213-t.txt').is_file())
+                (Path(target) / '20240213-t.txt').is_file())
             self.assertTrue(
-                (Path(target) / '2023/k/20231211-u.txt').is_file())
+                (Path(target) / '20231211-u.txt').is_file())
             e.seek(0)
-            self.assertIn('Part must contain only', e.read())
+            self.assertIn('Title must contain letters or digits', e.read())
         self.assertEqual(c.status, 'Stowed 2 files')
 
     def test_quit(self):
@@ -180,9 +181,9 @@ class TestCommandScan(WizLibTestCase):
         sourcefn1: str = 'b.txt'
         sourcefn2: str = 'c.txt'
         sourcecontent: str = 'a'
-        stowedpath1: str = '/2024/j/20240213-t.txt'
-        stowedpath2: str = '/2023/k/20231211-u.txt'
-        keys = 's20240213\nj\nt\ns20231211\nk\nu\n'
+        stowedpath1: str = '/20240213-t.txt'
+        stowedpath2: str = '/20231211-u.txt'
+        keys = 's20240213\nt\ns20231211\nu\n'
         with \
                 TemporaryDirectory() as source, \
                 TemporaryDirectory() as target, \
@@ -210,9 +211,9 @@ class TestCommandScan(WizLibTestCase):
         sourcefn1: str = 'b.txt'
         sourcefn2: str = 'c.txt'
         sourcecontent: str = 'a'
-        stowedpath1: str = '/2024/j/20240213-t.txt'
-        stowedpath2: str = '/2023/k/20231211-u.txt'
-        keys = 's20240213\nj\nt\ns20231211\nk\nu\n'
+        stowedpath1: str = '/20240213-t.txt'
+        stowedpath2: str = '/20231211-u.txt'
+        keys = 's20240213\nt\ns20231211\nu\n'
         with \
                 TemporaryDirectory() as source, \
                 TemporaryDirectory() as target, \
@@ -238,7 +239,7 @@ class TestCommandScan(WizLibTestCase):
 
     def test_cabinet_prompted_per_file(self):
         # With several cabinets, each stowed file asks for its cabinet
-        keys = 'smemories\n20240213\nj\nt\nsaccounts\n20231211\nk\nu\n'
+        keys = 'smemories\n20240213\nt\nsaccounts\n20231211\nu\n'
         with \
                 TemporaryDirectory() as source, \
                 TemporaryDirectory() as a, \
@@ -253,8 +254,8 @@ class TestCommandScan(WizLibTestCase):
                 'accounts': {'target': a}, 'memories': {'target': b}})
             c = ScanDirCommand(app, dir=str(source))
             c.execute()
-            self.assertTrue((Path(b) / '2024/j/20240213-t.txt').is_file())
-            self.assertTrue((Path(a) / '2023/k/20231211-u.txt').is_file())
+            self.assertTrue((Path(b) / '20240213-t.txt').is_file())
+            self.assertTrue((Path(a) / '20231211-u.txt').is_file())
         self.assertEqual(c.status, 'Stowed 2 files')
 
     def _run_scan(self, files, keys):
@@ -298,13 +299,21 @@ class TestCommandScan(WizLibTestCase):
 
     def test_transcript_not_offered_after_stow(self):
         c, remaining, out = self._run_scan(
-            ['b.txt', 'b.txt.md'], 's20240213\nj\nt\n')
+            ['b.txt', 'b.txt.md'], 's20240213\nt\n')
         self.assertEqual(c.status, 'Stowed 1 file')
         self.assertEqual(remaining, [])
 
 
-RESULT = {'date': '20261002', 'account': 'amazon', 'part': 'receipt',
+PATTERN = '{date.year}/{account}/{date}-{part}'
+
+RESULT = {'data': {'date': '20261002', 'account': 'amazon',
+                   'part': 'receipt'},
           'doctype': 'other', 'summary': 'Amazon.ca order receipt'}
+
+
+def result(**data):
+    return dict(RESULT, data=dict(RESULT['data'], **data))
+
 
 # Clear the pre-filled default, then press Enter
 CANCEL = S.BACKSPACE + S.RETURN
@@ -323,9 +332,10 @@ class TestCommandScanAI(WizLibTestCase):
         self.file.write_bytes(b'%PDF fake')
         self.transcript = self.source / 'scan.pdf.md'
         self.target = self.dir / 'target'
-        existing = self.target / '2026/amazon/20260301-refund.pdf'
-        existing.parent.mkdir(parents=True)
-        existing.write_text('x')
+        store = values_path(self.target)
+        store.parent.mkdir(parents=True)
+        store.write_text('account:\n  amazon:\n    count: 2\n'
+                         'part:\n  refund:\n    count: 2\n')
         self.stowed = self.target / '2026/amazon/20261002-receipt.pdf'
 
     def tearDown(self):
@@ -334,7 +344,7 @@ class TestCommandScanAI(WizLibTestCase):
 
     def two_cabinets(self):
         self.other = self.dir / 'memories'
-        return {'filez4eva_cabinets': {
+        return {'filez4eva_pattern': PATTERN, 'filez4eva_cabinets': {
             'accounts': {'target': str(self.target)},
             'memories': {'target': str(self.other)}}}
 
@@ -344,7 +354,8 @@ class TestCommandScanAI(WizLibTestCase):
         Return (command, get_text mock, stderr, extract mock)."""
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(
-            **(config or {'filez4eva_target': str(self.target)}))
+            **(config or {'filez4eva_target': str(self.target),
+                          'filez4eva_pattern': PATTERN}))
         answers = iter(answers)
         extract = extract or {'return_value': RESULT}
         transcribe = transcribe or {'return_value': '# Receipt'}
@@ -364,10 +375,10 @@ class TestCommandScanAI(WizLibTestCase):
         return [c.args for c in gt.call_args_list]
 
     def test_prompts_prefilled(self):
-        c, gt, err, _ = self.run_scan(['20261002', 'amazon', 'receipt'])
+        c, gt, err, _ = self.run_scan(['amazon', '20261002', 'receipt'])
         self.assertEqual(self.prompts(gt), [
-            ('Date: ', [], '20261002'),
             ('Account: ', ['amazon'], 'amazon'),
+            ('Date: ', [], '20261002'),
             ('Part: ', ['refund'], 'receipt')])
         self.assertIn('Summary: Amazon.ca order receipt', err)
         self.assertIn('Transcribed | Classified', err)
@@ -377,7 +388,7 @@ class TestCommandScanAI(WizLibTestCase):
         self.assertEqual(c.status, 'Stowed 1 file')
 
     def test_prefilled_value_edited(self):
-        c, _, _, _ = self.run_scan(['20261002', 'amazon', 'invoice'])
+        c, _, _, _ = self.run_scan(['amazon', '20261002', 'invoice'])
         stowed = self.target / '2026/amazon/20261002-invoice.pdf'
         self.assertTrue(stowed.is_file())
         self.assertTrue(Path(str(stowed) + '.md').is_file())
@@ -386,16 +397,16 @@ class TestCommandScanAI(WizLibTestCase):
     def assert_fallback(self, c, gt, err, message):
         self.assertIn(message, err)
         self.assertEqual(self.prompts(gt), [
-            ('Date: ',),
             ('Account: ', ['amazon']),
-            ('Part: ', [])])
+            ('Date: ', []),
+            ('Part: ', ['refund'])])
         stowed = self.target / '2025/acme/20250101-bill.pdf'
         self.assertTrue(stowed.is_file())
         self.assertEqual(c.status, 'Stowed 1 file')
 
     def test_extract_failure_falls_back(self):
         c, gt, err, _ = self.run_scan(
-            ['20250101', 'acme', 'bill'],
+            ['acme', '20250101', 'bill'],
             extract={'side_effect': APIError('boom')})
         self.assert_fallback(c, gt, err, 'Classification failed: boom')
         # The transcript was written before classifying failed, and moves
@@ -405,24 +416,24 @@ class TestCommandScanAI(WizLibTestCase):
 
     def test_transcribe_failure_falls_back(self):
         c, gt, err, x = self.run_scan(
-            ['20250101', 'acme', 'bill'],
+            ['acme', '20250101', 'bill'],
             transcribe={'side_effect': APIError('nope')})
         self.assert_fallback(c, gt, err, 'Transcription failed: nope')
         x.assert_not_called()
 
     def test_bad_result_falls_back(self):
         c, gt, err, _ = self.run_scan(
-            ['20250101', 'acme', 'bill'],
-            extract={'return_value': dict(RESULT, part='a b')})
-        self.assert_fallback(c, gt, err, 'Part must contain only')
+            ['acme', '20250101', 'bill'],
+            extract={'return_value': result(part='//')})
+        self.assert_fallback(c, gt, err, 'Part must contain letters')
 
     def test_no_date_prompt_starts_empty(self):
         c, gt, err, _ = self.run_scan(
-            ['20250704', 'amazon', 'receipt'],
-            extract={'return_value': dict(RESULT, date='<UNKNOWN>')})
+            ['amazon', '20250704', 'receipt'],
+            extract={'return_value': result(date='<UNKNOWN>')})
         self.assertEqual(self.prompts(gt), [
-            ('Date: ', []),
             ('Account: ', ['amazon'], 'amazon'),
+            ('Date: ', []),
             ('Part: ', ['refund'], 'receipt')])
         self.assertNotIn('Classification failed', err)
         self.assertIn('Summary: Amazon.ca order receipt', err)
@@ -432,15 +443,16 @@ class TestCommandScanAI(WizLibTestCase):
 
     def test_bad_doctypes_falls_back(self):
         c, gt, err, x = self.run_scan(
-            ['20250101', 'acme', 'bill'],
+            ['acme', '20250101', 'bill'],
             config={'filez4eva_target': str(self.target),
+                    'filez4eva_pattern': PATTERN,
                     'filez4eva_doctypes': ['receipt']})
         self.assert_fallback(c, gt, err, 'doctypes must be a mapping')
         x.assert_not_called()
 
     def test_cancel_at_prefilled_prompt(self):
         # An empty part returns to the chooser; then skip the file
-        c, gt, err, _ = self.run_scan(['20261002', 'amazon', ''],
+        c, gt, err, _ = self.run_scan(['amazon', '20261002', ''],
                                       options='sx')
         self.assertIn('Part required', err)
         self.assertEqual(err.count('scan.pdf'), 2)
@@ -451,8 +463,8 @@ class TestCommandScanAI(WizLibTestCase):
     def test_cancel_then_stow_again(self):
         # The transcript from the first attempt is reused
         c, gt, err, x = self.run_scan(
-            ['', '20261002', 'amazon', 'receipt'], options='ss')
-        self.assertIn('Date required', err)
+            ['', 'amazon', '20261002', 'receipt'], options='ss')
+        self.assertIn('Account required', err)
         self.assertEqual(x.call_count, 2)
         self.assertTrue(self.stowed.is_file())
         self.assertEqual(c.status, 'Stowed 1 file')
@@ -460,13 +472,13 @@ class TestCommandScanAI(WizLibTestCase):
     def test_cancel_in_fallback(self):
         c, _, err, _ = self.run_scan(
             [''], options='sx', extract={'side_effect': APIError('boom')})
-        self.assertIn('Date required', err)
+        self.assertIn('Account required', err)
         self.assertTrue(self.file.is_file())
         self.assertEqual(c.status, 'Skipped 1 file')
 
     def test_cabinet_asked_once(self):
         c, gt, _, x = self.run_scan(
-            ['accounts', '20261002', 'amazon', 'receipt'],
+            ['accounts', 'amazon', '20261002', 'receipt'],
             config=self.two_cabinets())
         self.assertEqual(self.prompts(gt)[0][0], 'Cabinet: ')
         self.assertEqual(
@@ -477,7 +489,7 @@ class TestCommandScanAI(WizLibTestCase):
 
     def test_cabinet_asked_once_in_fallback(self):
         c, gt, err, _ = self.run_scan(
-            ['memories', '20250101', 'acme', 'bill'],
+            ['memories', 'acme', '20250101', 'bill'],
             config=self.two_cabinets(),
             extract={'side_effect': APIError('boom')})
         self.assertIn('Classification failed: boom', err)

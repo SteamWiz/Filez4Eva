@@ -1,13 +1,10 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime
 from functools import cached_property
 import os
 from pathlib import Path
 import re
 import shutil
-from string import Formatter
-from subprocess import run
-import sys
 
 import yaml
 from wizlib.parser import WizParser
@@ -17,49 +14,24 @@ from wizlib.ui.shell_ui import Emphasis
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command.transcribe_command import transcript_path
 from filez4eva.error import Filez4EvaError
+from filez4eva.fields import (
+    DATE_FIELD, DEFAULT_PATTERN, FIELD_NAME, Field, check_field_names,
+    check_field_settings, check_pattern, check_value, load_store,
+    normalize_value, record_values, render_pattern, resolve_fields,
+    suggestions, value_rule, values_path)
 
-
-FILE_PATTERN = re.compile(r'\d{8}\-([a-zA-Z0-9-]+)\.(\w+)')
-
-# Keys that stow-file reads from a YAML mapping on stdin. Other keys are
-# ignored.
-STDIN_KEYS = ['cabinet', 'date', 'account', 'part']
 
 DATE_PATTERN = re.compile(r'\d{8}')
-
-# A part becomes part of the filename, so it must match FILE_PATTERN.
-PART_PATTERN = re.compile(r'[a-zA-Z0-9-]+')
 
 # Date formats accepted from stdin; the first is the canonical one.
 STDIN_DATE_FORMATS = ['%Y%m%d', '%Y-%m-%d']
 
 
 # YAML null spellings. BaseLoader returns them as strings, so treat them as
-# missing rather than as a directory or part called "null".
+# missing rather than as a value called "null".
 YAML_NULLS = {'~', 'null', 'Null', 'NULL'}
 
-# Destination layout under the target directory, from the `filez4eva:
-# pattern:` config key. The default reproduces the original layout.
-DEFAULT_PATTERN = '{year}/{account}/{date}-{part}{ext}'
-
-# Placeholders allowed in a pattern. `date` is YYYYMMDD and `ext` includes
-# the dot.
-PLACEHOLDERS = {'year', 'date', 'account', 'part', 'ext'}
-
-PATTERN_RULE = ('Pattern may only use the placeholders '
-                + ', '.join('{' + p + '}' for p in sorted(PLACEHOLDERS))
-                + ' (no format specs, conversions, attributes or indexes)'
-                + ' and must be a relative path inside the target')
-
-ACCOUNT_RULE = 'Account must be a single directory name'
-PART_RULE = 'Part must contain only letters, digits and hyphens'
 DATE_RULE = 'Date must match format YYYYMMDD'
-
-
-def valid_account(account: str) -> bool:
-    """True if account is one safe path segment"""
-    return not (not account or account in ('.', '..') or '/' in account
-                or '\\' in account or '\0' in account)
 
 
 def valid_date(date: str) -> bool:
@@ -73,46 +45,10 @@ def valid_date(date: str) -> bool:
     return True
 
 
-def valid_part(part: str) -> bool:
-    """True if part contains only letters, digits and hyphens"""
-    return bool(PART_PATTERN.fullmatch(part or ''))
-
-
-def check_account(account: str):
-    """Raise Filez4EvaError unless account is one safe path segment"""
-    if not valid_account(account):
-        raise Filez4EvaError(f"{ACCOUNT_RULE}: {account!r}")
-
-
-def check_part(part: str):
-    """Raise Filez4EvaError unless part contains only letters, digits and
-    hyphens"""
-    if not valid_part(part):
-        raise Filez4EvaError(f"{PART_RULE}: {part!r}")
-
-
-def check_pattern(pattern: str):
-    """Raise Filez4EvaError unless pattern is a valid destination pattern"""
-    def error(detail):
-        return Filez4EvaError(
-            f"Invalid filez4eva pattern {pattern!r}: {detail}. "
-            f"{PATTERN_RULE}")
-    if not isinstance(pattern, str) or not pattern.strip():
-        raise error("must not be empty")
-    try:
-        fields = list(Formatter().parse(pattern))
-    except ValueError as err:
-        raise error(str(err)) from None
-    for _, name, spec, conversion in fields:
-        if name is None:
-            continue
-        if name not in PLACEHOLDERS:
-            raise error(f"unknown placeholder {{{name}}}")
-        if spec or conversion:
-            raise error(f"format spec or conversion on {{{name}}}")
-    pure = Path(pattern)
-    if pure.is_absolute() or pattern.startswith('~') or '..' in pure.parts:
-        raise error("must stay inside the target")
+def stdin_null(value) -> bool:
+    """True if a value read from stdin means 'not given'"""
+    return value is None or (isinstance(value, str)
+                             and value.strip() in YAML_NULLS | {''})
 
 
 # Name of the implicit cabinet built from the top-level `target` and
@@ -196,9 +132,15 @@ def resolve_transcripts(name: str, block, location=None, root=None) -> tuple:
     return location, root
 
 
+def default_fields() -> tuple:
+    """The fields of the default pattern, with built-in settings"""
+    return resolve_fields(check_pattern(DEFAULT_PATTERN), {}, {})
+
+
 @dataclass(frozen=True)
 class Cabinet:
-    """A named destination: a target directory with its own pattern"""
+    """A named destination: a target directory with its own pattern, whose
+    placeholders are the cabinet's fields"""
 
     name: str
     target: str
@@ -206,10 +148,16 @@ class Cabinet:
     description: str = None
     transcripts_location: str = DEFAULT_TRANSCRIPT_LOCATION
     transcripts_root: str = None
+    # Field for each name in the pattern, in pattern order (date included)
+    fields: tuple = dataclass_field(default_factory=default_fields)
 
     @property
     def targetdir(self) -> Path:
         return Path(self.target).expanduser()
+
+    def field(self, name: str) -> Field:
+        """The field with this name, or None"""
+        return next((f for f in self.fields if f.name == name), None)
 
     @property
     def transcripts_rootdir(self) -> Path:
@@ -221,29 +169,39 @@ class Cabinet:
 
 def load_cabinets(config) -> dict:
     """Return the configured cabinets as a dict of name -> Cabinet. Without a
-    `cabinets` section, the top-level `target` and `pattern` form a single
-    cabinet named 'default'. With one, the top-level `target` is ignored and
-    the top-level `pattern` is the default for cabinets that set none. A
-    cabinet's `transcripts` block likewise overrides the top-level
-    `transcripts` location and root key by key. Raises Filez4EvaError on bad
-    configuration, including any invalid pattern or transcripts setting."""
+    `cabinets` section, the top-level `target`, `pattern` and `fields` form
+    a single cabinet named 'default'. With one, the top-level `target` is
+    ignored and the top-level `pattern` is the default for cabinets that set
+    none. A cabinet's fields are the names in its pattern; each field's
+    settings come from the cabinet's `fields`, then the top-level `fields`,
+    then the built-in defaults. A cabinet's `transcripts` block likewise
+    overrides the top-level `transcripts` location and root key by key.
+    Raises Filez4EvaError on bad configuration, including any invalid
+    pattern, fields or transcripts setting."""
     pattern = config.get('filez4eva-pattern') or DEFAULT_PATTERN
     location, root = load_top_transcripts(config)
+    top_owner = 'Top-level filez4eva'
+    top_fields = check_field_settings(top_owner,
+                                      config.get('filez4eva-fields'))
     entries = config.get('filez4eva-cabinets')
     if not entries:
         target = config.get('filez4eva-target')
         if not target:
             raise Filez4EvaError(
                 "No target configured: set filez4eva target or cabinets")
-        check_pattern(pattern)
+        names = check_pattern(pattern)
+        check_field_names(top_owner, top_fields, names,
+                          f"the pattern {pattern!r}")
         transcripts = resolve_transcripts(DEFAULT_CABINET, None, location,
                                           root)
-        return {DEFAULT_CABINET: Cabinet(DEFAULT_CABINET, str(target),
-                                         pattern, None, *transcripts)}
+        return {DEFAULT_CABINET: Cabinet(
+            DEFAULT_CABINET, str(target), pattern, None, *transcripts,
+            resolve_fields(names, {}, top_fields))}
     if not isinstance(entries, dict):
         raise Filez4EvaError(
             "filez4eva cabinets must be a mapping of name to settings")
     cabinets = {}
+    used = set()
     for name, entry in entries.items():
         if not isinstance(name, str) or not name.strip():
             raise Filez4EvaError(
@@ -260,45 +218,18 @@ def load_cabinets(config) -> dict:
             raise Filez4EvaError(
                 f"Cabinet {name} description must be text")
         cabinet_pattern = entry.get('pattern') or pattern
-        check_pattern(cabinet_pattern)
+        names = check_pattern(cabinet_pattern)
+        own = check_field_settings(f"Cabinet {name}", entry.get('fields'))
+        check_field_names(f"Cabinet {name}", own, names,
+                          f"its pattern {cabinet_pattern!r}")
+        used.update(names)
         transcripts = resolve_transcripts(name, entry.get('transcripts'),
                                           location, root)
         cabinets[name] = Cabinet(name, target, cabinet_pattern, description,
-                                 *transcripts)
+                                 *transcripts,
+                                 resolve_fields(names, own, top_fields))
+    check_field_names(top_owner, top_fields, used, "any cabinet's pattern")
     return cabinets
-
-
-def list_accounts(targetdir: Path, pattern: str) -> list:
-    """Return the accounts already filed under targetdir, sorted. Only
-    supported for the default pattern; other patterns, or a target that
-    doesn't exist yet, give an empty list."""
-    if pattern != DEFAULT_PATTERN or not targetdir.is_dir():
-        return []
-    accounts = set()
-    for year in targetdir.iterdir():
-        if year.name.isdigit() and year.is_dir():
-            for dir in year.iterdir():
-                if dir.is_dir():
-                    accounts.add(dir.name)
-    return sorted(accounts)
-
-
-def list_parts(targetdir: Path, pattern: str, account: str) -> list:
-    """Return the filename parts already used for an account under
-    targetdir, sorted. Only supported for the default pattern; other
-    patterns, or a target that doesn't exist yet, give an empty list."""
-    if pattern != DEFAULT_PATTERN or not targetdir.is_dir():
-        return []
-    parts = set()
-    for year in targetdir.iterdir():
-        if year.name.isdigit():
-            subdir = year / account
-            if subdir.is_dir():
-                for file in subdir.iterdir():
-                    match = re.match(FILE_PATTERN, file.name)
-                    if match:
-                        parts.add(match.groups()[0])
-    return sorted(parts)
 
 
 class StowFileCommand(Filez4EvaCommand):
@@ -306,10 +237,12 @@ class StowFileCommand(Filez4EvaCommand):
 
     name = 'stow-file'
 
-    date: str
-    account: str
-    part: str
-    cabinet: str
+    date: str = None
+    # Values of the cabinet's fields other than date, by field name
+    data: dict = None
+    # NAME=VALUE strings from repeated --field flags
+    field: list = None
+    cabinet: str = None
 
     # Set False when stow-file runs inside another command (e.g. scan-dir),
     # so a record piped to that command isn't applied to every file.
@@ -319,8 +252,8 @@ class StowFileCommand(Filez4EvaCommand):
     def add_args(cls, parser: WizParser):
         super().add_args(parser)
         parser.add_argument('--date', '-d')
-        parser.add_argument('--account', '-a')
-        parser.add_argument('--part', '-p')
+        parser.add_argument('--field', '-f', action='append',
+                            metavar='NAME=VALUE')
         parser.add_argument('--cabinet', '-c')
         parser.add_argument('file')
 
@@ -329,45 +262,70 @@ class StowFileCommand(Filez4EvaCommand):
         # Fail on bad configuration (including any cabinet's pattern) before
         # prompting for anything
         self.cabinets
+        self.data = dict(self.data or {})
+        flagged = self.apply_field_flags()
         if self.use_stdin:
             self.apply_stdin_record()
-        self.resolve_cabinet()
-        if not self.provided('date'):
-            while True:
-                self.date = self.app.ui.get_text('Date: ').strip()
-                if not self.date:
-                    self.app.ui.send('Date required', Emphasis.PRINCIPAL)
-                    raise CommandCancellation()
-                try:
-                    datetime.strptime(self.date, "%Y%m%d")
-                    break
-                except ValueError:
-                    self.app.ui.send(DATE_RULE, Emphasis.PRINCIPAL)
-        if not self.provided('account'):
-            accounts = self.get_accounts()
-            self.account = self.prompt_value(
-                'Account', accounts, valid_account, ACCOUNT_RULE)
-        if not self.provided('part'):
-            parts = self.get_parts(self.account)
-            self.part = self.prompt_value(
-                'Part', parts, valid_part, PART_RULE)
+        cabinet = self.resolve_cabinet()
+        for name in flagged:
+            if cabinet.field(name) is None:
+                raise Filez4EvaError(
+                    f"Unknown field {name} for cabinet {cabinet.name}; "
+                    "known: " + ', '.join(f.name for f in cabinet.fields
+                                          if not f.is_date))
+        for field in cabinet.fields:
+            if field.is_date:
+                if not self.provided('date'):
+                    self.date = self.prompt_value(
+                        'Date', [], self.clean_date, DATE_RULE)
+            elif not self.data.get(field.name):
+                self.data[field.name] = self.prompt_value(
+                    field.label, self.choices(field), normalize_value,
+                    value_rule(field))
 
-    def prompt_value(self, label: str, choices: list, valid, rule: str,
+    @staticmethod
+    def clean_date(value: str) -> str:
+        """The date if valid, otherwise None"""
+        return value if valid_date(value) else None
+
+    def prompt_value(self, label: str, choices: list, clean, rule: str,
                      default: str = ''):
         """Prompt until a valid value is entered; cancel on an empty one.
-        Re-asking (rather than raising) keeps a typo from ending a scan-dir
-        session. A default is shown pre-filled, so Enter accepts it."""
-        # Only pass a default when there is one, so callers without one see
-        # the same get_text call as before
+        clean returns the value to use (e.g. normalized), or something falsy
+        if the value is invalid. Re-asking (rather than raising) keeps a
+        typo from ending a scan-dir session. A default is shown pre-filled,
+        so Enter accepts it."""
+        # Only pass a default when there is one
         extra = (default,) if default else ()
         while True:
-            value = self.app.ui.get_text(f'{label}: ', choices, *extra)
+            value = (self.app.ui.get_text(f'{label}: ', choices, *extra)
+                     or '').strip()
             if not value:
                 self.app.ui.send(f'{label} required', Emphasis.PRINCIPAL)
                 raise CommandCancellation()
-            if valid(value):
-                return value
+            cleaned = clean(value)
+            if cleaned:
+                return cleaned
             self.app.ui.send(rule, Emphasis.PRINCIPAL)
+
+    def apply_field_flags(self) -> list:
+        """Put the values of --field NAME=VALUE flags into data, normalized,
+        and return the names. The names are checked against the cabinet
+        once it is known. Raises Filez4EvaError on a malformed flag or a
+        value that is empty once normalized."""
+        names = []
+        for flag in self.field or []:
+            name, equals, value = flag.partition('=')
+            name = name.strip()
+            if not equals or not FIELD_NAME.fullmatch(name):
+                raise Filez4EvaError(
+                    f"--field must be NAME=VALUE: {flag!r}")
+            if name == DATE_FIELD:
+                raise Filez4EvaError("Use --date for the date")
+            self.data[name] = check_value(Field(name), value,
+                                          'from --field')
+            names.append(name)
+        return names
 
     def stdin_record(self) -> dict:
         """Return the YAML mapping piped on stdin, or an empty dict if stdin
@@ -384,31 +342,38 @@ class StowFileCommand(Filez4EvaCommand):
         return record if isinstance(record, dict) else {}
 
     def apply_stdin_record(self):
-        """Fill date, account and part from stdin where not provided as
-        command-line flags. Stdin is untrusted, so values are validated and
-        a bad value raises Filez4EvaError."""
+        """Fill the cabinet, and the date and other fields (under `data`),
+        from stdin where not provided as command-line flags. Field names
+        are checked once the cabinet is known; values for names the cabinet
+        doesn't have are ignored. Stdin is untrusted, so values are
+        validated (fields other than date are normalized) and a bad value
+        raises Filez4EvaError."""
         record = self.stdin_record()
-        for key in STDIN_KEYS:
-            if self.provided(key):
-                continue
-            value = record.get(key)
-            if value is None or value == '':
+        cabinet = record.get('cabinet')
+        if not self.provided('cabinet') and not stdin_null(cabinet):
+            if not isinstance(cabinet, str):
+                raise Filez4EvaError(
+                    "Cabinet from stdin must be a single value")
+            self.check_cabinet(cabinet.strip())
+            self.cabinet = cabinet.strip()
+        data = record.get('data')
+        if stdin_null(data):
+            return
+        if not isinstance(data, dict):
+            raise Filez4EvaError("Data from stdin must be a mapping")
+        for name, value in data.items():
+            if stdin_null(value) or not isinstance(name, str) \
+                    or not FIELD_NAME.fullmatch(name):
                 continue
             if not isinstance(value, str):
                 raise Filez4EvaError(
-                    f"{key.capitalize()} from stdin must be a single value")
-            value = value.strip()
-            if not value or value in YAML_NULLS:
-                continue
-            if key == 'cabinet':
-                self.check_cabinet(value)
-            elif key == 'date':
-                value = self.normalize_stdin_date(value)
-            elif key == 'account':
-                check_account(value)
-            elif key == 'part':
-                check_part(value)
-            setattr(self, key, value)
+                    f"Field {name} from stdin must be a single value")
+            if name == DATE_FIELD:
+                if not self.provided('date'):
+                    self.date = self.normalize_stdin_date(value.strip())
+            elif not self.data.get(name):
+                self.data[name] = check_value(Field(name), value,
+                                              'from stdin')
 
     @staticmethod
     def normalize_stdin_date(value: str) -> str:
@@ -420,13 +385,12 @@ class StowFileCommand(Filez4EvaCommand):
         raise Filez4EvaError(
             f"Date from stdin must match format YYYYMMDD: {value}")
 
-    def get_accounts(self) -> list:
-        """Return past accounts for tab completion"""
-        return list_accounts(self.targetdir, self.pattern)
-
-    def get_parts(self, sub: str) -> list:
-        """Return past filename parts of an account for tab completion"""
-        return list_parts(self.targetdir, self.pattern, sub)
+    def choices(self, field: Field) -> list:
+        """Return the values offered for a field (for tab completion and to
+        the AI): its common learned values in the chosen cabinet, or none"""
+        if not field.learned:
+            return []
+        return suggestions(load_store(self.targetdir), field.name)
 
     @cached_property
     def cabinets(self) -> dict:
@@ -450,7 +414,8 @@ class StowFileCommand(Filez4EvaCommand):
         else:
             names = sorted(self.cabinets)
             self.cabinet = self.prompt_value(
-                'Cabinet', names, lambda v: v in self.cabinets,
+                'Cabinet', names,
+                lambda v: v if v in self.cabinets else None,
                 'Cabinet must be one of: ' + ', '.join(names))
         return self.cabinets[self.cabinet]
 
@@ -484,6 +449,24 @@ class StowFileCommand(Filez4EvaCommand):
                 f"Transcript destination {result} is outside {base}")
         return result
 
+    def field_values(self) -> dict:
+        """Return the value of every field of the chosen cabinet (date
+        included), by name. Raises Filez4EvaError if a value is missing or
+        invalid."""
+        cabinet = self.resolve_cabinet()
+        if not valid_date(self.date):
+            raise Filez4EvaError(f"{DATE_RULE}: {self.date!r}")
+        values = {}
+        for field in cabinet.fields:
+            if field.is_date:
+                values[field.name] = self.date
+                continue
+            value = (self.data or {}).get(field.name)
+            if not value:
+                raise Filez4EvaError(f"No value for field {field.name}")
+            values[field.name] = check_value(field, value)
+        return values
+
     def plan(self) -> tuple:
         """Work out where the file (and its transcript, if any) would go,
         without moving anything. Return (source, targetpath,
@@ -496,13 +479,10 @@ class StowFileCommand(Filez4EvaCommand):
         path = Path(self.file).expanduser().absolute()
         if not path.is_file():
             raise Filez4EvaError(f"File {path} must exist")
-        check_account(self.account)
-        check_part(self.part)
-        date = datetime.strptime(self.date, "%Y%m%d")
+        self.values = self.field_values()
         targetdir = self.targetdir.absolute()
-        relative = pattern.format(
-            year=str(date.year), date=date.strftime('%Y%m%d'),
-            account=self.account, part=self.part, ext=path.suffix)
+        # The source file's extension is always kept
+        relative = render_pattern(pattern, self.values) + path.suffix
         targetpath = targetdir / relative
         # Belt and braces: the formatted path must name a file inside the
         # target directory (checked lexically, so symlinks are allowed).
@@ -524,6 +504,20 @@ class StowFileCommand(Filez4EvaCommand):
         else:
             source_transcript = None
         return path, targetpath, source_transcript, target_transcript
+
+    def remember(self):
+        """Record the values of the cabinet's learned fields, after a
+        successful move. A failure is reported but doesn't undo the move."""
+        cabinet = self.resolve_cabinet()
+        learned = {f.name: self.values[f.name] for f in cabinet.fields
+                   if f.learned}
+        try:
+            record_values(cabinet.targetdir.absolute(), learned)
+        except (OSError, UnicodeDecodeError, yaml.YAMLError,
+                ValueError) as error:
+            self.app.ui.send(
+                f"Could not record values in "
+                f"{values_path(cabinet.targetdir)}: {error}", Emphasis.ERROR)
 
     @Filez4EvaCommand.wrap
     def execute(self):
@@ -547,5 +541,6 @@ class StowFileCommand(Filez4EvaCommand):
                 raise Filez4EvaError(
                     f"Could not move transcript {source_transcript}: "
                     f"{error}") from error
+        self.remember()
         self.status = 'Done'
         return str(targetpath)
