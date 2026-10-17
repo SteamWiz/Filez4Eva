@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v5.3.0 (2026-10-17)
+
+### Features
+
+- Upgrade wizlib to 4.1.0 and document op:// config secrets
+  ([#50](https://github.com/SteamWiz/Filez4Eva/pull/50),
+  [`7c1a966`](https://github.com/SteamWiz/Filez4Eva/commit/7c1a966ab76bbe576c5ab33cec5b44ea88a04645))
+
+### Breaking Changes
+
+- Config values using $(...) command substitution are no longer executed and are used as literal
+  text. Replace `$(op read op://vault/item/field)` with `op://vault/item/field`. The `op` CLI must
+  be installed and signed in; a failure is reported as a config error. FILEZ4EVA_ANTHROPIC_KEY
+  values are used as given and never resolved.
+
+
 ## v5.2.0 (2026-10-15)
 
 ### Bug Fixes
