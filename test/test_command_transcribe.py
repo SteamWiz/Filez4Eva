@@ -2,12 +2,14 @@ from datetime import datetime
 import hashlib
 import os
 from pathlib import Path
+from subprocess import CompletedProcess
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import patch
 
 import yaml
 from kwark.ai import APIError, TRANSCRIBE_DISCLAIMER
 from wizlib.config_handler import ConfigHandler
+from wizlib.error import ConfigHandlerError
 from wizlib.test_case import WizLibTestCase
 
 from filez4eva import Filez4EvaApp
@@ -17,6 +19,7 @@ from filez4eva.error import Filez4EvaError
 
 
 TRANSCRIBE = 'filez4eva.command.transcribe_command.transcribe'
+OP_RUN = 'wizlib.config_handler.subprocess.run'
 
 
 def split_transcript(text):
@@ -168,14 +171,54 @@ class TestTranscribeCommand(WizLibTestCase):
                   "  transcribe:\n"
                   "    model: claude-from-file\n"
                   "  anthropic:\n"
-                  "    key: $(echo sk-from-command)\n")
+                  "    key: op://vault/anthropic/credential\n")
+        done = CompletedProcess([], returncode=0, stdout='sk-from-op\n')
         with patch.dict(os.environ), \
+                patch(OP_RUN, return_value=done) as op, \
                 patch(TRANSCRIBE, return_value='x') as t:
             os.environ.pop('FILEZ4EVA_ANTHROPIC_KEY', None)
             os.environ.pop('FILEZ4EVA_TRANSCRIBE_MODEL', None)
             self.run_app(config)
         t.assert_called_once_with(self.source, model='claude-from-file',
-                                  api_key='sk-from-command')
+                                  api_key='sk-from-op')
+        op.assert_called_once()
+        self.assertEqual(op.call_args.args[0],
+                         ['op', 'read', 'op://vault/anthropic/credential'])
+
+    def test_command_substitution_in_config_is_literal(self):
+        config = "filez4eva:\n  anthropic:\n    key: $(echo sk-cmd)\n"
+        with patch.dict(os.environ), \
+                patch(OP_RUN) as run, \
+                patch(TRANSCRIBE, return_value='x') as t:
+            os.environ.pop('FILEZ4EVA_ANTHROPIC_KEY', None)
+            self.run_app(config)
+        self.assertEqual(t.call_args.kwargs['api_key'], '$(echo sk-cmd)')
+        run.assert_not_called()
+
+    def test_op_reference_in_environment_is_not_resolved(self):
+        ref = 'op://vault/anthropic/credential'
+        with patch.dict(os.environ, {'FILEZ4EVA_ANTHROPIC_KEY': ref}), \
+                patch(OP_RUN) as run, \
+                patch(TRANSCRIBE, return_value='x') as t:
+            self.run_app("filez4eva:\n  target: /tmp\n")
+        self.assertEqual(t.call_args.kwargs['api_key'], ref)
+        run.assert_not_called()
+
+    def test_op_failure_is_config_error(self):
+        config = ("filez4eva:\n  anthropic:\n"
+                  "    key: op://vault/anthropic/credential\n")
+        failed = CompletedProcess([], returncode=1, stdout='',
+                                  stderr='not signed in')
+        with patch.dict(os.environ), \
+                patch(OP_RUN, return_value=failed), \
+                patch(TRANSCRIBE, return_value='x') as t, \
+                self.assertRaises(ConfigHandlerError) as raised:
+            os.environ.pop('FILEZ4EVA_ANTHROPIC_KEY', None)
+            self.run_app(config)
+        self.assertIn('not signed in', str(raised.exception))
+        self.assertIn('anthropic', str(raised.exception))
+        t.assert_not_called()
+        self.assertFalse(self.target.exists())
 
     def test_key_from_environment(self):
         with patch.dict(os.environ,
