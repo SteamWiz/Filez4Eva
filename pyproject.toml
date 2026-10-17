@@ -10,7 +10,7 @@ repository = 'https://github.com/SteamWiz/Filez4Eva'
 
 [tool.poetry.dependencies]
 python = "^3.14"
-wizlib = "^4.0.8"
+wizlib = "^4.1.0"
 pyyaml = "^6.0"
 kwark = "^3.0.1"
 

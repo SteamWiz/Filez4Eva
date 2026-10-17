@@ -519,15 +519,22 @@ filez4eva:
   transcribe:
     model: claude-opus-4-6              # Anthropic model ID
   anthropic:
-    key: $(op read op://vault/anthropic/credential)
+    key: op://vault/anthropic/credential
 ```
 
 - `transcribe: model:` defaults to `claude-opus-4-6`.
-- `anthropic: key:` is the Anthropic API key. Like other values it may use
-  `$(...)` to run a command, such as a password manager lookup. It can also
-  be set with the `FILEZ4EVA_ANTHROPIC_KEY` environment variable, which takes
-  precedence over the config file. If neither is set, the Anthropic SDK's own
-  `ANTHROPIC_API_KEY` environment variable is used.
+- `anthropic: key:` is the Anthropic API key. Like other config values, it
+  may be a 1Password secret reference (`op://vault/item/field`, as copied
+  with 1Password's "Copy Secret Reference"), which is read using the `op`
+  CLI. This needs `op` installed and signed in. If `op` is missing or fails,
+  Filez4Eva reports a config error and stops.
+- `$(...)` command substitution in config values is no longer supported;
+  such a value is now used as literal text. To migrate, replace
+  `$(op read op://...)` with just `op://...`.
+- The key can also be set with the `FILEZ4EVA_ANTHROPIC_KEY` environment
+  variable, which takes precedence over the config file. Its value is used
+  as given; an `op://` reference there is not read. If neither is set, the
+  Anthropic SDK's own `ANTHROPIC_API_KEY` environment variable is used.
 
 Filez4Eva only reads its own configuration; Kwark's configuration is never
 used.

@@ -852,14 +852,14 @@ typing-extensions = ">=4.15.0"
 
 [[package]]
 name = "wizlib"
-version = "4.0.8"
+version = "4.1.0"
 description = "Build configurable CLI tools easily in Python (a framework)"
 optional = false
 python-versions = "<4.0,>=3.11"
 groups = ["main"]
 files = [
-    {file = "wizlib-4.0.8-py3-none-any.whl", hash = "sha256:6ff3ffa687df337206ecb5ed9d175ad17ff57b12741ad5b93e59bbaca7ab01a5"},
-    {file = "wizlib-4.0.8.tar.gz", hash = "sha256:66b3d679ff87cd5f8b84bd0176bf76fc09e031a655c1716c714e865d68a39317"},
+    {file = "wizlib-4.1.0-py3-none-any.whl", hash = "sha256:3ff70bfcfaedd0543f3201f303e75fcb7039cd2f8935b5afbea863426cb9879c"},
+    {file = "wizlib-4.1.0.tar.gz", hash = "sha256:5af1189d33a45aec628c25af5f1a0c73c54875a90a96d5f98deb78cb81ff5f0e"},
 ]
 
 [package.dependencies]
@@ -869,4 +869,4 @@ readchar = ">=4.0.5,<5.0.0"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.14"
-content-hash = "93c535fc331c5e1e233e2e758adc1fb35add37751c98a493bba9f55706e2465f"
+content-hash = "370d6f9c3227a46a3c98d11fff8bffec44220058c3bf34af4b1b165bd68b50c0"
