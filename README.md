@@ -19,6 +19,10 @@ Requires Python 3.14 or higher. Uses [Dyngle](https://dyngle.steamwiz.io/) for a
 
 GitHub Actions performs the entire build/test/release cycle using the shared [SteamWiz actions](https://github.com/SteamWiz/actions).
 
+## Intake and sidecars
+
+`filez4eva ingest` moves files into the intake and writes an `X.yml` sidecar next to each one (see [PACKAGE.md](PACKAGE.md#ingesting-files)). The helpers for intake names and sidecars (`intake_dir`, `extensions`, `stamp_name`, `sidecar_path`, `is_ingested`, `read_sidecar`, `write_sidecar`) are module-level functions in `filez4eva/command/ingest_command.py`, for later stages to reuse. Tests patch `ingest_command.now` to freeze the clock.
+
 ## Libraries
 
 The application uses the following external libraries:

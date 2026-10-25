@@ -18,6 +18,77 @@ If you don't have pipx installed, visit [the pipx site](https://pypa.github.io/p
 
 ## Usage
 
+### Ingesting Files
+
+To move a file into the intake, the holding area where documents wait to be
+processed:
+
+```bash
+filez4eva ingest ~/Desktop/Report.DOCX.pdf
+```
+
+The file is moved into the [intake directory](#intake) and renamed after the
+current local time as `YYYYMMDD-HHMMSS-mmm` (`mmm` is milliseconds), followed
+by its original extensions in lower case. The new path is printed on stdout
+(status `Ingested` on stderr). For example, at 14:03:07.042:
+
+| Original name       | Name in the intake             |
+|---------------------|--------------------------------|
+| `Report.DOCX.pdf`   | `20261025-140307-042.docx.pdf` |
+| `Scan 10.14.03.pdf` | `20261025-140307-042.pdf`      |
+| `README`            | `20261025-140307-042`          |
+
+- Extensions are the trailing suffixes that are 1-5 letters or digits and
+  contain at least one letter, so `.03` and `.123` are not extensions, and
+  nor is anything before them.
+- If the name (or its `.yml` sidecar name) is already taken, the next
+  millisecond is used, until a free name is found. An existing file is never
+  overwritten.
+- `ingest` writes a [sidecar](#the-xyml-sidecar), `X.yml`, next to the
+  ingested file `X`, recording when it was ingested, its original name and
+  any source metadata.
+
+Source metadata can be given with a repeatable `--meta KEY=VALUE` (or
+`-m KEY=VALUE`) and as a YAML mapping on stdin. Both go into
+`results.ingest.source`; a `--meta` value wins over the same key from
+stdin:
+
+```bash
+printf 'from: email\nsubject: Your bill\n' \
+  | filez4eva ingest --meta via=scanner ~/Desktop/bill.pdf
+```
+
+- Values from stdin are read as plain text, so `0123` stays `0123`.
+- Stdin that is empty, isn't valid YAML, or isn't a mapping is ignored.
+- A `--meta` value without `=`, or with an empty key, is an error and
+  nothing is moved.
+
+To ingest every file in a directory:
+
+```bash
+filez4eva ingest ~/Desktop/scans
+```
+
+- Only non-hidden regular files at the top level are ingested, in name
+  order. Subdirectories, hidden files (names starting with `.`) and symbolic
+  links are left alone.
+- The same source metadata (flags and stdin) is recorded for every file.
+- The status on stderr counts the files, e.g.
+  `Ingested 2 files | Already ingested 1 file`.
+
+A document already in the intake, a file `X` with `X.yml` next to it, is
+left alone: it isn't renamed or given a second sidecar. Its sidecar, and its
+transcript `X.md` if there is one, are left alone too. Given as the argument,
+such a file gives the status `Already ingested`, which is not an error, and
+nothing on stdout. So running `ingest` on the intake directory itself only
+picks up files that were dropped into it by hand.
+
+If a file can't be ingested, it stays where it was and nothing is left in
+the intake for it. In a directory run, the error is reported on stderr and
+the run carries on with the next file; at the end the paths that were
+ingested are printed and `ingest` exits non-zero. Ingesting a single file
+that fails also exits non-zero.
+
 ### Stowing Individual Files
 
 To organize a single file (like a downloaded PDF):
@@ -245,6 +316,10 @@ Global options:
 - `--config PATH`: Specify path to config file
 - `--debug`: Enable debug output
 
+ingest command:
+- `--meta, -m KEY=VALUE`: Record source metadata (repeatable)
+- `path`: Path to the file, or directory of files, to ingest
+
 stow-file command:
 - `--cabinet, -c NAME`: Specify the cabinet (destination) to stow into
 - `--date, -d DATE`: Specify date in YYYYMMDD format
@@ -293,6 +368,48 @@ date and a title, keeping their extension:
 ```
 ~/Dropbox/accounts/<date>-<title>.<extension>
 ```
+
+### Intake
+
+`ingest` moves files into the intake directory, set with the optional
+`intake` key:
+
+```yaml
+filez4eva:
+  intake: '~/Dropbox/intake'   # Default: ~/.filez4eva/intake
+```
+
+It defaults to `~/.filez4eva/intake`, and is created (with any missing
+parent directories) if it doesn't exist. It can also be set with the
+`FILEZ4EVA_INTAKE` environment variable.
+
+### The X.yml sidecar
+
+Each document in the intake, `X`, has a sidecar file `X.yml` next to it (the
+full name plus `.yml`, so `20261025-140307-042.pdf` has
+`20261025-140307-042.pdf.yml`). Each stage that works on the document
+records its results under `results`, keyed by the stage. `ingest` writes:
+
+```yaml
+results:
+  ingest:
+    at: '2026-10-25T14:03:07-07:00'
+    original-name: Report.DOCX.pdf
+    source:
+      from: email
+      via: scanner
+```
+
+- `at`: when the file was ingested, in ISO-8601 local time with its UTC
+  offset, to the second. It is the same moment as the file's new name
+  (unless the name had to move on a millisecond or more).
+- `original-name`: the file's name before it was ingested.
+- `source`: the metadata from `--meta` and stdin, as text. It is `{}` when
+  there is none.
+
+Keys use hyphens. A file in the intake counts as ingested only if its
+sidecar exists; the sidecar is written before the file is moved in, so a
+failure never leaves a file in the intake without one.
 
 ### Destination pattern
 
