@@ -41,9 +41,14 @@ by its original extensions in lower case. The new path is printed on stdout
 - Extensions are the trailing suffixes that are 1-5 letters or digits and
   contain at least one letter, so `.03` and `.123` are not extensions, and
   nor is anything before them.
-- If the name (or its `.yml` sidecar name) is already taken, the next
-  millisecond is used, until a free name is found. An existing file is never
-  overwritten.
+- Each document gets a stamp that no other file in the intake uses. A stamp
+  is taken if any file in the intake is named `<stamp>` or starts with
+  `<stamp>.` (another document, its `X.yml` sidecar or its `X.md`
+  transcript). If it's taken, the next millisecond is used, until a free
+  stamp is found. So ingesting `notes` and `notes.md` together gives
+  `20261025-140307-042` and `20261025-140307-043.md`, and a later
+  transcript of the first can never land on the second. An existing file is
+  never overwritten.
 - `ingest` writes a [sidecar](#the-xyml-sidecar), `X.yml`, next to the
   ingested file `X`, recording when it was ingested, its original name and
   any source metadata.
@@ -404,7 +409,7 @@ results:
 
 - `at`: when the file was ingested, in ISO-8601 local time with its UTC
   offset, to the second. It is the same moment as the file's new name
-  (unless the name had to move on a millisecond or more).
+  (unless the stamp had to move on a millisecond or more).
 - `original-name`: the file's name before it was ingested.
 - `source`: the metadata from `--meta` and stdin, as text. It is `{}` when
   there is none.

@@ -277,12 +277,74 @@ class TestIngestCommand(WizLibTestCase):
         self.assertEqual(self.intake_names(),
                          [NEXT_STAMP + '.pdf', NEXT_STAMP + '.pdf.yml'])
 
+    def test_name_race_moves_on(self):
+        # The file appears after the stamp check but before the O_EXCL claim
+        self.intake.mkdir(parents=True)
+        existing = self.intake / (STAMP + '.pdf')
+        existing.write_text('raced in')
+        with patch('filez4eva.command.ingest_command.stamp_taken',
+                   return_value=False):
+            result, _, _ = self.run_command(self.make('a.pdf'))
+        self.assertEqual(Path(result).name, NEXT_STAMP + '.pdf')
+        self.assertEqual(existing.read_text(), 'raced in')
+
     def test_repeated_collisions(self):
         self.intake.mkdir(parents=True)
         for ms in range(42, 45):
             (self.intake / f'20261025-140307-{ms:03d}').write_text('x')
         result, _, _ = self.run_command(self.make('plain'))
         self.assertEqual(Path(result).name, '20261025-140307-045')
+
+    def test_one_stamp_per_document(self):
+        # With the clock frozen, notes.md must not take STAMP + '.md', the
+        # transcript name of notes
+        self.make('notes', 'n')
+        self.make('notes.md', 'user markdown')
+        result, command, _ = self.run_command(self.source)
+        self.assertEqual([Path(p).name for p in result.split('\n')],
+                         [STAMP, NEXT_STAMP + '.md'])
+        self.assertEqual(self.intake_names(), [
+            STAMP, STAMP + '.yml', NEXT_STAMP + '.md',
+            NEXT_STAMP + '.md.yml'])
+        self.assertEqual((self.intake / (NEXT_STAMP + '.md')).read_text(),
+                         'user markdown')
+
+    def test_one_stamp_per_document_single_files(self):
+        self.run_command(self.make('notes', 'n'))
+        result, _, _ = self.run_command(self.make('notes.md', 'm'))
+        self.assertEqual(Path(result).name, NEXT_STAMP + '.md')
+
+    def test_existing_transcript_takes_the_stamp(self):
+        # An existing document's transcript <stamp>.md (with or without the
+        # document itself) makes the stamp taken for any extension
+        self.intake.mkdir(parents=True)
+        (self.intake / (STAMP + '.md')).write_text('# transcript')
+        result, _, _ = self.run_command(self.make('a.pdf'))
+        self.assertEqual(Path(result).name, NEXT_STAMP + '.pdf')
+        self.assertEqual((self.intake / (STAMP + '.md')).read_text(),
+                         '# transcript')
+
+    def test_document_next_to_transcript_moves_on(self):
+        first, _, _ = self.run_command(self.make('scan.pdf'))
+        Path(first + '.md').write_text('# transcript')
+        result, _, _ = self.run_command(self.make('other.pdf'))
+        self.assertEqual(Path(result).name, NEXT_STAMP + '.pdf')
+        result, _, _ = self.run_command(self.make('plain'))
+        self.assertEqual(Path(result).name, '20261025-140307-044')
+
+    def test_stamp_with_other_extension_is_taken(self):
+        self.intake.mkdir(parents=True)
+        (self.intake / (STAMP + '.docx.pdf')).write_text('existing')
+        result, _, _ = self.run_command(self.make('plain'))
+        self.assertEqual(Path(result).name, NEXT_STAMP)
+
+    def test_similar_names_do_not_take_the_stamp(self):
+        # Only `<stamp>` and `<stamp>.*` count, not e.g. `<stamp>0`
+        self.intake.mkdir(parents=True)
+        (self.intake / (STAMP + '0')).write_text('x')
+        (self.intake / ('.' + STAMP + '.pdf')).write_text('x')
+        result, _, _ = self.run_command(self.make('a.pdf'))
+        self.assertEqual(Path(result).name, STAMP + '.pdf')
 
     def test_meta_flags(self):
         result, _, _ = self.run_command(
@@ -400,9 +462,11 @@ class TestIngestCommand(WizLibTestCase):
         self.assertEqual([read_sidecar(p)['results']['ingest']
                           ['original-name'] for p in paths],
                          ['config', 'config.md', 'config.yml'])
-        # STAMP + '.yml' is the sidecar of STAMP, so config.yml moves on
+        # Each document gets its own stamp, so nothing lands on config's
+        # sidecar or transcript name
         self.assertEqual([p.name for p in paths],
-                         [STAMP, STAMP + '.md', NEXT_STAMP + '.yml'])
+                         [STAMP, NEXT_STAMP + '.md',
+                          '20261025-140307-044.yml'])
         self.assertEqual(list(self.source.iterdir()), [])
         self.assertFalse(config.exists())
 

@@ -21,7 +21,7 @@ GitHub Actions performs the entire build/test/release cycle using the shared [St
 
 ## Intake and sidecars
 
-`filez4eva ingest` moves files into the intake and writes an `X.yml` sidecar next to each one (see [PACKAGE.md](PACKAGE.md#ingesting-files)). The helpers for intake names and sidecars (`intake_dir`, `extensions`, `stamp_name`, `sidecar_path`, `in_intake`, `is_ingested`, `read_sidecar`, `write_sidecar`) are module-level functions in `filez4eva/command/ingest_command.py`, for later stages to reuse. X/X.yml pairing (`is_ingested`, `is_companion`) only counts for files whose parent is the intake (`in_intake`). `Filez4EvaCommand.stdin_mapping()` reads a YAML mapping piped on stdin, for any command. Tests patch `ingest_command.now` to freeze the clock.
+`filez4eva ingest` moves files into the intake and writes an `X.yml` sidecar next to each one (see [PACKAGE.md](PACKAGE.md#ingesting-files)). The helpers for intake names and sidecars (`intake_dir`, `extensions`, `stamp_name`, `stamp_taken`, `sidecar_path`, `in_intake`, `is_ingested`, `read_sidecar`, `write_sidecar`) are module-level functions in `filez4eva/command/ingest_command.py`, for later stages to reuse. X/X.yml pairing (`is_ingested`, `is_companion`) only counts for files whose parent is the intake (`in_intake`). `Filez4EvaCommand.stdin_mapping()` reads a YAML mapping piped on stdin, for any command. Tests patch `ingest_command.now` to freeze the clock.
 
 ## Libraries
 

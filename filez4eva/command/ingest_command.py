@@ -154,14 +154,26 @@ def parse_meta(flags: list) -> dict:
     return meta
 
 
+def stamp_taken(intake: Path, stamp: str) -> bool:
+    """True if any file in the intake uses the stamp: is named `<stamp>` or
+    starts with `<stamp>.` (another document, its X.yml sidecar or its X.md
+    transcript)"""
+    prefix = stamp + '.'
+    return any(name == stamp or name.startswith(prefix)
+               for name in os.listdir(intake))
+
+
 def reserve(intake: Path, dt: datetime, exts: str, record: dict) -> Path:
-    """Claim a free name in the intake for time dt, moving on a millisecond
-    at a time while the name (or its sidecar) is taken. Creates an empty
-    placeholder for the file and writes its sidecar, both exclusively, so
-    nothing is ever overwritten. Return the placeholder path."""
+    """Claim a stamp no other file in the intake uses for time dt, moving on
+    a millisecond at a time while the stamp is taken, so each document has
+    its own stamp and a later stage's X.yml or X.md can never land on
+    another document. Creates an empty placeholder for the file and writes
+    its sidecar, both exclusively, so nothing is ever overwritten, even in a
+    race. Return the placeholder path."""
     while True:
-        target = intake / stamp_name(dt, exts)
-        if not sidecar_path(target).exists():
+        stamp = stamp_name(dt)
+        target = intake / (stamp + exts)
+        if not stamp_taken(intake, stamp):
             try:
                 os.close(os.open(target,
                                  os.O_CREAT | os.O_EXCL | os.O_WRONLY,
