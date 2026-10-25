@@ -11,9 +11,9 @@ from wizlib.test_case import WizLibTestCase
 
 from filez4eva import Filez4EvaApp
 from filez4eva.command.ingest_command import (
-    DEFAULT_INTAKE, IngestCommand, extensions, intake_dir, is_companion,
-    is_ingested, now, parse_meta, read_sidecar, sidecar_path, stamp_name,
-    write_sidecar)
+    DEFAULT_INTAKE, IngestCommand, extensions, in_intake, intake_dir,
+    is_companion, is_ingested, now, parse_meta, read_sidecar, sidecar_path,
+    stamp_name, write_sidecar)
 from filez4eva.error import Filez4EvaError
 
 
@@ -125,6 +125,20 @@ class TestIngestHelpers(WizLibTestCase):
             path = intake_dir(ConfigHandler.fake(filez4eva_intake=str(wanted)))
             self.assertEqual(path, wanted)
             self.assertTrue(wanted.is_dir())
+
+    def test_intake_dir_not_text_is_error(self):
+        for setting in [5, ['a'], {'a': 'b'}]:
+            with self.subTest(setting=setting), \
+                    self.assertRaisesRegex(Filez4EvaError, 'intake must be'):
+                intake_dir(ConfigHandler.fake(filez4eva_intake=setting))
+
+    def test_in_intake(self):
+        with TemporaryDirectory() as d:
+            d = Path(d)
+            (d / 'intake').mkdir()
+            self.assertTrue(in_intake(d / 'intake' / 'a.pdf', d / 'intake'))
+            self.assertFalse(in_intake(d / 'a.pdf', d / 'intake'))
+            self.assertFalse(in_intake(d / 'missing' / 'a', d / 'intake'))
 
     def test_intake_dir_error(self):
         with TemporaryDirectory() as d:
@@ -343,29 +357,70 @@ class TestIngestCommand(WizLibTestCase):
         self.assertEqual(result, '')
         self.assertEqual(command.status, 'No files to ingest')
 
+    def in_intake(self, name, content='data'):
+        self.intake.mkdir(parents=True, exist_ok=True)
+        path = self.intake / name
+        path.write_text(content)
+        return path
+
     def test_already_ingested_file(self):
-        doc = self.make('20250101-000000-000.pdf')
+        doc = self.in_intake('20250101-000000-000.pdf')
         sidecar_path(doc).write_text('results: {}\n')
         result, command, _ = self.run_command(doc)
         self.assertIsNone(result)
         self.assertEqual(command.status, 'Already ingested')
         self.assertTrue(doc.is_file())
         self.assertEqual(sidecar_path(doc).read_text(), 'results: {}\n')
-        self.assertFalse(self.intake.exists() and any(self.intake.iterdir()))
+        self.assertEqual(self.intake_names(),
+                         ['20250101-000000-000.pdf',
+                          '20250101-000000-000.pdf.yml'])
 
     def test_already_ingested_exit_code_zero(self):
-        doc = self.make('d.pdf')
+        doc = self.in_intake('d.pdf')
         sidecar_path(doc).write_text('results: {}\n')
         out, err, code = self.run_app(str(doc))
         self.assertEqual((out, err, code), ('', 'Already ingested\n', 0))
 
     def test_sidecar_file_argument_left_alone(self):
-        doc = self.make('d.pdf')
+        doc = self.in_intake('d.pdf')
         sidecar = sidecar_path(doc)
         sidecar.write_text('results: {}\n')
         _, command, _ = self.run_command(sidecar)
         self.assertEqual(command.status, 'Already ingested')
         self.assertTrue(sidecar.is_file())
+
+    def test_pair_outside_intake_is_ingested(self):
+        # Outside the intake, X and X.yml are two new documents
+        config = self.make('config', 'c')
+        self.make('config.yml', 'y')
+        self.make('config.md', 'm')
+        result, command, _ = self.run_command(self.source)
+        paths = [Path(p) for p in result.split('\n')]
+        self.assertEqual(command.status, 'Ingested 3 files')
+        self.assertEqual([read_sidecar(p)['results']['ingest']
+                          ['original-name'] for p in paths],
+                         ['config', 'config.md', 'config.yml'])
+        # STAMP + '.yml' is the sidecar of STAMP, so config.yml moves on
+        self.assertEqual([p.name for p in paths],
+                         [STAMP, STAMP + '.md', NEXT_STAMP + '.yml'])
+        self.assertEqual(list(self.source.iterdir()), [])
+        self.assertFalse(config.exists())
+
+    def test_single_file_with_pair_outside_intake_is_ingested(self):
+        for name in ['config', 'config.yml']:
+            with self.subTest(name=name):
+                self.make('config', 'c')
+                self.make('config.yml', 'y')
+                source = self.source / name
+                result, command, _ = self.run_command(source)
+                self.assertEqual(command.status, 'Ingested')
+                self.assertFalse(source.exists())
+                self.assertEqual(
+                    read_sidecar(Path(result))['results']['ingest']
+                    ['original-name'], name)
+                for leftover in self.source.iterdir():
+                    leftover.unlink()
+                self.now.return_value += timedelta(seconds=1)
 
     def test_ingesting_the_intake_skips_documents(self):
         # First ingest one file, then add a stray file to the intake and

@@ -81,7 +81,9 @@ left alone: it isn't renamed or given a second sidecar. Its sidecar, and its
 transcript `X.md` if there is one, are left alone too. Given as the argument,
 such a file gives the status `Already ingested`, which is not an error, and
 nothing on stdout. So running `ingest` on the intake directory itself only
-picks up files that were dropped into it by hand.
+picks up files that were dropped into it by hand. This pairing only counts
+in the intake: elsewhere, `X` and `X.yml` are two ordinary files, and both
+are ingested.
 
 If a file can't be ingested, it stays where it was and nothing is left in
 the intake for it. In a directory run, the error is reported on stderr and

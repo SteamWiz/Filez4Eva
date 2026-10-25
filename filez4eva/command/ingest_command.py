@@ -32,8 +32,11 @@ def intake_dir(config) -> Path:
     """Return the intake directory from `filez4eva: intake:` (default
     ~/.filez4eva/intake), expanded and absolute, creating it if needed.
     Raises Filez4EvaError if it can't be created."""
-    path = Path(config.get('filez4eva-intake') or DEFAULT_INTAKE)
-    path = path.expanduser().absolute()
+    setting = config.get('filez4eva-intake') or DEFAULT_INTAKE
+    if not isinstance(setting, str):
+        raise Filez4EvaError(
+            f"intake must be a directory path, not {setting!r}")
+    path = Path(setting).expanduser().absolute()
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -68,9 +71,18 @@ def sidecar_path(path: Path) -> Path:
     return Path(str(path) + SIDECAR_SUFFIX)
 
 
+def in_intake(path: Path, intake: Path) -> bool:
+    """True if path is directly in the intake directory. X/X.yml pairing
+    only counts there; elsewhere every file is a new document."""
+    try:
+        return path.parent.samefile(intake)
+    except OSError:
+        return False
+
+
 def is_ingested(path: Path) -> bool:
-    """True if path is a document in the intake: a file X with X.yml next
-    to it"""
+    """True if path is a file X with X.yml next to it: a document already
+    ingested, when path is in the intake (see in_intake)"""
     return path.is_file() and sidecar_path(path).is_file()
 
 
@@ -127,21 +139,6 @@ def ingest_record(at: datetime, original_name: str, source: dict) -> dict:
         'original-name': original_name,
         'source': dict(source),
     }}}
-
-
-def stdin_mapping(app) -> dict:
-    """Return the YAML mapping piped on stdin, or an empty dict if stdin is
-    absent, empty, malformed, or not a mapping. BaseLoader keeps every scalar
-    as a string."""
-    stream = getattr(app, 'stream', None)
-    text = getattr(stream, 'text', None) if stream else None
-    if not isinstance(text, str) or not text.strip():
-        return {}
-    try:
-        record = yaml.load(text, Loader=yaml.BaseLoader)
-    except yaml.YAMLError:
-        return {}
-    return record if isinstance(record, dict) else {}
 
 
 def parse_meta(flags: list) -> dict:
@@ -237,22 +234,26 @@ class IngestCommand(Filez4EvaCommand):
     def handle_vals(self):
         super().handle_vals()
         # Flags win over stdin. Stdin is read once, for every file.
-        self.source = stdin_mapping(self.app)
+        self.source = self.stdin_mapping()
         self.source.update(parse_meta(self.meta))
 
     @staticmethod
-    def candidates(path: Path) -> tuple:
+    def candidates(path: Path, intake: Path) -> tuple:
         """Return (files, skipped) for a directory: the files to ingest are
-        the non-hidden regular files at the top level, in order, leaving out
-        documents already in the intake (counted in skipped) and their
-        sidecars and transcripts. The list is taken before anything moves."""
+        the non-hidden regular files at the top level, in order. In the
+        intake, documents already ingested (counted in skipped) and their
+        sidecars and transcripts are left out; elsewhere every such file is
+        a new document. The list is taken before anything moves."""
         chosen = []
         skipped = 0
+        pairing = path.samefile(intake)
         for entry in sorted(path.iterdir()):
             if entry.name.startswith('.') or entry.is_symlink() \
                     or not entry.is_file():
                 continue
-            if is_ingested(entry):
+            if not pairing:
+                chosen.append(entry)
+            elif is_ingested(entry):
                 skipped += 1
             elif not is_companion(entry):
                 chosen.append(entry)
@@ -265,13 +266,14 @@ class IngestCommand(Filez4EvaCommand):
             raise Filez4EvaError(f"{path} must exist")
         intake = intake_dir(self.app.config)
         if not path.is_dir():
-            if is_ingested(path) or is_companion(path):
+            if in_intake(path, intake) and \
+                    (is_ingested(path) or is_companion(path)):
                 self.status = 'Already ingested'
                 return None
             target = ingest_file(path, intake, self.source)
             self.status = 'Ingested'
             return str(target)
-        todo, skipped = self.candidates(path)
+        todo, skipped = self.candidates(path, intake)
         done = []
         failed = 0
         for file in todo:

@@ -327,20 +327,6 @@ class StowFileCommand(Filez4EvaCommand):
             names.append(name)
         return names
 
-    def stdin_record(self) -> dict:
-        """Return the YAML mapping piped on stdin, or an empty dict if stdin
-        is absent, empty, malformed, or not a mapping. BaseLoader keeps every
-        scalar as a string, so values like 0123 or yes are not converted."""
-        stream = getattr(self.app, 'stream', None)
-        text = getattr(stream, 'text', None) if stream else None
-        if not isinstance(text, str) or not text.strip():
-            return {}
-        try:
-            record = yaml.load(text, Loader=yaml.BaseLoader)
-        except yaml.YAMLError:
-            return {}
-        return record if isinstance(record, dict) else {}
-
     def apply_stdin_record(self):
         """Fill the cabinet, and the date and other fields (under `data`),
         from stdin where not provided as command-line flags. Field names
@@ -348,7 +334,7 @@ class StowFileCommand(Filez4EvaCommand):
         doesn't have are ignored. Stdin is untrusted, so values are
         validated (fields other than date are normalized) and a bad value
         raises Filez4EvaError."""
-        record = self.stdin_record()
+        record = self.stdin_mapping()
         cabinet = record.get('cabinet')
         if not self.provided('cabinet') and not stdin_null(cabinet):
             if not isinstance(cabinet, str):
