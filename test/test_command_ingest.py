@@ -1,7 +1,11 @@
 from datetime import datetime, timedelta, timezone
 import errno
+import fcntl
+import multiprocessing
 import os
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import patch
 
@@ -11,9 +15,9 @@ from wizlib.test_case import WizLibTestCase
 
 from filez4eva import Filez4EvaApp
 from filez4eva.command.ingest_command import (
-    DEFAULT_INTAKE, IngestCommand, extensions, in_intake, intake_dir,
-    is_companion, is_ingested, now, parse_meta, read_sidecar, sidecar_path,
-    stamp_name, write_sidecar)
+    DEFAULT_INTAKE, IngestCommand, extensions, in_intake, ingest_file,
+    intake_dir, intake_lock, is_companion, is_ingested, now, parse_meta,
+    read_sidecar, sidecar_path, stamp_name, write_sidecar)
 from filez4eva.error import Filez4EvaError
 
 
@@ -24,6 +28,15 @@ CLOCK = datetime(2026, 10, 25, 14, 3, 7, 42000,
                  tzinfo=timezone(timedelta(hours=-7)))
 STAMP = '20261025-140307-042'
 NEXT_STAMP = '20261025-140307-043'
+
+
+def ingest_worker(barrier, source, intake):
+    """Run in a forked process (which keeps the frozen clock): wait for the
+    other workers, then ingest every file in source"""
+    intake.mkdir(parents=True, exist_ok=True)
+    barrier.wait()
+    for path in sorted(source.iterdir()):
+        ingest_file(path, intake, {})
 
 
 class TestIngestHelpers(WizLibTestCase):
@@ -345,6 +358,103 @@ class TestIngestCommand(WizLibTestCase):
         (self.intake / ('.' + STAMP + '.pdf')).write_text('x')
         result, _, _ = self.run_command(self.make('a.pdf'))
         self.assertEqual(Path(result).name, STAMP + '.pdf')
+
+    def test_intake_lock_excludes_others(self):
+        # While one holder has the lock, another open of the intake (as a
+        # second process would make) can't take it
+        self.intake.mkdir(parents=True)
+        fd = os.open(self.intake, os.O_RDONLY)
+        try:
+            with intake_lock(self.intake):
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+        self.assertEqual(self.intake_names(), [])
+
+    def test_reserve_holds_the_lock(self):
+        # The stamp check runs under the intake lock
+        self.intake.mkdir(parents=True)
+        held = []
+
+        def checking_stamp_taken(intake, stamp):
+            fd = os.open(intake, os.O_RDONLY)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held.append(False)
+            except BlockingIOError:
+                held.append(True)
+            finally:
+                os.close(fd)
+            return False
+        with patch('filez4eva.command.ingest_command.stamp_taken',
+                   checking_stamp_taken):
+            self.run_command(self.make('a.pdf'))
+        self.assertEqual(held, [True])
+
+    def assert_one_stamp_per_document(self, expected):
+        """Every file in the intake is a document or its sidecar, there are
+        `expected` documents, and no two share a stamp"""
+        names = self.intake_names()
+        docs = [n for n in names if not n.endswith('.yml')
+                or n[:-len('.yml')] not in names]
+        self.assertEqual(len(docs), expected)
+        self.assertEqual(sorted(n + '.yml' for n in docs),
+                         sorted(set(names) - set(docs)))
+        stamps = [n[:len(STAMP)] for n in docs]
+        self.assertEqual(len(set(stamps)), len(stamps),
+                         'two documents share a stamp')
+
+    def test_concurrent_processes_get_unique_stamps(self):
+        # Several processes ingest at once with the same frozen clock, so
+        # every stamp they try is contested. Without the lock, documents
+        # from different processes end up sharing stamps.
+        context = multiprocessing.get_context('fork')
+        workers, count = 6, 25
+        barrier = context.Barrier(workers)
+        processes = []
+        for worker in range(workers):
+            source = self.source / f'w{worker}'
+            source.mkdir()
+            for i in range(count):
+                name = ['f{}', 'f{}.md', 'f{}.pdf'][i % 3].format(i)
+                (source / name).write_text(f'{worker}/{name}')
+            processes.append(context.Process(
+                target=ingest_worker,
+                args=(barrier, source, self.intake)))
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(60)
+            self.assertEqual(process.exitcode, 0)
+        self.assert_one_stamp_per_document(workers * count)
+        contents = sorted((self.intake / n).read_text()
+                          for n in self.intake_names()
+                          if not n.endswith('.yml')
+                          or n[:-4] not in self.intake_names())
+        self.assertEqual(len(set(contents)), workers * count)
+
+    def test_concurrent_cli_runs_get_unique_stamps(self):
+        # Separate `filez4eva ingest` runs, with the real clock, into one
+        # intake
+        runs, count = 4, 40
+        env = dict(os.environ, HOME=str(self.source),
+                   FILEZ4EVA_INTAKE=str(self.intake))
+        commands = []
+        for run in range(runs):
+            source = self.source / f'r{run}'
+            source.mkdir()
+            for i in range(count):
+                name = ['f{}', 'f{}.md', 'f{}.pdf', 'f{}.pdf.md'][i % 4]
+                (source / name.format(i)).write_text(f'{run}/{i}')
+            commands.append(subprocess.Popen(
+                [sys.executable, '-m', 'filez4eva', 'ingest', str(source)],
+                env=env, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL))
+        for command in commands:
+            self.assertEqual(command.wait(120), 0)
+        self.assert_one_stamp_per_document(runs * count)
 
     def test_meta_flags(self):
         result, _, _ = self.run_command(

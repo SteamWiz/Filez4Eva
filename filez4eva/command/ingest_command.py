@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 import errno
 import os
@@ -6,6 +7,10 @@ import re
 import shutil
 
 import yaml
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - no fcntl on Windows
+    fcntl = None
 from wizlib.parser import WizParser
 from wizlib.ui.shell_ui import Emphasis
 
@@ -163,33 +168,54 @@ def stamp_taken(intake: Path, stamp: str) -> bool:
                for name in os.listdir(intake))
 
 
+@contextmanager
+def intake_lock(intake: Path):
+    """Hold an exclusive lock on the intake directory, waiting while another
+    process holds it. Taken around stamp check-and-claim, so ingest runs into
+    the same intake on one machine never pick the same stamp. The lock is an
+    flock on the directory itself, so no lock file is left in the intake,
+    and the system releases it when the descriptor is closed, even if the
+    process dies."""
+    if fcntl is None:  # pragma: no cover - no fcntl on Windows
+        raise Filez4EvaError("ingest needs file locking (fcntl), which "
+                             "this platform doesn't have")
+    fd = os.open(intake, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
 def reserve(intake: Path, dt: datetime, exts: str, record: dict) -> Path:
     """Claim a stamp no other file in the intake uses for time dt, moving on
     a millisecond at a time while the stamp is taken, so each document has
     its own stamp and a later stage's X.yml or X.md can never land on
     another document. Creates an empty placeholder for the file and writes
-    its sidecar, both exclusively, so nothing is ever overwritten, even in a
-    race. Return the placeholder path."""
-    while True:
-        stamp = stamp_name(dt)
-        target = intake / (stamp + exts)
-        if not stamp_taken(intake, stamp):
-            try:
-                os.close(os.open(target,
-                                 os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                                 0o600))
-            except FileExistsError:
-                pass
-            else:
+    its sidecar, both exclusively, so nothing is ever overwritten. The check
+    and the claim happen under the intake lock, so concurrent ingest runs on
+    one machine never share a stamp. Return the placeholder path."""
+    with intake_lock(intake):
+        while True:
+            stamp = stamp_name(dt)
+            target = intake / (stamp + exts)
+            if not stamp_taken(intake, stamp):
                 try:
-                    write_sidecar(target, record, exclusive=True)
-                    return target
+                    os.close(os.open(target,
+                                     os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                                     0o600))
                 except FileExistsError:
-                    target.unlink()
-                except BaseException:
-                    target.unlink()
-                    raise
-        dt += timedelta(milliseconds=1)
+                    pass
+                else:
+                    try:
+                        write_sidecar(target, record, exclusive=True)
+                        return target
+                    except FileExistsError:
+                        target.unlink()
+                    except BaseException:
+                        target.unlink()
+                        raise
+            dt += timedelta(milliseconds=1)
 
 
 def move_onto(source: Path, target: Path):

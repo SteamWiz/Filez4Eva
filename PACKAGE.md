@@ -49,6 +49,12 @@ by its original extensions in lower case. The new path is printed on stdout
   `20261025-140307-042` and `20261025-140307-043.md`, and a later
   transcript of the first can never land on the second. An existing file is
   never overwritten.
+- This also holds when several `ingest` runs into the same intake overlap on
+  one machine: each run locks the intake while it checks and claims a
+  stamp, so documents from different runs never share one. The lock is
+  held only for that moment, not for the whole run, and no lock file is
+  left in the intake. It doesn't cover runs on different machines sharing a
+  network intake.
 - `ingest` writes a [sidecar](#the-xyml-sidecar), `X.yml`, next to the
   ingested file `X`, recording when it was ingested, its original name and
   any source metadata.
