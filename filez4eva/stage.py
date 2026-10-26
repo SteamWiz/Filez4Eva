@@ -12,23 +12,27 @@ from wizlib.ui.shell_ui import Emphasis
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command.ingest_command import (
     files, in_intake, ingest_file, intake_dir, is_companion, is_ingested,
-    sidecar_path, write_sidecar)
+    sidecar_path, top_level_documents, write_sidecar)
 from filez4eva.error import Filez4EvaError
 
 
 def resolve_path(arg, intake: Path) -> Path:
     """Return the path a stage command works on: the intake when no path is
-    given, otherwise the path, expanded and absolute. Raises Filez4EvaError
-    if it doesn't exist, or if it is in a subdirectory of the intake (such
-    as archive/), which stage commands never touch."""
+    given, otherwise the path, expanded and absolute. A directory is
+    resolved in full (symbolic links and '..'), so a link to a subdirectory
+    of the intake is seen for what it is. Raises Filez4EvaError if the path
+    doesn't exist, or if it is in a subdirectory of the intake (such as
+    archive/), which stage commands never touch."""
     if not arg:
         return intake
     path = Path(arg).expanduser().absolute()
     if not path.exists():
         raise Filez4EvaError(f"{path} must exist")
-    real = path.parent.resolve() / path.name
+    if path.is_dir():
+        path = home = path.resolve()
+    else:
+        home = path.parent.resolve()
     top = intake.resolve()
-    home = real if path.is_dir() else real.parent
     if home != top and home.is_relative_to(top):
         raise Filez4EvaError(
             f"{path} is in a subdirectory of the intake {intake}; only "
@@ -53,16 +57,8 @@ def documents(path: Path, intake: Path) -> list:
                 f"{path} is the sidecar or transcript of a document in the "
                 "intake, not a document")
         return [path]
-    pairing = path.samefile(intake)
-    chosen = []
-    for entry in sorted(path.iterdir()):
-        if entry.name.startswith('.') or entry.is_symlink() \
-                or not entry.is_file():
-            continue
-        if pairing and is_companion(entry):
-            continue
-        chosen.append(entry)
-    return chosen
+    ingested_ones, new = top_level_documents(path, intake)
+    return sorted(ingested_ones + new)
 
 
 def ingested(path: Path, intake: Path) -> bool:

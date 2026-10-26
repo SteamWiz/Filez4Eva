@@ -549,6 +549,30 @@ class TestTranscribeCommand(TranscribeTestCase):
         self.assertEqual(sorted(p.name for p in archive.iterdir()),
                          ['old.pdf'])
 
+    def test_symlink_to_intake_subdirectory_is_never_touched(self):
+        archive = self.intake / 'archive'
+        old = self.make('old.pdf', where=archive)
+        self.make('old.pdf.yml', 'x', archive)
+        link = self.source / 'link'
+        link.symlink_to(archive, target_is_directory=True)
+        with patch(TRANSCRIBE) as t, \
+                self.assertRaisesRegex(Filez4EvaError, 'subdirectory'):
+            self.run_command(link)
+        t.assert_not_called()
+        self.assertEqual(sorted(p.name for p in archive.iterdir()),
+                         ['old.pdf', 'old.pdf.yml'])
+        self.assertEqual(sorted(p.name for p in self.intake.iterdir()),
+                         ['archive'])
+        self.assertTrue(old.is_file())
+
+    def test_intake_through_dot_dot_is_the_intake(self):
+        document = self.make_document(f'{STAMP}.pdf')
+        (self.intake / 'archive').mkdir()
+        with patch(TRANSCRIBE, return_value='x') as t:
+            self.run_command(self.intake / 'archive' / '..')
+        t.assert_called_once()
+        self.assertTrue(Path(f'{document}.md').is_file())
+
     def test_force_is_not_an_option(self):
         source = self.make('a.pdf')
         with patch(TRANSCRIBE) as t:

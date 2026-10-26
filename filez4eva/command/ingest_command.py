@@ -249,6 +249,30 @@ def ingest_file(path: Path, intake: Path, source: dict) -> Path:
     return target
 
 
+def top_level_documents(path: Path, intake: Path) -> tuple:
+    """Return (ingested, new) for a directory, each in name order: the
+    documents among the non-hidden regular files at its top level.
+    Subdirectories, hidden files and symbolic links are left alone. In the
+    intake, a file X with X.yml next to it is ingested, its sidecar and
+    transcript belong to it and are left out, and any other file is new;
+    elsewhere every such file is new. The lists are taken before anything
+    moves."""
+    ingested = []
+    new = []
+    pairing = path.samefile(intake)
+    for entry in sorted(path.iterdir()):
+        if entry.name.startswith('.') or entry.is_symlink() \
+                or not entry.is_file():
+            continue
+        if not pairing:
+            new.append(entry)
+        elif is_ingested(entry):
+            ingested.append(entry)
+        elif not is_companion(entry):
+            new.append(entry)
+    return ingested, new
+
+
 def files(count: int) -> str:
     return "1 file" if count == 1 else f"{count} files"
 
@@ -282,20 +306,8 @@ class IngestCommand(Filez4EvaCommand):
         intake, documents already ingested (counted in skipped) and their
         sidecars and transcripts are left out; elsewhere every such file is
         a new document. The list is taken before anything moves."""
-        chosen = []
-        skipped = 0
-        pairing = path.samefile(intake)
-        for entry in sorted(path.iterdir()):
-            if entry.name.startswith('.') or entry.is_symlink() \
-                    or not entry.is_file():
-                continue
-            if not pairing:
-                chosen.append(entry)
-            elif is_ingested(entry):
-                skipped += 1
-            elif not is_companion(entry):
-                chosen.append(entry)
-        return chosen, skipped
+        ingested, new = top_level_documents(path, intake)
+        return new, len(ingested)
 
     @Filez4EvaCommand.wrap
     def execute(self):

@@ -283,8 +283,8 @@ filez4eva classify ~/Desktop/scan.pdf
 
 `classify` transcribes the file first if needed, writing `FILE.md` next to
 it (with the same front matter as `transcribe`, reusing an up-to-date
-transcript, but without ingesting the file or writing a sidecar), then asks the model to classify the
-transcript and prints a YAML record on stdout:
+transcript, but without ingesting the file or writing a sidecar), then asks
+the model to classify the transcript and prints a YAML record on stdout:
 
 ```yaml
 file: /Users/me/Desktop/scan.pdf
@@ -385,10 +385,10 @@ stdout (the `Done` status goes to stderr), so scripts can capture it, e.g.
 
 If the file has a transcript (`FILE.md`, e.g. written by `classify` or
 `transcribe`), `stow-file` moves it too, named after the stowed file. By
-default it goes adjacent to the stowed file: `.../20261002-receipt.pdf` gets `.../20261002-receipt.pdf.md`.
-It can instead go into a parallel tree; see
-[Transcript location](#transcript-location). If a transcript already exists at
-its destination, `stow-file` fails before moving anything.
+default it goes adjacent to the stowed file: `.../20261002-receipt.pdf`
+gets `.../20261002-receipt.pdf.md`. It can instead go into a parallel tree;
+see [Transcript location](#transcript-location). If a transcript already
+exists at its destination, `stow-file` fails before moving anything.
 
 scan-dir command:
 - `dir`: Optional path to directory to scan (defaults to configured source)
