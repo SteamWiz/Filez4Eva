@@ -23,6 +23,12 @@ GitHub Actions performs the entire build/test/release cycle using the shared [St
 
 `filez4eva ingest` moves files into the intake and writes an `X.yml` sidecar next to each one (see [PACKAGE.md](PACKAGE.md#ingesting-files)). The helpers for intake names and sidecars (`intake_dir`, `extensions`, `stamp_name`, `stamp_taken`, `sidecar_path`, `in_intake`, `is_ingested`, `read_sidecar`, `write_sidecar`) are module-level functions in `filez4eva/command/ingest_command.py`, for later stages to reuse. X/X.yml pairing (`is_ingested`, `is_companion`) only counts for files whose parent is the intake (`in_intake`). Stamp check-and-claim (`reserve`) runs under `intake_lock(intake)`, an exclusive `fcntl.flock` on the intake directory, so concurrent `ingest` processes on one machine never share a stamp. `Filez4EvaCommand.stdin_mapping()` reads a YAML mapping piped on stdin, for any command. Tests patch `ingest_command.now` to freeze the clock.
 
+## Stage commands
+
+The shared logic for the stage commands lives in `filez4eva/stage.py`, for `transcribe` now and `classify`, `review` and `stow` later. `resolve_path` turns the optional path argument into a path (none = the intake; subdirectories of the intake such as `archive/` are refused). `documents` selects the documents: a file on its own, or the non-hidden regular files at the top level of a directory, where in the intake the `X.yml`/`X.md` companions of a document `X` are left out. `load_sidecar`, `stage_result` and `record_result` read and write `results.<stage>` in `X.yml`, refusing to overwrite a sidecar that can't be read. `StageCommand` adds `--only` and the optional `path`, and its `run()` applies the prerequisite rule (ingest first, or skip with a note under `--only`), skips documents that already have `results.<stage>`, reports per-file errors and carries on, and raises at the end if any failed. A subclass sets `name`, `stage` and `done` and implements `act(path)`.
+
+`transcribe_file` in `transcribe_command.py` is the in-place transcription with the sha256 cache. `classify` (and so `process` and `scan-dir`) calls it directly, so those commands never ingest or move files. `write_atomically` lives in `filez4eva/atomic.py`. Stage tests set `FILEZ4EVA_INTAKE` to a temporary directory as well as the config, so no test can touch the real intake.
+
 ## Libraries
 
 The application uses the following external libraries:

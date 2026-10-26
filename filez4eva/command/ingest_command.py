@@ -14,8 +14,8 @@ except ImportError:  # pragma: no cover - no fcntl on Windows
 from wizlib.parser import WizParser
 from wizlib.ui.shell_ui import Emphasis
 
+from filez4eva.atomic import write_atomically
 from filez4eva.command import Filez4EvaCommand
-from filez4eva.command.transcribe_command import write_atomically
 from filez4eva.error import Filez4EvaError
 
 

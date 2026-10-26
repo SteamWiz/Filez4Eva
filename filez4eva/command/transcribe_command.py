@@ -1,15 +1,15 @@
 from datetime import datetime, timezone
 import hashlib
-import os
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
 import yaml
 from kwark.ai import KwarkAIError, TRANSCRIBE_DISCLAIMER, transcribe
-from wizlib.parser import WizParser
 
+from filez4eva.atomic import write_atomically
 from filez4eva.command import Filez4EvaCommand
+from filez4eva.command import ingest_command
 from filez4eva.error import Filez4EvaError
+from filez4eva.stage import StageCommand, record_result
 
 
 # Model used when `filez4eva: transcribe: model:` is not configured
@@ -71,44 +71,64 @@ def format_transcript(source: str, sha256: str, model: str,
             f"{body}\n")
 
 
-def write_atomically(path: Path, content: str):
-    """Write text to path via a temporary file in the same directory, so a
-    failure never leaves a partial transcript behind"""
-    with NamedTemporaryFile('w', encoding='utf-8', dir=path.parent,
-                            prefix=f'.{path.name}.', suffix='.tmp',
-                            delete=False) as temp:
-        try:
-            temp.write(content)
-        except BaseException:
-            temp.close()
-            os.unlink(temp.name)
-            raise
+def transcript_body(text: str) -> str:
+    """Return a transcript's Markdown without its front matter and AI
+    disclaimer comment"""
+    lines = text.splitlines()
+    if lines and lines[0].rstrip() == FRONT_MATTER_DELIMITER:
+        for index, line in enumerate(lines[1:], start=1):
+            if line.rstrip() == FRONT_MATTER_DELIMITER:
+                lines = lines[index + 1:]
+                break
+    if lines and lines[0].strip() == f'<!-- {TRANSCRIBE_DISCLAIMER} -->':
+        lines = lines[1:]
+    return '\n'.join(lines).strip('\n')
+
+
+def transcribe_model(config) -> str:
+    """Model from `filez4eva: transcribe: model:`, or the default"""
+    return config.get('filez4eva-transcribe-model') or DEFAULT_MODEL
+
+
+def transcribe_file(path: Path, model: str, api_key=None) -> tuple:
+    """Transcribe a file in place, writing FILE.md next to it, unless that
+    transcript's sha256 already matches the file. Return (transcript path,
+    'Transcribed' or 'Unchanged'). Nothing is ingested or moved; classify,
+    process and scan-dir use this directly. Raises Filez4EvaError if the
+    file is missing or transcription fails, leaving any existing transcript
+    as it was."""
+    if not path.is_file():
+        raise Filez4EvaError(f"File {path} must exist")
+    sha256 = file_sha256(path)
+    target = transcript_path(path)
+    if target.is_file():
+        cached = read_front_matter(target).get('sha256')
+        if cached is not None and str(cached) == sha256:
+            return target, 'Unchanged'
     try:
-        os.replace(temp.name, path)
-    except BaseException:
-        os.unlink(temp.name)
-        raise
+        markdown = transcribe(path, model=model, api_key=api_key)
+    except KwarkAIError as err:
+        raise Filez4EvaError(f"Transcription failed: {err}") from err
+    transcribed = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    write_atomically(target, format_transcript(
+        path.name, sha256, model, transcribed, markdown))
+    return target, 'Transcribed'
 
 
-class TranscribeCommand(Filez4EvaCommand):
-    """Transcribe a file to Markdown with Claude, writing FILE.md next to
-    FILE"""
+class TranscribeCommand(StageCommand):
+    """Transcribe a file, the files in a directory, or the documents in the
+    intake to Markdown with Claude, ingesting them first if needed. Writes
+    X.md next to each document X in the intake and records
+    results.transcribe in X.yml."""
 
     name = 'transcribe'
-
-    force: bool = False
-
-    @classmethod
-    def add_args(cls, parser: WizParser):
-        super().add_args(parser)
-        parser.add_argument('--force', '-f', action='store_true')
-        parser.add_argument('file')
+    stage = 'transcribe'
+    done = 'Transcribed'
 
     @property
     def model(self) -> str:
         """Model from `filez4eva: transcribe: model:`, or the default"""
-        return self.app.config.get('filez4eva-transcribe-model') \
-            or DEFAULT_MODEL
+        return transcribe_model(self.app.config)
 
     @property
     def api_key(self):
@@ -117,25 +137,26 @@ class TranscribeCommand(Filez4EvaCommand):
         Anthropic SDK falls back to ANTHROPIC_API_KEY."""
         return self.app.config.get('filez4eva-anthropic-key') or None
 
+    def act(self, path: Path) -> str:
+        """Transcribe an ingested document (reusing a transcript whose
+        sha256 matches), record results.transcribe, and return the
+        transcript path"""
+        target, _ = transcribe_file(path, self.model, self.api_key)
+        at = ingest_command.now()
+        try:
+            text = target.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError) as err:
+            raise Filez4EvaError(
+                f"Could not read transcript {target}: {err}") from err
+        model = read_front_matter(target).get('model') or self.model
+        record_result(path, self.stage, {
+            'at': at.isoformat(timespec='seconds'),
+            'model': str(model),
+            'transcript': target.name,
+            'length': len(transcript_body(text)),
+        })
+        return str(target)
+
     @Filez4EvaCommand.wrap
     def execute(self):
-        path = Path(self.file).expanduser().absolute()
-        if not path.is_file():
-            raise Filez4EvaError(f"File {path} must exist")
-        sha256 = file_sha256(path)
-        target = transcript_path(path)
-        if not self.force and target.is_file():
-            cached = read_front_matter(target).get('sha256')
-            if cached is not None and str(cached) == sha256:
-                self.status = 'Unchanged'
-                return str(target)
-        model = self.model
-        try:
-            markdown = transcribe(path, model=model, api_key=self.api_key)
-        except KwarkAIError as err:
-            raise Filez4EvaError(f"Transcription failed: {err}") from err
-        transcribed = datetime.now(timezone.utc).isoformat(timespec='seconds')
-        write_atomically(target, format_transcript(
-            path.name, sha256, model, transcribed, markdown))
-        self.status = 'Transcribed'
-        return str(target)
+        return self.run()
