@@ -128,8 +128,8 @@ filez4eva stow-file -d 20240213 -f account=royal-bank -f part=visa \
 ```
 
 Values can also be piped in as a YAML mapping on stdin, which is handy for
-other tools that produce a record for the file (such as
-[`classify`](#classifying-files)). The fields go under `data:`:
+other tools that produce a record for the file. The fields go under
+`data:`:
 
 ```bash
 printf 'data:\n  date: 20240213\n  title: visa-statement\n' \
@@ -275,29 +275,44 @@ key.
 
 ### Classifying Files
 
-To have an AI model propose where a file should be filed:
+To have an AI model classify documents so they can be filed:
 
 ```bash
-filez4eva classify ~/Desktop/scan.pdf
+filez4eva classify ~/Scans
 ```
 
-`classify` transcribes the file first if needed, writing `FILE.md` next to
-it (with the same front matter as `transcribe`, reusing an up-to-date
-transcript, but without ingesting the file or writing a sidecar), then asks
-the model to classify the transcript and prints a YAML record on stdout:
+`classify` works on documents in the [intake](#intake), and selects them
+the same way as [`transcribe`](#transcribing-files): the path can be a file,
+a directory (top level only), or left out for every document in the intake.
+A file that hasn't been [ingested](#ingesting-files) or
+[transcribed](#transcribing-files) yet goes through those stages first, so
+after `filez4eva classify ~/Scans` every file that was in `~/Scans` is in the
+intake with its transcript `X.md` and its sidecar `X.yml`. `classify` never
+prompts, so you can start it and walk away.
+
+The model is given the transcript, along with the file's original name and
+source (`results.ingest.original-name` and `results.ingest.source`). The
+result is recorded under `results.classify` in the document's
+[sidecar](#the-xyml-sidecar):
 
 ```yaml
-file: /Users/me/Desktop/scan.pdf
-transcript: /Users/me/Desktop/scan.pdf.md
-cabinet: accounts
-doctype: receipt
-summary: Amazon.ca order receipt for a USB hub
-data:
-  account: amazon
-  date: '20261002'
-  title: usb-hub-receipt
+results:
+  ingest: ...
+  transcribe: ...
+  classify:
+    at: '2026-10-25T14:03:09-07:00'
+    model: claude-haiku-4-5
+    cabinet: accounts
+    doctype: receipt
+    summary: Amazon.ca order receipt for a USB hub
+    data:
+      account: amazon
+      date: '20261002'
+      title: usb-hub-receipt
 ```
 
+- `cabinet` is the [cabinet](#cabinets) the document is classified for (see
+  below).
 - `data` holds a value for each of the cabinet's [fields](#fields), in
   pattern order (here the pattern is `{account}/{date}-{title}`).
 - `date` is the document's own date, as YYYYMMDD. If the document has no
@@ -314,22 +329,42 @@ data:
   [learned values](#learned-values), it is also given the common values
   (the same ones offered by tab completion) and asked to reuse one when it
   fits. It is also given the doctype names and descriptions.
-- The cabinet is chosen as for `stow-file`: `--cabinet NAME`, the only
-  cabinet, or a prompt.
-- If transcription or classification fails, or the model's answer is
-  missing a field, has a field value with no letters or digits, or has an
-  unknown doctype, `classify` exits with an error and prints nothing on
-  stdout. A date that isn't a valid YYYYMMDD date becomes `null` instead of
-  an error.
 
-Nothing is moved. To file the document as proposed, pipe the record into
-`stow-file`, which reads `cabinet` and `data` and ignores the other keys:
+The cabinet is chosen without asking:
 
-```bash
-filez4eva classify ~/Desktop/scan.pdf | filez4eva stow-file ~/Desktop/scan.pdf
-```
+- `--cabinet NAME` (or `-c NAME`) applies to every document in the run. An
+  unknown name is an error before any file is touched.
+- Without `--cabinet`, if only one cabinet is configured, it is used.
+- Without `--cabinet`, if several cabinets are configured, the model picks
+  one from the cabinet names and descriptions, then fills in that cabinet's
+  fields. A pick that isn't a configured cabinet is a failure for that
+  document (see below).
 
-If the record has `date: null`, `stow-file` prompts for the date.
+For each document it classifies, `classify` prints the document's path in
+the intake on stdout. The status on stderr counts the files, e.g.
+`Ingested 3 files | Transcribed 3 files | Classified 3 files`.
+
+Other rules:
+
+- A document that already has `results.classify` isn't classified again
+  (status `Already classified 1 file`). There is no option to classify it
+  again.
+- `--only` classifies only documents that are already ingested and
+  transcribed. Any other file is left as it is, with a note on stderr
+  (`Skipped FILE: not ingested yet` or `Skipped FILE: not transcribed yet`),
+  and counted in the status, e.g. `Skipped 1 file (not transcribed)`.
+- If a document fails (transcription or classification fails, the model's
+  answer is missing a field, has a field value with no letters or digits,
+  or has an unknown doctype or cabinet, or the sidecar can't be read), the
+  error is reported on stderr and the run carries on with the next file.
+  The document gets no `results.classify`, so a later run tries it again.
+  At the end, the documents that were classified are printed and
+  `classify` exits non-zero. This also applies to a single file. A date
+  that isn't a valid YYYYMMDD date becomes `null` instead of an error.
+- The whole configuration (cabinets and doctypes) is checked before any file
+  is touched.
+
+Nothing is stowed: the document stays in the intake.
 
 ### Processing a File with AI
 
@@ -340,9 +375,9 @@ filez4eva process ~/Desktop/scan.pdf
 ```
 
 `process`:
-1. transcribes the file in place if needed (as `classify` does, reusing an
-   up-to-date transcript)
-2. classifies it (as `classify` does)
+1. transcribes the file in place if needed, writing `FILE.md` next to it
+   (reusing an up-to-date transcript, without ingesting the file)
+2. classifies it as [`classify`](#classifying-files) does, for one cabinet
 3. shows the summary and doctype, then prompts for `Cabinet:` (only if
    several cabinets are configured and it wasn't just chosen) and then each
    of the cabinet's fields in pattern order, each pre-filled with the
@@ -357,7 +392,7 @@ filez4eva process ~/Desktop/scan.pdf
 - Confirmation is always interactive.
 - Empty input at any prompt cancels without moving anything. An invalid value
   is rejected and the prompt asks again.
-- The cabinet is chosen as for `classify` (`--cabinet NAME`, the only
+- The cabinet is chosen as for `stow-file` (`--cabinet NAME`, the only
   cabinet, or a prompt) before anything is sent to the model, and the whole
   configuration is checked first.
 - `--dry-run` transcribes, classifies and prompts as usual, then prints where
@@ -383,7 +418,7 @@ After a successful move, `stow-file` prints the absolute destination path on
 stdout (the `Done` status goes to stderr), so scripts can capture it, e.g.
 `dest=$(filez4eva stow-file -d 20240213 -f title=receipt file.pdf)`.
 
-If the file has a transcript (`FILE.md`, e.g. written by `classify` or
+If the file has a transcript (`FILE.md`, e.g. written by `process` or
 `transcribe`), `stow-file` moves it too, named after the stowed file. By
 default it goes adjacent to the stowed file: `.../20261002-receipt.pdf`
 gets `.../20261002-receipt.pdf.md`. It can instead go into a parallel tree;
@@ -398,8 +433,10 @@ transcribe command:
 - `path`: Optional file or directory to transcribe (defaults to the intake)
 
 classify command:
-- `--cabinet, -c NAME`: Specify the cabinet to classify for
-- `file`: Path to the file to classify
+- `--cabinet, -c NAME`: Classify every document for this cabinet
+- `--only`: Classify only documents already ingested and transcribed; skip
+  other files
+- `path`: Optional file or directory to classify (defaults to the intake)
 
 process command:
 - `--cabinet, -c NAME`: Specify the cabinet to classify for and stow into
@@ -478,6 +515,31 @@ results:
 - `transcript`: the transcript's file name, next to the document.
 - `length`: the length of the transcribed Markdown in characters, without
   the front matter and disclaimer.
+
+`classify` adds:
+
+```yaml
+results:
+  ingest: ...
+  transcribe: ...
+  classify:
+    at: '2026-10-25T14:03:15-07:00'
+    model: claude-haiku-4-5
+    cabinet: accounts
+    doctype: receipt
+    summary: Amazon.ca order receipt for a USB hub
+    data:
+      date: '20261002'
+      title: usb-hub-receipt
+```
+
+- `at`: when the document was classified, in ISO-8601 local time with its
+  UTC offset, to the second.
+- `model`: the model that classified it.
+- `cabinet`, `doctype`, `summary` and `data`: the classification (see
+  [Classifying Files](#classifying-files)). `data` has a value for each of
+  the cabinet's fields, in pattern order, with `date` as YYYYMMDD or
+  `null`.
 
 Keys use hyphens. A file in the intake counts as ingested only if its
 sidecar exists; the sidecar is written before the file is moved in, so a
@@ -637,7 +699,8 @@ is more than one cabinet, `stow-file` prompts for one, with tab-completion of
 the names. With only one cabinet it is used without asking. An unknown name
 from the flag or stdin is an error; an unknown name typed at the prompt is
 rejected and the prompt asks again. `scan-dir` asks for a cabinet for each
-file it stows (once per file, before classifying it).
+file it stows (once per file, before classifying it). `classify` never asks:
+see [Classifying Files](#classifying-files).
 
 Prompts, tab completion and learned values use the chosen cabinet's fields
 and target.
@@ -697,8 +760,9 @@ as unset, but other values such as `no` or `0` are rejected as invalid
 locations.
 
 This only affects `stow-file`. `transcribe` writes the transcript next to
-the document in the intake, and `scan-dir`, `classify` and `process` write
-it next to the incoming file, as `FILE.md`.
+the document in the intake (also when `classify` transcribes it), and
+`scan-dir` and `process` write it next to the incoming file, as
+`FILE.md`.
 
 ### Transcription settings
 
@@ -767,8 +831,8 @@ cabinet's pattern:
   would be an ordinary field that you are prompted for.
 - `stow-file --account/-a` and `--part/-p` are replaced by `--field/-f
   NAME=VALUE`.
-- In the `classify` record and `stow-file` stdin, the fields (including
-  `date`) are under `data:`.
+- In `stow-file` stdin, the fields (including `date`) are under
+  `data:`.
 - Field values are normalized to hyphen-separated-lower, so existing
   directories with capitals or spaces won't match new values.
 - Tab completion no longer scans existing folders; it offers
