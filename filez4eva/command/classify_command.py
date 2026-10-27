@@ -2,14 +2,14 @@ from pathlib import Path
 import re
 
 import yaml
-from kwark.ai import KwarkAIError, TRANSCRIBE_DISCLAIMER, extract
+from kwark.ai import KwarkAIError, extract
 from wizlib.parser import WizParser
 
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command.stow_file_command import (
     Cabinet, StowFileCommand, valid_date)
 from filez4eva.command.transcribe_command import (
-    FRONT_MATTER_DELIMITER, TranscribeCommand)
+    transcribe_file, transcribe_model, transcript_body)
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import check_value
 
@@ -144,20 +144,6 @@ def build_instructions(cabinet: Cabinet, vocabulary: dict,
     return '\n\n'.join(sections)
 
 
-def transcript_body(text: str) -> str:
-    """Return a transcript's Markdown without its front matter and AI
-    disclaimer comment"""
-    lines = text.splitlines()
-    if lines and lines[0].rstrip() == FRONT_MATTER_DELIMITER:
-        for index, line in enumerate(lines[1:], start=1):
-            if line.rstrip() == FRONT_MATTER_DELIMITER:
-                lines = lines[index + 1:]
-                break
-    if lines and lines[0].strip() == f'<!-- {TRANSCRIBE_DISCLAIMER} -->':
-        lines = lines[1:]
-    return '\n'.join(lines).strip('\n')
-
-
 def check_result(result, cabinet: Cabinet, doctypes) -> dict:
     """Return the model's classification as a dict with data (the
     cabinet's fields, in pattern order), doctype and summary, validated and
@@ -256,8 +242,8 @@ class ClassifyCommand(Filez4EvaCommand):
         path = Path(self.file).expanduser().absolute()
         if not path.is_file():
             raise Filez4EvaError(f"File {path} must exist")
-        transcriber = TranscribeCommand(self.app, file=str(path))
-        transcript = Path(transcriber.execute())
+        transcript, transcribed = transcribe_file(
+            path, transcribe_model(self.app.config), self.api_key)
         try:
             text = transcript_body(transcript.read_text(encoding='utf-8'))
         except (OSError, UnicodeDecodeError) as err:
@@ -277,8 +263,7 @@ class ClassifyCommand(Filez4EvaCommand):
         record = {'file': str(path), 'transcript': str(transcript),
                   'cabinet': self.chosen.name, **values}
         record = {key: record[key] for key in RECORD_KEYS}
-        statuses = [transcriber.status] \
-            if transcriber.status == 'Transcribed' else []
+        statuses = [transcribed] if transcribed == 'Transcribed' else []
         self.status = ' | '.join(statuses + ['Classified'])
         return record
 
