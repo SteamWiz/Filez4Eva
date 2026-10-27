@@ -1,19 +1,19 @@
 from wizlib.parser import WizParser
 
 from filez4eva.command import Filez4EvaCommand
-from filez4eva.command.classify_command import ClassifyCommand
+from filez4eva.command.classify_command import Classifier
 from filez4eva.command.stow_file_command import (
     DATE_RULE, StowFileCommand)
 from filez4eva.fields import normalize_value, value_rule
 
 
-def confirm_record(app, classifier: ClassifyCommand, record: dict) -> dict:
+def confirm_record(app, classifier: Classifier, record: dict) -> dict:
     """Show the summary and doctype, then prompt for the cabinet and each
     of its fields in pattern order, pre-filled with the proposed value (a
     prompt starts empty if the record has no value for it, such as a
     document without a date). Return the confirmed cabinet, date and data
     (the other fields). An empty answer raises CommandCancellation.
-    classifier is the ClassifyCommand that produced the record."""
+    classifier is the Classifier that produced the record."""
     app.ui.send(f"Summary: {record['summary']}")
     app.ui.send(f"Doctype: {record['doctype']}")
     stow = classifier.stow
@@ -61,8 +61,8 @@ class ProcessCommand(Filez4EvaCommand):
         super().handle_vals()
         # Check all the configuration (and choose the cabinet) before any
         # call to the model
-        self.classifier = ClassifyCommand(self.app, file=self.file,
-                                          cabinet=self.cabinet)
+        self.classifier = Classifier(self.app, file=self.file,
+                                     cabinet=self.cabinet)
         self.classifier.handle_vals()
 
     def confirm(self, record: dict) -> dict:

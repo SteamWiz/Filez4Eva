@@ -1,7 +1,8 @@
-"""Shared logic for the stage commands (transcribe now; classify, review and
-stow later): which path to work on, which files in it are documents, the
-prerequisite rule, the `results` in each document's X.yml sidecar, and
-running a stage over every document with per-file errors."""
+"""Shared logic for the stage commands (transcribe and classify now; review
+and stow later): which path to work on, which files in it are documents,
+the prerequisite rule (ingest, then each earlier stage the command
+requires), the `results` in each document's X.yml sidecar, and running a
+stage over every document with per-file errors."""
 
 from pathlib import Path
 
@@ -103,14 +104,19 @@ def record_result(path: Path, stage: str, result: dict):
 
 class StageCommand(Filez4EvaCommand):
     """Base for the stage commands. A subclass sets `name`, `stage` (its
-    key under `results`) and `done` (the status label, e.g. 'Transcribed'),
-    and implements `act`."""
+    key under `results`), `done` (the status label, e.g. 'Transcribed') and
+    `requires` (the earlier stage commands, after ingest), and implements
+    `act`."""
 
     # Key under `results` in X.yml
     stage: str = None
 
     # Status label for documents the stage acted on
     done: str = None
+
+    # Earlier StageCommand classes, in order, whose results a document needs
+    # before this stage runs (ingest always comes first)
+    requires: tuple = ()
 
     # Act only on documents whose earlier stages are all done
     only: bool = False
@@ -129,33 +135,53 @@ class StageCommand(Filez4EvaCommand):
         record results.<stage>, and return the line to print on stdout"""
         raise NotImplementedError
 
+    def skip(self, document: Path, reason: str, skipped: dict):
+        """Leave a document alone under --only, with a note on stderr.
+        reason is the earlier stage it lacks, e.g. 'ingested'."""
+        skipped[reason] = skipped.get(reason, 0) + 1
+        self.app.ui.send(f"Skipped {document}: not {reason} yet",
+                         Emphasis.INFO)
+
     def run(self) -> str:
         """Run the stage on every document for the path argument, applying
-        the prerequisite rule. Set the status and return the lines from act.
-        If any document fails, it is reported and the run carries on; at the
-        end the lines are printed and Filez4EvaError is raised."""
+        the prerequisite rule: a file not yet ingested is ingested, and each
+        earlier stage in `requires` that a document hasn't had is run first
+        (with --only, the document is skipped instead, with a note). Set the
+        status and return the lines from act. If any document fails, it is
+        reported and the run carries on; at the end the lines are printed
+        and Filez4EvaError is raised."""
         intake = intake_dir(self.app.config)
         todo = documents(resolve_path(self.path, intake), intake)
+        earlier = [command(self.app) for command in self.requires]
         lines = []
-        counts = {'ingested': 0, 'done': 0, 'already': 0, 'skipped': 0}
+        counts = {'Ingested': 0}
+        counts.update({command.done: 0 for command in earlier})
+        counts.update({self.done: 0, f"Already {self.done.lower()}": 0})
+        # Skipped documents, by the earlier stage they lack
+        skipped = {}
         failed = 0
         for document in todo:
             current = document
             try:
                 if not ingested(document, intake):
                     if self.only:
-                        counts['skipped'] += 1
-                        self.app.ui.send(
-                            f"Skipped {document}: not ingested yet",
-                            Emphasis.INFO)
+                        self.skip(document, 'ingested', skipped)
                         continue
                     current = ingest_file(document, intake, {})
-                    counts['ingested'] += 1
+                    counts['Ingested'] += 1
                 if stage_result(current, self.stage) is not None:
-                    counts['already'] += 1
+                    counts[f"Already {self.done.lower()}"] += 1
                     continue
+                missing = [command for command in earlier
+                           if stage_result(current, command.stage) is None]
+                if missing and self.only:
+                    self.skip(document, missing[0].done.lower(), skipped)
+                    continue
+                for command in missing:
+                    command.act(current)
+                    counts[command.done] += 1
                 lines.append(self.act(current))
-                counts['done'] += 1
+                counts[self.done] += 1
             except (Filez4EvaError, OSError) as error:
                 failed += 1
                 moved = f" (now {current})" if current != document else ''
@@ -167,11 +193,9 @@ class StageCommand(Filez4EvaCommand):
                 print('\n'.join(lines))
             raise Filez4EvaError(
                 f"{failed} of {files(len(todo))} failed to {self.name}")
-        labels = [('Ingested', counts['ingested'], ''),
-                  (self.done, counts['done'], ''),
-                  (f"Already {self.done.lower()}", counts['already'], ''),
-                  ('Skipped', counts['skipped'], ' (not ingested)')]
-        self.status = ' | '.join(f"{label} {files(count)}{note}"
-                                 for label, count, note in labels if count) \
-            or f"No files to {self.name}"
+        labels = [f"{label} {files(count)}"
+                  for label, count in counts.items() if count]
+        labels += [f"Skipped {files(count)} (not {reason})"
+                   for reason, count in skipped.items()]
+        self.status = ' | '.join(labels) or f"No files to {self.name}"
         return '\n'.join(lines)

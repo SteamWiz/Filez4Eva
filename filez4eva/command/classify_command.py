@@ -6,12 +6,15 @@ from kwark.ai import KwarkAIError, extract
 from wizlib.parser import WizParser
 
 from filez4eva.command import Filez4EvaCommand
+from filez4eva.command import ingest_command
 from filez4eva.command.stow_file_command import (
-    Cabinet, StowFileCommand, valid_date)
+    Cabinet, StowFileCommand, load_cabinets, valid_date)
 from filez4eva.command.transcribe_command import (
-    transcribe_file, transcribe_model, transcript_body)
+    TranscribeCommand, transcribe_file, transcribe_model, transcript_body,
+    transcript_path)
 from filez4eva.error import Filez4EvaError
-from filez4eva.fields import check_value
+from filez4eva.fields import check_value, load_store, suggestions
+from filez4eva.stage import StageCommand, load_sidecar, record_result
 
 
 # Model used when `filez4eva: classify: model:` is not configured
@@ -24,8 +27,8 @@ OTHER_DESCRIPTION = "Anything that doesn't fit the other types"
 # Doctype names are single words (hyphens and underscores allowed)
 DOCTYPE_PATTERN = re.compile(r'[A-Za-z0-9_-]+')
 
-# Order of the keys in the printed record. The fields (date included) are
-# under `data`, in pattern order.
+# Order of the keys in the record that Classifier returns to process and
+# scan-dir. The fields (date included) are under `data`, in pattern order.
 RECORD_KEYS = ['file', 'transcript', 'cabinet', 'doctype', 'summary', 'data']
 
 TASK = """\
@@ -33,6 +36,17 @@ Classify the document below so it can be filed. Return:
 - data: a value for each of the fields listed below
 - doctype: one of the document types listed below, or "other" if none fits
 - summary: a one-line summary of the document"""
+
+# Told to the model when the document's original name and source come
+# before its transcript
+CONTEXT_NOTE = ("Before the transcript you are given the document's "
+                "original file name and where it came from (its source). "
+                "Use them as hints, but go by the transcript when they "
+                "disagree.")
+
+CABINET_TASK = """\
+Choose the cabinet the document below should be filed in. Return:
+- cabinet: the name of one of the cabinets listed below"""
 
 # Fixed rules for the date, whatever its guidance says
 DATE_RULES = ("Give it as YYYYMMDD. If you can't determine the document's "
@@ -118,10 +132,14 @@ def build_schema(cabinet: Cabinet, doctypes: list) -> dict:
 
 
 def build_instructions(cabinet: Cabinet, vocabulary: dict,
-                       doctypes: dict) -> str:
+                       doctypes: dict, context: bool = False) -> str:
     """Return the instructions passed to extract. vocabulary maps a field
-    name to the existing values to offer for it."""
+    name to the existing values to offer for it. With context, the model is
+    told that the document's original name and source come before its
+    transcript."""
     sections = [TASK]
+    if context:
+        sections.append(CONTEXT_NOTE)
     cabinet_text = f'The document is being filed in the cabinet ' \
         f'"{cabinet.name}"'
     if cabinet.description:
@@ -185,24 +203,139 @@ def check_result(result, cabinet: Cabinet, doctypes) -> dict:
     return checked
 
 
-class ClassifyCommand(Filez4EvaCommand):
-    """Propose a cabinet, a value for each of the cabinet's fields, and a
-    doctype for a file from its transcript, printed as YAML"""
+def cabinet_vocabulary(cabinet: Cabinet) -> dict:
+    """Existing values to offer the model, by field name, for a cabinet's
+    learned fields that have any (the values tab completion offers)"""
+    learned = [field for field in cabinet.fields if field.learned]
+    if not learned:
+        return {}
+    store = load_store(cabinet.targetdir)
+    return {field.name: values for field in learned
+            if (values := suggestions(store, field.name))}
 
-    name = 'classify'
 
-    cabinet: str = None
+def classify_model(config) -> str:
+    """Model from `filez4eva: classify: model:`, or the default. An empty
+    `classify:` block makes wizlib's nested lookup raise TypeError; that
+    means unset."""
+    try:
+        model = config.get('filez4eva-classify-model')
+    except TypeError:
+        model = None
+    return model or DEFAULT_MODEL
 
-    @classmethod
-    def add_args(cls, parser: WizParser):
-        super().add_args(parser)
-        parser.add_argument('--cabinet', '-c')
-        parser.add_argument('file')
+
+def anthropic_key(config):
+    """Key from `filez4eva: anthropic: key:`, or None for the SDK default"""
+    return config.get('filez4eva-anthropic-key') or None
+
+
+def read_transcript(transcript: Path) -> str:
+    """Return a transcript's Markdown without its front matter. Raises
+    Filez4EvaError if it can't be read or is empty."""
+    try:
+        text = transcript_body(transcript.read_text(encoding='utf-8'))
+    except (OSError, UnicodeDecodeError) as err:
+        raise Filez4EvaError(
+            f"Could not read transcript {transcript}: {err}") from err
+    if not text.strip():
+        raise Filez4EvaError(f"Transcript {transcript} is empty")
+    return text
+
+
+def ask_model(text: str, schema: dict, instructions: str, model: str,
+              api_key):
+    """Call extract, turning a Kwark error into Filez4EvaError"""
+    try:
+        return extract(text, schema, instructions=instructions, model=model,
+                       api_key=api_key)
+    except KwarkAIError as err:
+        raise Filez4EvaError(f"Classification failed: {err}") from err
+
+
+def classify_text(text: str, cabinet: Cabinet, doctypes: dict, model: str,
+                  api_key, context: bool = False) -> dict:
+    """Ask the model for a cabinet's field values, the doctype and a
+    summary of a document, offering the cabinet's existing values. Return
+    the checked result (see check_result). Raises Filez4EvaError if the
+    call fails or the answer can't be used."""
+    schema = build_schema(cabinet, doctypes)
+    instructions = build_instructions(cabinet, cabinet_vocabulary(cabinet),
+                                      doctypes, context)
+    result = ask_model(text, schema, instructions, model, api_key)
+    return check_result(result, cabinet, doctypes)
+
+
+def build_cabinet_schema(cabinets: dict) -> dict:
+    """Return the JSON schema for choosing one of the cabinets"""
+    return {
+        'type': 'object',
+        'properties': {
+            'cabinet': {
+                'type': 'string', 'enum': list(cabinets),
+                'description': 'The cabinet to file the document in'}},
+        'required': ['cabinet'],
+        'additionalProperties': False,
+    }
+
+
+def build_cabinet_instructions(cabinets: dict) -> str:
+    """Return the instructions for choosing a cabinet: the names with their
+    descriptions"""
+    lines = ['Cabinets:']
+    for name, cabinet in cabinets.items():
+        description = (cabinet.description or '').strip()
+        lines.append(f'- {name}: {description}' if description
+                     else f'- {name}')
+    return '\n\n'.join([CABINET_TASK, CONTEXT_NOTE, '\n'.join(lines)])
+
+
+def pick_cabinet(text: str, cabinets: dict, model: str, api_key) -> Cabinet:
+    """Ask the model which of the configured cabinets a document belongs
+    in, from their names and descriptions. Raises Filez4EvaError if the call
+    fails or the answer isn't a configured cabinet."""
+    result = ask_model(text, build_cabinet_schema(cabinets),
+                       build_cabinet_instructions(cabinets), model, api_key)
+    name = result.get('cabinet') if isinstance(result, dict) else None
+    if not isinstance(name, str) or name.strip() not in cabinets:
+        raise Filez4EvaError(
+            f"Classification failed: unknown cabinet {name!r}; known: "
+            + ', '.join(sorted(cabinets)))
+    return cabinets[name.strip()]
+
+
+def document_text(transcript: str, ingest: dict) -> str:
+    """Return the text given to the model for a document in the intake: its
+    original file name and source (from results.ingest), then its
+    transcript"""
+    ingest = ingest if isinstance(ingest, dict) else {}
+    lines = [f"Original file name: {ingest.get('original-name') or '(none)'}"]
+    source = ingest.get('source')
+    if source:
+        dumped = yaml.safe_dump(source, sort_keys=False, allow_unicode=True,
+                                default_flow_style=False).rstrip('\n')
+        lines.append('Source:')
+        lines.extend(f'  {line}' for line in dumped.splitlines())
+    else:
+        lines.append('Source: (none recorded)')
+    return '\n'.join(lines) + '\n\nTranscript:\n\n' + transcript
+
+
+class Classifier:
+    """Transcribe a file in place and classify it for one cabinet, chosen
+    with --cabinet, as the only cabinet, or at a prompt. Used by process and
+    scan-dir, which confirm the result in the shell; nothing is ingested or
+    moved."""
+
+    def __init__(self, app, file: str, cabinet: str = None):
+        self.app = app
+        self.file = file
+        self.cabinet = cabinet
+        self.status = None
 
     def handle_vals(self):
-        super().handle_vals()
-        # Check all the configuration (and choose the cabinet) before any
-        # call to Claude
+        """Check all the configuration, and choose the cabinet (at a prompt
+        if needed), before any call to Claude"""
         self.doctypes = load_doctypes(self.app.config)
         self.stow = StowFileCommand(self.app, cabinet=self.cabinet,
                                     use_stdin=False)
@@ -214,26 +347,11 @@ class ClassifyCommand(Filez4EvaCommand):
 
     @property
     def model(self) -> str:
-        """Model from `filez4eva: classify: model:`, or the default. An
-        empty `classify:` block makes wizlib's nested lookup raise
-        TypeError; that means unset."""
-        try:
-            model = self.app.config.get('filez4eva-classify-model')
-        except TypeError:
-            model = None
-        return model or DEFAULT_MODEL
+        return classify_model(self.app.config)
 
     @property
     def api_key(self):
-        """Key from `filez4eva: anthropic: key:`, or None for the SDK
-        default"""
-        return self.app.config.get('filez4eva-anthropic-key') or None
-
-    def vocabulary(self) -> dict:
-        """Existing values to offer the model, by field name, for the
-        chosen cabinet's fields that have any"""
-        return {field.name: values for field in self.chosen.fields
-                if (values := self.stow.choices(field))}
+        return anthropic_key(self.app.config)
 
     def classify(self) -> dict:
         """Transcribe the file if needed, then classify it. Return the
@@ -244,22 +362,9 @@ class ClassifyCommand(Filez4EvaCommand):
             raise Filez4EvaError(f"File {path} must exist")
         transcript, transcribed = transcribe_file(
             path, transcribe_model(self.app.config), self.api_key)
-        try:
-            text = transcript_body(transcript.read_text(encoding='utf-8'))
-        except (OSError, UnicodeDecodeError) as err:
-            raise Filez4EvaError(
-                f"Could not read transcript {transcript}: {err}") from err
-        if not text.strip():
-            raise Filez4EvaError(f"Transcript {transcript} is empty")
-        schema = build_schema(self.chosen, self.doctypes)
-        instructions = build_instructions(self.chosen, self.vocabulary(),
-                                          self.doctypes)
-        try:
-            result = extract(text, schema, instructions=instructions,
-                             model=self.model, api_key=self.api_key)
-        except KwarkAIError as err:
-            raise Filez4EvaError(f"Classification failed: {err}") from err
-        values = check_result(result, self.chosen, self.doctypes)
+        text = read_transcript(transcript)
+        values = classify_text(text, self.chosen, self.doctypes, self.model,
+                               self.api_key)
         record = {'file': str(path), 'transcript': str(transcript),
                   'cabinet': self.chosen.name, **values}
         record = {key: record[key] for key in RECORD_KEYS}
@@ -267,9 +372,82 @@ class ClassifyCommand(Filez4EvaCommand):
         self.status = ' | '.join(statuses + ['Classified'])
         return record
 
+
+class ClassifyCommand(StageCommand):
+    """Classify a file, the files in a directory, or the documents in the
+    intake with Claude, ingesting and transcribing them first if needed.
+    Records results.classify (cabinet, doctype, summary and field values)
+    in each document's X.yml. Never prompts."""
+
+    name = 'classify'
+    stage = 'classify'
+    done = 'Classified'
+    requires = (TranscribeCommand,)
+
+    # Cabinet for every document in the run; None to use the only cabinet,
+    # or let the model pick one when there are several
+    cabinet: str = None
+
+    @classmethod
+    def add_args(cls, parser: WizParser):
+        super().add_args(parser)
+        parser.add_argument('--cabinet', '-c')
+
+    def handle_vals(self):
+        super().handle_vals()
+        # Check all the configuration, including the --cabinet name, before
+        # any file is touched
+        self.doctypes = load_doctypes(self.app.config)
+        self.cabinets = load_cabinets(self.app.config)
+        if self.provided('cabinet') and self.cabinet not in self.cabinets:
+            raise Filez4EvaError(
+                f"Unknown cabinet {self.cabinet}; known: "
+                + ', '.join(sorted(self.cabinets)))
+
+    @property
+    def model(self) -> str:
+        """Model from `filez4eva: classify: model:`, or the default"""
+        return classify_model(self.app.config)
+
+    @property
+    def api_key(self):
+        """Key from `filez4eva: anthropic: key:`, or None for the SDK
+        default"""
+        return anthropic_key(self.app.config)
+
+    def choose_cabinet(self, text: str) -> Cabinet:
+        """The --cabinet cabinet, the only one, or the model's pick"""
+        if self.provided('cabinet'):
+            return self.cabinets[self.cabinet]
+        if len(self.cabinets) == 1:
+            return next(iter(self.cabinets.values()))
+        return pick_cabinet(text, self.cabinets, self.model, self.api_key)
+
+    def act(self, path: Path) -> str:
+        """Classify an ingested, transcribed document from its transcript,
+        original name and source, record results.classify, and return the
+        document's path"""
+        results = load_sidecar(path)['results']
+        transcribed = results.get('transcribe')
+        name = transcribed.get('transcript') \
+            if isinstance(transcribed, dict) else None
+        transcript = path.parent / name if isinstance(name, str) and name \
+            else transcript_path(path)
+        text = document_text(read_transcript(transcript),
+                             results.get('ingest'))
+        cabinet = self.choose_cabinet(text)
+        values = classify_text(text, cabinet, self.doctypes, self.model,
+                               self.api_key, context=True)
+        record_result(path, self.stage, {
+            'at': ingest_command.now().isoformat(timespec='seconds'),
+            'model': self.model,
+            'cabinet': cabinet.name,
+            'doctype': values['doctype'],
+            'summary': values['summary'],
+            'data': values['data'],
+        })
+        return str(path)
+
     @Filez4EvaCommand.wrap
     def execute(self):
-        record = self.classify()
-        return yaml.safe_dump(record, sort_keys=False, allow_unicode=True,
-                              default_flow_style=False,
-                              width=float('inf')).rstrip('\n')
+        return self.run()

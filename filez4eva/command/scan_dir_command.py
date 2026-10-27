@@ -9,7 +9,7 @@ from wizlib.app import AppCancellation
 from wizlib.command import CommandCancellation
 
 from filez4eva.command import Filez4EvaCommand
-from filez4eva.command.classify_command import ClassifyCommand
+from filez4eva.command.classify_command import Classifier
 from filez4eva.command.process_command import confirm_record
 from filez4eva.command.stow_file_command import StowFileCommand
 from filez4eva.command.transcribe_command import transcript_path
@@ -102,7 +102,7 @@ class ScanDirCommand(Filez4EvaCommand):
         pre-filled prompts, then stow it with its transcript. If the AI step
         fails, report why and fall back to empty prompts. Return True if the
         file was stowed, False if a prompt was cancelled."""
-        classifier = ClassifyCommand(self.app, file=str(file))
+        classifier = Classifier(self.app, file=str(file))
         try:
             classifier.handle_vals()
             self.app.ui.send('Classifying...', Emphasis.INFO)
