@@ -596,6 +596,62 @@ class TestTranscribeCommand(TranscribeTestCase):
         self.assertEqual(err, 'Already transcribed 1 file\n')
 
 
+class TestTranscribeThroughSymlink(TranscribeTestCase):
+    """Source and intake reached through a symbolic link, as the macOS
+    temporary directory is (/var is a link to /private/var): messages and
+    output use the paths as given, never a mix of resolved and unresolved
+    ones. Holds without the symlinked temporary directory of conftest.py."""
+
+    def setUp(self):
+        super().setUp()
+        real = self.source / 'real'
+        (real / 'in').mkdir(parents=True)
+        link = self.source / 'link'
+        link.symlink_to(real, target_is_directory=True)
+        self.source = link / 'in'
+        self.intake = link / 'intake'
+        os.environ['FILEZ4EVA_INTAKE'] = str(self.intake)
+
+    def test_failure_names_source_and_intake_as_given(self):
+        self.make('a.pdf')
+        self.make('b.zip')
+
+        def fake(path, **kwargs):
+            if path.suffix == '.zip':
+                raise APIError('unsupported')
+            return 'x'
+        with patch(TRANSCRIBE, side_effect=fake):
+            out, err, code = self.run_app(self.source)
+        self.assertEqual(code, 1)
+        failed = self.intake / '20261025-140307-043.zip'
+        self.assertIn(f"Failed to transcribe {self.source / 'b.zip'} "
+                      f"(now {failed}): Transcription failed: unsupported",
+                      err)
+        self.assertEqual(out.strip(), str(self.intake / f'{STAMP}.pdf.md'))
+
+    def test_skip_names_source_as_given(self):
+        source = self.make('a.pdf')
+        with patch(TRANSCRIBE) as t:
+            _, _, err = self.run_command(self.source, only=True)
+        t.assert_not_called()
+        self.assertIn(f'Skipped {source}: not ingested yet', err)
+
+    def test_intake_given_as_path_through_link(self):
+        document = self.make_document(f'{STAMP}.pdf')
+        with patch(TRANSCRIBE, return_value='x'):
+            result, _, _ = self.run_command(self.intake)
+        self.assertEqual(result, f'{document}.md')
+
+    def test_resolve_path_keeps_the_path_given(self):
+        self.intake.mkdir()
+        source = self.make('a.pdf')
+        self.assertEqual(resolve_path(str(self.source), self.intake),
+                         self.source)
+        self.assertEqual(resolve_path(str(source), self.intake), source)
+        self.assertEqual(resolve_path(str(self.intake), self.intake),
+                         self.intake)
+
+
 class TestStageHelpers(TranscribeTestCase):
 
     def test_resolve_path(self):
