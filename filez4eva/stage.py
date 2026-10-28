@@ -19,20 +19,19 @@ from filez4eva.error import Filez4EvaError
 
 def resolve_path(arg, intake: Path) -> Path:
     """Return the path a stage command works on: the intake when no path is
-    given, otherwise the path, expanded and absolute. A directory is
-    resolved in full (symbolic links and '..'), so a link to a subdirectory
-    of the intake is seen for what it is. Raises Filez4EvaError if the path
-    doesn't exist, or if it is in a subdirectory of the intake (such as
-    archive/), which stage commands never touch."""
+    given, otherwise the path, expanded and absolute but not resolved, so
+    messages and output name files the way the user and the configuration
+    do (on macOS, for example, /var is a link to /private/var). Only the
+    check below resolves the path in full (symbolic links and '..'), so a
+    link to a subdirectory of the intake is seen for what it is. Raises
+    Filez4EvaError if the path doesn't exist, or if it is in a subdirectory
+    of the intake (such as archive/), which stage commands never touch."""
     if not arg:
         return intake
     path = Path(arg).expanduser().absolute()
     if not path.exists():
         raise Filez4EvaError(f"{path} must exist")
-    if path.is_dir():
-        path = home = path.resolve()
-    else:
-        home = path.parent.resolve()
+    home = (path if path.is_dir() else path.parent).resolve()
     top = intake.resolve()
     if home != top and home.is_relative_to(top):
         raise Filez4EvaError(

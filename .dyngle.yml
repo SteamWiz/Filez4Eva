@@ -14,6 +14,14 @@ dyngle:
     coverage-target: '95'
     python-version: '3.14'
 
+  # The package directory, as in .github/workflows/pr.yml. The shared default
+  # is the name of the clone's directory, which is 'Filez4Eva' for a fresh
+  # clone (or another name for a worktree), so coverage would measure nothing
+  # on a case-sensitive filesystem such as Linux.
+
+  expressions:
+    source-dir: "'filez4eva'"
+
   operations:
 
     # Reset the sandbox source/target directories for manual testing (see the

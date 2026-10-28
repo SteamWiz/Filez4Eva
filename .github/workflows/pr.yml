@@ -1,14 +1,20 @@
 name: PR Checks
 
+# Pull requests, and pushes to integration branches (epic/**), so every merge
+# into an epic branch gets a run too. Pushes to main aren't included: releases
+# run from ci.yml by hand.
 on:
   pull_request:
+  push:
+    branches:
+      - 'epic/**'
 
-# Read-only: pull requests never need to write to the repository.
+# Read-only: checks never need to write to the repository.
 permissions:
   contents: read
   checks: write
 
-# One run per PR; a new push cancels the superseded run.
+# One run per PR or branch; a new push cancels the superseded run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
