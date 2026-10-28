@@ -358,15 +358,26 @@ class TestReviewMenu(ReviewTestCase):
         self.assertNotIn('review', self.results(other))
         self.assertEqual(command.status, 'Deleted 1 file | Skipped 1 file')
 
-    def test_delete_uses_recorded_transcript_name(self):
+    def test_delete_ignores_recorded_transcript_name(self):
         document = self.make_document()
-        recorded = self.intake / '.alt.md'
-        recorded.write_text('x')
+        other = self.make_document(f'{SECOND}.pdf')
         data = read_sidecar(document)
-        data['results']['transcribe']['transcript'] = recorded.name
+        data['results']['transcribe']['transcript'] = other.name
         write_sidecar(document, data)
-        self.run_command(keys='dY')
-        self.assertEqual(self.intake_names(), [f'{STAMP}.pdf.md'])
+        _, command, _, _, _ = self.run_command(keys='dYx')
+        self.assertEqual(self.intake_names(), [
+            f'{SECOND}.pdf', f'{SECOND}.pdf.md', f'{SECOND}.pdf.yml'])
+        self.assertEqual(command.status, 'Deleted 1 file | Skipped 1 file')
+
+    def test_delete_with_parent_as_recorded_transcript(self):
+        document = self.make_document()
+        data = read_sidecar(document)
+        data['results']['transcribe']['transcript'] = '..'
+        write_sidecar(document, data)
+        _, command, _, _, _ = self.run_command(keys='dY')
+        self.assertEqual(self.intake_names(), [])
+        self.assertTrue(self.intake.is_dir())
+        self.assertEqual(command.status, 'Deleted 1 file')
 
     def test_delete_without_transcript(self):
         document = self.make_document()

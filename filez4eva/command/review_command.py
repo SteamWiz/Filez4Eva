@@ -37,17 +37,6 @@ def proposal(results: dict) -> dict:
     return dict(classify, cabinet=cabinet.strip(), data=data)
 
 
-def transcript_of(path: Path, results: dict) -> Path:
-    """The document's transcript: the name in results.transcribe if there
-    is one, otherwise X.md"""
-    transcribed = results.get('transcribe')
-    name = transcribed.get('transcript') \
-        if isinstance(transcribed, dict) else None
-    if isinstance(name, str) and name and Path(name).name == name:
-        return path.parent / name
-    return transcript_path(path)
-
-
 class ReviewCommand(StageCommand):
     """Show the proposed record of a file, the files in a directory, or the
     documents in the intake, to confirm or edit, ingesting, transcribing
@@ -93,11 +82,13 @@ class ReviewCommand(StageCommand):
             self.app.ui.send(f"Could not preview {path}: {error}",
                              Emphasis.ERROR)
 
-    def delete(self, path: Path, results: dict):
-        """Remove the document, its transcript and its sidecar (last, so a
-        failure never leaves the document without its sidecar)"""
+    def delete(self, path: Path):
+        """Remove the document, its transcript X.md and its sidecar X.yml
+        (last, so a failure never leaves the document without its sidecar).
+        The transcript name in the sidecar isn't used, so a bad sidecar
+        can't make delete remove some other file."""
         os.remove(path)
-        transcript_of(path, results).unlink(missing_ok=True)
+        transcript_path(path).unlink(missing_ok=True)
         sidecar_path(path).unlink(missing_ok=True)
 
     def confirm(self, proposed: dict) -> dict:
@@ -126,7 +117,7 @@ class ReviewCommand(StageCommand):
                 self.preview(path)
             elif action == 'delete':
                 if self.app.ui.get_option(self.DELETE_CHOOSER) == 'Yes':
-                    self.delete(path, results)
+                    self.delete(path)
                     self.app.ui.send('Deleted', Emphasis.INFO)
                     raise NotDone('Deleted')
             elif action == 'skip':

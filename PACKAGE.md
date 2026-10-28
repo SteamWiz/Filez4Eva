@@ -585,7 +585,9 @@ results:
 - `at`: when the transcript was written or found up to date, in ISO-8601
   local time with its UTC offset, to the second.
 - `model`: the model that made the transcript (from its front matter).
-- `transcript`: the transcript's file name, next to the document.
+- `transcript`: the transcript's file name, next to the document. It is
+  always `X.md`; `classify` fails a document whose sidecar names any other
+  file, and `review`'s delete removes `X.md` whatever the sidecar says.
 - `length`: the length of the transcribed Markdown in characters, without
   the front matter and disclaimer.
 
