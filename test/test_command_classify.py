@@ -305,7 +305,15 @@ class TestClassifyPrerequisites(ClassifyTestCase):
         self.assertEqual(command.status, 'Ingested 1 file | Transcribed 1 '
                          'file | Classified 1 file')
 
-    def test_transcript_from_results_transcribe(self):
+    def test_transcript_is_x_md(self):
+        document = self.make_document(transcript='Default name')
+        data = read_sidecar(document)
+        del data['results']['transcribe']['transcript']
+        write_sidecar(document, data)
+        _, _, _, e, _ = self.run_command()
+        self.assertIn('Default name', e.call_args.args[0])
+
+    def test_other_recorded_transcript_is_a_failure(self):
         document = self.make_document(transcript='Default name')
         # Hidden, so it isn't a document of its own
         other = self.intake / '.alt.md'
@@ -313,8 +321,18 @@ class TestClassifyPrerequisites(ClassifyTestCase):
         data = read_sidecar(document)
         data['results']['transcribe']['transcript'] = other.name
         write_sidecar(document, data)
-        _, _, _, e, _ = self.run_command()
-        self.assertIn('Recorded name', e.call_args.args[0])
+        with patch(EXTRACT) as e, \
+                self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            app = Filez4EvaApp()
+            app.config = ConfigHandler.fake(**self.config())
+            with self.patchout(), self.patcherr() as err:
+                try:
+                    ClassifyCommand(app).execute()
+                finally:
+                    err.seek(0)
+                    self.assertIn("names transcript '.alt.md'", err.read())
+        e.assert_not_called()
+        self.assertNotIn('classify', read_sidecar(document)['results'])
 
     def test_transcription_failure_is_reported(self):
         source = self.make('scan.pdf')

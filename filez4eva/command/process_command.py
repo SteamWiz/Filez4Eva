@@ -2,9 +2,7 @@ from wizlib.parser import WizParser
 
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command.classify_command import Classifier
-from filez4eva.command.stow_file_command import (
-    DATE_RULE, StowFileCommand)
-from filez4eva.fields import normalize_value, value_rule
+from filez4eva.command.stow_file_command import StowFileCommand
 
 
 def confirm_record(app, classifier: Classifier, record: dict) -> dict:
@@ -16,29 +14,11 @@ def confirm_record(app, classifier: Classifier, record: dict) -> dict:
     classifier is the Classifier that produced the record."""
     app.ui.send(f"Summary: {record['summary']}")
     app.ui.send(f"Doctype: {record['doctype']}")
-    stow = classifier.stow
-    cabinet = record['cabinet']
     # Cabinet comes first, so the fields and completion are the final
     # cabinet's. Skip it if there is only one, or it was just chosen.
-    if len(stow.cabinets) > 1 and not classifier.cabinet_prompted:
-        names = sorted(stow.cabinets)
-        cabinet = stow.prompt_value(
-            'Cabinet', names, lambda v: v if v in stow.cabinets else None,
-            'Cabinet must be one of: ' + ', '.join(names), cabinet)
-        stow.cabinet = cabinet
-    proposed = record.get('data') or {}
-    date = None
-    data = {}
-    for field in stow.resolve_cabinet().fields:
-        default = proposed.get(field.name) or ''
-        if field.is_date:
-            date = stow.prompt_value('Date', [], stow.clean_date, DATE_RULE,
-                                     default)
-        else:
-            data[field.name] = stow.prompt_value(
-                field.label, stow.choices(field), normalize_value,
-                value_rule(field), default)
-    return {'cabinet': cabinet, 'date': date, 'data': data}
+    return classifier.stow.confirm_values(
+        record['cabinet'], record.get('data') or {},
+        ask_cabinet=not classifier.cabinet_prompted)
 
 
 class ProcessCommand(Filez4EvaCommand):

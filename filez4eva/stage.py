@@ -1,5 +1,5 @@
-"""Shared logic for the stage commands (transcribe and classify now; review
-and stow later): which path to work on, which files in it are documents,
+"""Shared logic for the stage commands (transcribe, classify and review now;
+stow later): which path to work on, which files in it are documents,
 the prerequisite rule (ingest, then each earlier stage the command
 requires), the `results` in each document's X.yml sidecar, and running a
 stage over every document with per-file errors."""
@@ -102,6 +102,22 @@ def record_result(path: Path, stage: str, result: dict):
     write_sidecar(path, data)
 
 
+class NotDone(Exception):
+    """Raised by act when a document was dealt with but the stage didn't
+    run on it, e.g. the operator skipped or deleted it at review. The
+    document gets no results.<stage>; label (e.g. 'Skipped') is counted in
+    the status."""
+
+    def __init__(self, label: str):
+        super().__init__(label)
+        self.label = label
+
+
+class StopRun(Exception):
+    """Raised by act to end the run early (the operator quit). The current
+    document and the rest are left as they are; 'Quit' ends the status."""
+
+
 class StageCommand(Filez4EvaCommand):
     """Base for the stage commands. A subclass sets `name`, `stage` (its
     key under `results`), `done` (the status label, e.g. 'Transcribed') and
@@ -132,7 +148,9 @@ class StageCommand(Filez4EvaCommand):
 
     def act(self, path: Path) -> str:  # pragma: no cover
         """Run the stage on an ingested document that hasn't had it yet,
-        record results.<stage>, and return the line to print on stdout"""
+        record results.<stage>, and return the line to print on stdout.
+        May raise NotDone to leave the document without the stage, or
+        StopRun to end the run."""
         raise NotImplementedError
 
     def skip(self, document: Path, reason: str, skipped: dict):
@@ -149,10 +167,15 @@ class StageCommand(Filez4EvaCommand):
         (with --only, the document is skipped instead, with a note). Set the
         status and return the lines from act. If any document fails, it is
         reported and the run carries on; at the end the lines are printed
-        and Filez4EvaError is raised."""
+        and Filez4EvaError is raised. act may leave a document without the
+        stage (NotDone, counted under its label) or end the run early
+        (StopRun)."""
+        earlier = [command(self.app) for command in self.requires]
+        # Check the earlier stages' configuration before any file is touched
+        for command in earlier:
+            command.handle_vals()
         intake = intake_dir(self.app.config)
         todo = documents(resolve_path(self.path, intake), intake)
-        earlier = [command(self.app) for command in self.requires]
         lines = []
         counts = {'Ingested': 0}
         counts.update({command.done: 0 for command in earlier})
@@ -160,6 +183,7 @@ class StageCommand(Filez4EvaCommand):
         # Skipped documents, by the earlier stage they lack
         skipped = {}
         failed = 0
+        stopped = False
         for document in todo:
             current = document
             try:
@@ -182,6 +206,11 @@ class StageCommand(Filez4EvaCommand):
                     counts[command.done] += 1
                 lines.append(self.act(current))
                 counts[self.done] += 1
+            except NotDone as outcome:
+                counts[outcome.label] = counts.get(outcome.label, 0) + 1
+            except StopRun:
+                stopped = True
+                break
             except (Filez4EvaError, OSError) as error:
                 failed += 1
                 moved = f" (now {current})" if current != document else ''
@@ -197,5 +226,7 @@ class StageCommand(Filez4EvaCommand):
                   for label, count in counts.items() if count]
         labels += [f"Skipped {files(count)} (not {reason})"
                    for reason, count in skipped.items()]
+        if stopped:
+            labels.append('Quit')
         self.status = ' | '.join(labels) or f"No files to {self.name}"
         return '\n'.join(lines)

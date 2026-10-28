@@ -308,6 +308,41 @@ class StowFileCommand(Filez4EvaCommand):
                 return cleaned
             self.app.ui.send(rule, Emphasis.PRINCIPAL)
 
+    def confirm_values(self, cabinet: str, proposed: dict,
+                       ask_cabinet: bool = True) -> dict:
+        """Confirm a proposed record at pre-filled prompts. With
+        ask_cabinet and several cabinets configured, prompt for the cabinet
+        first, pre-filled with cabinet (only a configured name is
+        accepted); otherwise keep the cabinet already chosen (or the only
+        one). Then prompt for each field of the final cabinet in pattern
+        order, pre-filled with the proposed value of the same name (empty
+        if there is none, e.g. a field the proposed cabinet doesn't have or
+        a document without a date). Return the confirmed cabinet, date and
+        data (the other fields). An empty answer raises
+        CommandCancellation."""
+        if ask_cabinet and len(self.cabinets) > 1:
+            names = sorted(self.cabinets)
+            self.cabinet = self.prompt_value(
+                'Cabinet', names, lambda v: v if v in self.cabinets else None,
+                'Cabinet must be one of: ' + ', '.join(names),
+                cabinet or '')
+        chosen = self.resolve_cabinet()
+        proposed = proposed or {}
+        date = None
+        data = {}
+        for field in chosen.fields:
+            default = proposed.get(field.name) or ''
+            if not isinstance(default, str):
+                default = str(default)
+            if field.is_date:
+                date = self.prompt_value('Date', [], self.clean_date,
+                                         DATE_RULE, default)
+            else:
+                data[field.name] = self.prompt_value(
+                    field.label, self.choices(field), normalize_value,
+                    value_rule(field), default)
+        return {'cabinet': chosen.name, 'date': date, 'data': data}
+
     def apply_field_flags(self) -> list:
         """Put the values of --field NAME=VALUE flags into data, normalized,
         and return the names. The names are checked against the cabinet

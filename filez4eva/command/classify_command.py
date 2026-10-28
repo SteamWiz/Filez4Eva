@@ -10,8 +10,8 @@ from filez4eva.command import ingest_command
 from filez4eva.command.stow_file_command import (
     Cabinet, StowFileCommand, load_cabinets, valid_date)
 from filez4eva.command.transcribe_command import (
-    TranscribeCommand, transcribe_file, transcribe_model, transcript_body,
-    transcript_path)
+    TranscribeCommand, recorded_transcript, transcribe_file, transcribe_model,
+    transcript_body)
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import check_value, load_store, suggestions
 from filez4eva.stage import StageCommand, load_sidecar, record_result
@@ -428,11 +428,7 @@ class ClassifyCommand(StageCommand):
         original name and source, record results.classify, and return the
         document's path"""
         results = load_sidecar(path)['results']
-        transcribed = results.get('transcribe')
-        name = transcribed.get('transcript') \
-            if isinstance(transcribed, dict) else None
-        transcript = path.parent / name if isinstance(name, str) and name \
-            else transcript_path(path)
+        transcript = recorded_transcript(path, results)
         text = document_text(read_transcript(transcript),
                              results.get('ingest'))
         cabinet = self.choose_cabinet(text)

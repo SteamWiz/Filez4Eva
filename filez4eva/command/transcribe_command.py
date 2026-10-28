@@ -35,6 +35,21 @@ def transcript_path(path: Path) -> Path:
     return Path(str(path) + '.md')
 
 
+def recorded_transcript(path: Path, results: dict) -> Path:
+    """Return a document's transcript X.md, checked against the name in its
+    results.transcribe. Raises Filez4EvaError if that names another file,
+    so a sidecar can never point a stage at a different file."""
+    target = transcript_path(path)
+    transcribed = results.get('transcribe')
+    name = transcribed.get('transcript') \
+        if isinstance(transcribed, dict) else None
+    if name is not None and name != target.name:
+        raise Filez4EvaError(
+            f"results.transcribe names transcript {name!r}, not "
+            f"{target.name!r}")
+    return target
+
+
 def read_front_matter(path: Path) -> dict:
     """Return the YAML front matter of a Markdown file as a dict, or an empty
     dict if the file is missing, unreadable, has no front matter, or the front
