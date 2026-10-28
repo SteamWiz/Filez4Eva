@@ -366,6 +366,74 @@ Other rules:
 
 Nothing is stowed: the document stays in the intake.
 
+### Reviewing Files
+
+To confirm or edit the proposed records of classified documents:
+
+```bash
+filez4eva review
+```
+
+`review` works on documents in the [intake](#intake), and selects them the
+same way as [`transcribe`](#transcribing-files): the path can be a file, a
+directory (top level only), or left out for every document in the intake.
+A file that hasn't been [ingested](#ingesting-files),
+[transcribed](#transcribing-files) or [classified](#classifying-files) yet
+goes through those stages first. So the usual flow is
+`filez4eva classify ~/Scans` (unattended), then `filez4eva review`.
+
+For each document, `review` shows its name (and original name), then the
+proposed record from `results.classify`: the summary, doctype, cabinet and
+the value of each field (`(none)` for a document without a date). Then
+choose:
+
+- Confirm (c): prompts for each field are pre-filled with the proposed
+  values. Press Enter to accept a value, or type a new one; tab completion
+  works as for `stow-file`. With more than one cabinet configured, a
+  `Cabinet:` prompt comes first, pre-filled with the proposed cabinet (see
+  below). The confirmed record is saved as `results.review` and the
+  document's path is printed on stdout.
+- Skip (x): the document is left in the intake as it is, and a later run
+  offers it again.
+- Preview (p): opens the document with the `preview` command, then asks
+  again.
+- Delete (d): asks `Delete? [No] (Y)es` and, on `Y`, removes the document,
+  its transcript `X.md` and its sidecar `X.yml`.
+- Quit (q): ends the run. This document and the rest are left as they are.
+
+An invalid value is rejected and the prompt asks again. Empty input at any
+prompt goes back to the choice for the same document, without saving
+anything.
+
+Changing the cabinet: when several cabinets are configured, the `Cabinet:`
+prompt accepts any configured cabinet (tab completion offers the names); an
+unknown name is rejected and the prompt asks again. The field prompts that
+follow are the chosen cabinet's fields. A field with the same name as one in
+the proposed record (such as `date`) is pre-filled with its proposed value;
+any other field starts empty. With a single cabinet there is no `Cabinet:`
+prompt, and that cabinet is used. `results.classify` is never changed.
+
+The status on stderr counts the files, e.g.
+`Reviewed 2 files | Skipped 1 file | Deleted 1 file`, with `Quit` at the end
+if you quit.
+
+Other rules:
+
+- A document that already has `results.review` isn't offered again (status
+  `Already reviewed 1 file`).
+- `--only` reviews only documents that are already ingested, transcribed
+  and classified. Any other file is left as it is, with a note on stderr
+  (e.g. `Skipped FILE: not classified yet`), and counted in the status, e.g.
+  `Skipped 1 file (not classified)`.
+- If a document fails (an earlier stage fails, its `results.classify` can't
+  be used, or its sidecar can't be read), the error is reported on stderr
+  and the run carries on with the next file. At the end, the documents that
+  were reviewed are printed and `review` exits non-zero.
+- The whole configuration (cabinets and doctypes) is checked before any file
+  is touched.
+
+Nothing is stowed: the document stays in the intake.
+
 ### Processing a File with AI
 
 To transcribe, classify, confirm and stow a file in one go:
@@ -437,6 +505,11 @@ classify command:
 - `--only`: Classify only documents already ingested and transcribed; skip
   other files
 - `path`: Optional file or directory to classify (defaults to the intake)
+
+review command:
+- `--only`: Review only documents already ingested, transcribed and
+  classified; skip other files
+- `path`: Optional file or directory to review (defaults to the intake)
 
 process command:
 - `--cabinet, -c NAME`: Specify the cabinet to classify for and stow into
@@ -540,6 +613,28 @@ results:
   [Classifying Files](#classifying-files)). `data` has a value for each of
   the cabinet's fields, in pattern order, with `date` as YYYYMMDD or
   `null`.
+
+`review` adds, when you confirm the record:
+
+```yaml
+results:
+  ingest: ...
+  transcribe: ...
+  classify: ...
+  review:
+    at: '2026-10-25T15:20:41-07:00'
+    cabinet: accounts
+    data:
+      date: '20261002'
+      title: usb-hub-receipt
+```
+
+- `at`: when the record was confirmed, in ISO-8601 local time with its UTC
+  offset, to the second.
+- `cabinet`: the confirmed cabinet, which may differ from
+  `results.classify.cabinet` (see [Reviewing Files](#reviewing-files)).
+- `data`: the confirmed value of each of that cabinet's fields, in pattern
+  order, with `date` as YYYYMMDD.
 
 Keys use hyphens. A file in the intake counts as ingested only if its
 sidecar exists; the sidecar is written before the file is moved in, so a
@@ -700,7 +795,8 @@ the names. With only one cabinet it is used without asking. An unknown name
 from the flag or stdin is an error; an unknown name typed at the prompt is
 rejected and the prompt asks again. `scan-dir` asks for a cabinet for each
 file it stows (once per file, before classifying it). `classify` never asks:
-see [Classifying Files](#classifying-files).
+see [Classifying Files](#classifying-files). `review` lets you change the
+cabinet before confirming: see [Reviewing Files](#reviewing-files).
 
 Prompts, tab completion and learned values use the chosen cabinet's fields
 and target.
