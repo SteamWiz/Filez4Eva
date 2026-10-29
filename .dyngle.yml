@@ -24,10 +24,12 @@ dyngle:
 
   operations:
 
-    # Reset the sandbox source/target directories for manual testing (see the
-    # `play` alias in .swytchitrc.sh)
+    # Reset the sandbox source, intake and target directories for manual
+    # testing (see the `play` alias in .swytchitrc.sh), e.g.
+    # `play classify sandbox/test-source` then `play stow`
 
     sandbox:
       - rm -rf ./sandbox/test-target
+      - rm -rf ./sandbox/test-intake
       - rm -rf ./sandbox/test-source
       - cp -r ./sandbox/test-origin ./sandbox/test-source

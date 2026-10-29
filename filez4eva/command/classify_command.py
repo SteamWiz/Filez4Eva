@@ -7,14 +7,12 @@ from wizlib.parser import WizParser
 
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command import ingest_command
-from filez4eva.command.stow_file_command import (
-    Cabinet, StowFileCommand, load_cabinets, valid_date)
 from filez4eva.command.transcribe_command import (
-    TranscribeCommand, recorded_transcript, transcribe_file, transcribe_model,
-    transcript_body)
+    TranscribeCommand, recorded_transcript, transcript_body)
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import check_value, load_store, suggestions
 from filez4eva.stage import StageCommand, load_sidecar, record_result
+from filez4eva.stow import Cabinet, load_cabinets, valid_date
 
 
 # Model used when `filez4eva: classify: model:` is not configured
@@ -26,10 +24,6 @@ OTHER_DESCRIPTION = "Anything that doesn't fit the other types"
 
 # Doctype names are single words (hyphens and underscores allowed)
 DOCTYPE_PATTERN = re.compile(r'[A-Za-z0-9_-]+')
-
-# Order of the keys in the record that Classifier returns to process and
-# scan-dir. The fields (date included) are under `data`, in pattern order.
-RECORD_KEYS = ['file', 'transcript', 'cabinet', 'doctype', 'summary', 'data']
 
 TASK = """\
 Classify the document below so it can be filed. Return:
@@ -321,58 +315,6 @@ def document_text(transcript: str, ingest: dict) -> str:
     return '\n'.join(lines) + '\n\nTranscript:\n\n' + transcript
 
 
-class Classifier:
-    """Transcribe a file in place and classify it for one cabinet, chosen
-    with --cabinet, as the only cabinet, or at a prompt. Used by process and
-    scan-dir, which confirm the result in the shell; nothing is ingested or
-    moved."""
-
-    def __init__(self, app, file: str, cabinet: str = None):
-        self.app = app
-        self.file = file
-        self.cabinet = cabinet
-        self.status = None
-
-    def handle_vals(self):
-        """Check all the configuration, and choose the cabinet (at a prompt
-        if needed), before any call to Claude"""
-        self.doctypes = load_doctypes(self.app.config)
-        self.stow = StowFileCommand(self.app, cabinet=self.cabinet,
-                                    use_stdin=False)
-        self.stow.cabinets
-        # True if the cabinet is about to be chosen at a prompt
-        self.cabinet_prompted = not self.stow.provided('cabinet') \
-            and len(self.stow.cabinets) > 1
-        self.chosen = self.stow.resolve_cabinet()
-
-    @property
-    def model(self) -> str:
-        return classify_model(self.app.config)
-
-    @property
-    def api_key(self):
-        return anthropic_key(self.app.config)
-
-    def classify(self) -> dict:
-        """Transcribe the file if needed, then classify it. Return the
-        record (keys in RECORD_KEYS order) and set the status. Call
-        handle_vals first."""
-        path = Path(self.file).expanduser().absolute()
-        if not path.is_file():
-            raise Filez4EvaError(f"File {path} must exist")
-        transcript, transcribed = transcribe_file(
-            path, transcribe_model(self.app.config), self.api_key)
-        text = read_transcript(transcript)
-        values = classify_text(text, self.chosen, self.doctypes, self.model,
-                               self.api_key)
-        record = {'file': str(path), 'transcript': str(transcript),
-                  'cabinet': self.chosen.name, **values}
-        record = {key: record[key] for key in RECORD_KEYS}
-        statuses = [transcribed] if transcribed == 'Transcribed' else []
-        self.status = ' | '.join(statuses + ['Classified'])
-        return record
-
-
 class ClassifyCommand(StageCommand):
     """Classify a file, the files in a directory, or the documents in the
     intake with Claude, ingesting and transcribing them first if needed.
@@ -380,6 +322,16 @@ class ClassifyCommand(StageCommand):
     in each document's X.yml. Never prompts."""
 
     name = 'classify'
+    summary = 'have an AI model propose a cabinet and field values'
+    description = """
+        Have an AI model propose a cabinet, a doctype, a summary and a value
+        for each of the cabinet's fields for each document, and record them
+        as results.classify in its X.yml sidecar. Never prompts, so it can
+        run unattended. Files are ingested and transcribed first where
+        needed. With several cabinets and no --cabinet, the model picks the
+        cabinet. Prints each document's path.
+
+        Main use: `filez4eva classify ~/Scans`, then `filez4eva stow`."""
     stage = 'classify'
     done = 'Classified'
     requires = (TranscribeCommand,)
@@ -391,7 +343,8 @@ class ClassifyCommand(StageCommand):
     @classmethod
     def add_args(cls, parser: WizParser):
         super().add_args(parser)
-        parser.add_argument('--cabinet', '-c')
+        parser.add_argument('--cabinet', '-c',
+                            help='classify every document for this cabinet')
 
     def handle_vals(self):
         super().handle_vals()

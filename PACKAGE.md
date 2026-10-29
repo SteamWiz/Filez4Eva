@@ -18,6 +18,52 @@ If you don't have pipx installed, visit [the pipx site](https://pypa.github.io/p
 
 ## Usage
 
+### The five commands
+
+Filez4Eva works in stages, one command for each:
+
+| Command | What it does | Prompts? |
+|---------|--------------|----------|
+| [`ingest`](#ingesting-files) | Moves files into the intake under a time-stamped name, each with an `X.yml` sidecar | No |
+| [`transcribe`](#transcribing-files) | Transcribes each document to Markdown, `X.md`, with an AI model | No |
+| [`classify`](#classifying-files) | Has an AI model propose a cabinet and a value for each of its fields, for each document | No |
+| [`review`](#reviewing-files) | Shows each proposed record, to confirm or edit | Yes |
+| [`stow`](#stowing-files) | Moves each confirmed document and its transcript into its cabinet, named by the cabinet's pattern | For documents not yet reviewed |
+
+The main use case is two commands:
+
+```bash
+filez4eva classify ~/Scans   # unattended: ingest, transcribe and classify every file
+filez4eva stow               # interactive: confirm or edit each record, then stow it
+```
+
+How the stages fit together:
+
+- **The intake** is the holding area where documents wait between stages: a
+  directory, `~/.filez4eva/intake` unless you set the `intake:` key in the
+  [configuration](#intake). `ingest` moves files into it and renames them.
+- **A path** can be a file, a directory (its top level only) or, except for
+  `ingest`, left out for every document in the intake. A file outside the
+  intake is ingested first.
+- **Earlier stages run as needed.** Each command runs any earlier stage a
+  document hasn't had yet, so `filez4eva stow ~/Scans` alone ingests,
+  transcribes, classifies, reviews and stows every file in `~/Scans`.
+- **The `X.yml` sidecar** next to each document `X` in the intake records
+  the result of each stage under `results.<stage>` (see
+  [The X.yml sidecar](#the-xyml-sidecar)). A stage that's already recorded
+  isn't run again, so you can stop at any point and carry on later. Once a
+  document is stowed, its sidecar moves to `<intake>/archive/`.
+- **`--only`** makes `transcribe`, `classify`, `review` or `stow` act only on
+  documents that have had every earlier stage, and skip the rest with a note
+  on stderr, instead of running the missing stages. For example,
+  `filez4eva review` followed by `filez4eva stow --only` stows the reviewed
+  documents without any prompts.
+
+`filez4eva --help` lists the commands, and `filez4eva COMMAND --help`
+describes one. Running `filez4eva` with no command is an error. The older
+`stow-file`, `scan-dir` and `process` commands have been removed: see
+[Migrating from stow-file, scan-dir and process](#migrating-from-stow-file-scan-dir-and-process).
+
 ### Ingesting Files
 
 To move a file into the intake, the holding area where documents wait to be
@@ -102,103 +148,6 @@ the intake for it. In a directory run, the error is reported on stderr and
 the run carries on with the next file; at the end the paths that were
 ingested are printed and `ingest` exits non-zero. Ingesting a single file
 that fails also exits non-zero.
-
-### Stowing Individual Files
-
-To organize a single file (like a downloaded PDF):
-
-```bash
-filez4eva stow-file ~/Desktop/123456789SomeFileIDownloaded.pdf
-```
-
-Filez4Eva will interactively prompt for:
-- Cabinet, only if several are configured (with tab-completion of cabinet
-  names; see [Cabinets](#cabinets))
-- Each of the cabinet's [fields](#fields), in the order they appear in its
-  pattern. With the default pattern, `{date}-{title}`, that is the date (in
-  YYYYMMDD format) and then a title. Fields with
-  [learned values](#learned-values) offer tab-completion of the common ones.
-
-Field values can be given on the command line with `--date` and a repeatable
-`--field NAME=VALUE` (or `-f NAME=VALUE`). For example, for a cabinet whose
-pattern is `{date.year}/{account}/{date}_{part}`:
-
-```bash
-filez4eva stow-file -d 20240213 -f account=royal-bank -f part=visa \
-  ~/Desktop/statement.pdf
-```
-
-Values can also be piped in as a YAML mapping on stdin, which is handy for
-other tools that produce a record for the file. The fields go under
-`data:`:
-
-```bash
-printf 'data:\n  date: 20240213\n  title: visa-statement\n' \
-  | filez4eva stow-file ~/Desktop/statement.pdf
-```
-
-- Recognised keys are `cabinet` and `data`; any other top-level keys are
-  ignored. Under `data`, keys that aren't fields of the chosen cabinet are
-  ignored.
-- Command-line flags override values from stdin.
-- Anything still missing is prompted for as usual.
-- `date` may be `20240213`, `'20240213'` or `2024-02-13`. If it isn't a valid
-  date, `stow-file` exits with an error.
-- If stdin is empty, isn't valid YAML, or isn't a mapping, it is ignored. A
-  `data` value that isn't a mapping is an error.
-- Values are read as plain text, so `0123` stays `0123` and `yes` stays `yes`.
-- `~` and `null` are treated as missing, so that value is prompted for.
-- Stdin is only read by `stow-file` itself, and by
-  [`stow`](#stowing-a-file-with-input-data) for a single file. `scan-dir`
-  ignores it.
-
-However the values are supplied (flags, stdin, prompts or the AI), every
-field other than `date` ends up hyphen-separated-lower: accents are
-stripped, letters are lowercased, and each run of anything other than `a-z`
-and `0-9` becomes a single hyphen, trimmed at both ends. So
-`Royal Bank of Canada` becomes `royal-bank-of-canada`, and the value can
-never contain `/` or `..`. A value with nothing left (such as `../`) is
-rejected: from a flag or stdin, `stow-file` exits with an error; typed at a
-prompt, the prompt asks again. A normalized value typed at a prompt is used
-without asking again.
-
-`--field` names must be fields of the chosen cabinet; anything else is an
-error. Use `--date`, not `--field date=...`, for the date.
-
-### Processing Multiple Files
-
-To process all files in a directory:
-
-```bash
-filez4eva scan-dir ~/Desktop
-```
-
-This interactive process lets you:
-- Skip a file (x)
-- Preview a file (p)
-- Stow a file (s)
-- Delete a file (d)
-- Quit processing (q)
-
-Stowing a file works like [`process`](#processing-a-file-with-ai): the file
-is transcribed (reusing an up-to-date transcript) and classified, then the
-summary and doctype are shown and a prompt for each of the cabinet's fields
-is pre-filled with the proposed value (the `Date:` prompt starts empty if
-the document has no date of its own). Press Enter to accept a value, or
-type a new one. With several cabinets, the cabinet is asked for once, before
-anything is sent to the model.
-
-- If transcription or classification fails (for example, no API key or an
-  unsupported file type), the error is shown and the prompts start empty, as
-  they would without AI.
-- Empty input at any prompt returns to the action choice for the same file,
-  without moving anything.
-
-Transcripts (`FILE.md`) are not offered as files of their own:
-`X.md` is skipped when `X` is in the same directory (for example
-`scan.pdf.md` next to `scan.pdf`). A `.md` file with no such companion is
-offered as usual. Deleting a file also deletes its transcript. Stowing a file
-moves its transcript with it (see [stow-file](#command-line-options)).
 
 ### Transcribing Files
 
@@ -322,8 +271,8 @@ results:
   date of its own (or the model can't tell what it is), `date` is `null`
   rather than a guess. Today's date and the file's modified time are never
   used.
-- Every other field is normalized to hyphen-separated-lower, as for
-  `stow-file`.
+- Every other field is normalized to hyphen-separated-lower (see
+  [Stowing a file with input data](#stowing-a-file-with-input-data)).
 - `doctype` is one of the configured [doctypes](#classification-settings),
   or `other`.
 - `summary` is a single line.
@@ -392,7 +341,7 @@ choose:
 
 - Confirm (c): prompts for each field are pre-filled with the proposed
   values. Press Enter to accept a value, or type a new one; tab completion
-  works as for `stow-file`. With more than one cabinet configured, a
+  offers the [learned values](#learned-values) of the field. With more than one cabinet configured, a
   `Cabinet:` prompt comes first, pre-filled with the proposed cabinet (see
   below). The confirmed record is saved as `results.review` and the
   document's path is printed on stdout.
@@ -458,6 +407,9 @@ filez4eva classify ~/Scans   # unattended: ingest, transcribe, classify
 filez4eva stow               # interactive: confirm or edit, then stow
 ```
 
+To review and stow every file in a directory in one interactive pass, give
+the directory: `filez4eva stow ~/Scans`.
+
 For each document that hasn't been reviewed, `stow` shows the proposed
 record and offers the same choices as [`review`](#reviewing-files): confirm
 (or edit), skip, preview, delete or quit. A confirmed document is stowed
@@ -467,16 +419,21 @@ with its results, and the next `stow` offers it again.
 
 Stowing a document:
 
-1. moves the file to the cabinet, named by the cabinet's pattern, exactly as
-   [`stow-file`](#command-line-options) does, with its transcript `X.md`
-   (adjacent or in a parallel tree; see
-   [Transcript location](#transcript-location)). The learned values are
-   recorded as for `stow-file`.
+1. moves the file into the cabinet's target, named by the cabinet's
+   [pattern](#destination-pattern) with the file's extension kept, and its
+   transcript `X.md` with it, named after the stowed file: by default next
+   to it (`.../20261002-receipt.pdf` gets `.../20261002-receipt.pdf.md`),
+   or in a parallel tree (see [Transcript location](#transcript-location)).
+   Missing directories are created. If the transcript can't be moved, the
+   file is moved back. The values of fields with
+   [learned values](#learned-values) are then recorded.
 2. records `results.stow` in its sidecar `X.yml`: when it was stowed and
    where the file went (see [The X.yml sidecar](#the-xyml-sidecar)).
 3. moves `X.yml` to `<intake>/archive/`, for later reference.
 
-The destination path is printed on stdout.
+The absolute destination path is printed on stdout, so a script can
+capture it, e.g.
+`dest=$(filez4eva stow -d 20240213 -f title=receipt file.pdf)`.
 
 - The cabinet and field values come from `results.review`, so a cabinet
   changed at review is the one used, not the one in `results.classify`.
@@ -501,10 +458,12 @@ if you quit.
 
 #### Stowing a file with input data
 
-For scripts and other tools that already know the record for a file, `stow`
-takes the same input data as [`stow-file`](#stowing-individual-files): the
-`--cabinet`, `--date` and repeatable `--field NAME=VALUE` flags, and a YAML
-record on stdin with the cabinet and the fields under `data:`:
+For scripts and other tools that already know the record for a file, and
+for filing a file by hand without asking the model, `stow` takes input data:
+the `--cabinet` (or `-c`) and `--date` (or `-d`) flags, a repeatable
+`--field NAME=VALUE` (or `-f NAME=VALUE`) for each other field, and a YAML
+record on stdin with the cabinet and the fields under `data:`. For example,
+for a cabinet whose pattern is `{date.year}/{account}/{date}_{part}`:
 
 ```bash
 filez4eva stow -d 20240213 -f account=royal-bank -f part=visa \
@@ -514,14 +473,8 @@ printf 'cabinet: accounts\ndata:\n  date: 2024-02-13\n  account: royal-bank\n  p
   | filez4eva stow ~/Desktop/statement.pdf
 ```
 
-The flags and stdin follow the `stow-file` rules: flags win over stdin,
-`--date` must be `20240213` (on stdin, `date` may also be `2024-02-13`),
-other fields are normalized, and
-stdin that is empty, isn't valid YAML, isn't a mapping, or has neither a
-`cabinet` nor `data` is ignored (so `stow` runs as usual). Input data is
-supplied when any of the flags is given, or stdin has a `cabinet` or `data`.
-
-With input data:
+Input data is supplied when any of the flags is given, or stdin has a
+`cabinet` or `data`. With input data:
 
 - The path must be a single file. A directory, or no path (the intake), is
   an error before anything moves: `Input data (--cabinet, --date, --field or
@@ -530,6 +483,16 @@ With input data:
   [transcribed](#transcribing-files) first if it hasn't been, as usual.
   `classify` and `review` are skipped: no model is asked for a record and no
   review menu is shown.
+- Anything missing is prompted for, before any file is touched: the cabinet
+  (only if several are configured; tab completion offers the names), then
+  each of the cabinet's [fields](#fields) in pattern order, with tab
+  completion of [learned values](#learned-values). An invalid value typed
+  at a prompt is rejected and the prompt asks again; empty input cancels
+  without moving anything. A complete record never prompts. So to file a
+  document by hand, give just its cabinet, e.g.
+  `filez4eva stow -c default ~/Desktop/statement.pdf` (`default` is the name
+  of the single cabinet when no `cabinets` are configured), and type the
+  rest.
 - The record is saved as `results.review`, with `input: true` (see
   [The X.yml sidecar](#the-xyml-sidecar)), and the file is stowed with it
   exactly as above. `results.classify` isn't written. A document already in
@@ -538,45 +501,40 @@ With input data:
   example, a file with that name is already in the cabinet), the sidecar
   keeps what it had, so the document stays transcribed (or keeps its
   earlier review) and a later `stow` treats it as usual.
-- A complete record never prompts. Anything missing is prompted for, as for
-  `stow-file`, before any file is touched, so empty input at a prompt
-  cancels without moving anything.
-- An unknown cabinet or field, or an invalid date or value, is an error
-  before anything moves.
+- An unknown cabinet or field, or an invalid date or value, from a flag or
+  stdin is an error before anything moves.
 
-### Processing a File with AI
+The flags and stdin:
 
-To transcribe, classify, confirm and stow a file in one go:
+- Flags win over stdin.
+- `--date` must be YYYYMMDD, e.g. `20240213`. On stdin, `date` may be
+  `20240213`, `'20240213'` or `2024-02-13`.
+- `--field` names must be fields of the chosen cabinet; anything else is an
+  error. Use `--date`, not `--field date=...`, for the date.
+- On stdin, the recognised keys are `cabinet` and `data`; any other
+  top-level keys are ignored. Under `data`, keys that aren't fields of the
+  chosen cabinet are ignored.
+- Stdin that is empty, isn't valid YAML, isn't a mapping, or has neither a
+  `cabinet` nor `data` is ignored (so `stow` runs as usual). A `data` value
+  that isn't a mapping is an error.
+- Values on stdin are read as plain text, so `0123` stays `0123` and `yes`
+  stays `yes`. `~` and `null` are treated as missing, so that value is
+  prompted for.
 
-```bash
-filez4eva process ~/Desktop/scan.pdf
-```
-
-`process`:
-1. transcribes the file in place if needed, writing `FILE.md` next to it
-   (reusing an up-to-date transcript, without ingesting the file)
-2. classifies it as [`classify`](#classifying-files) does, for one cabinet
-3. shows the summary and doctype, then prompts for `Cabinet:` (only if
-   several cabinets are configured and it wasn't just chosen) and then each
-   of the cabinet's fields in pattern order, each pre-filled with the
-   proposed value. Press Enter to accept it, or type a new value (backspace
-   clears the pre-filled value first). If the classification has no date,
-   the `Date:` prompt starts empty. If you change the cabinet, only fields
-   with the same name in the new cabinet are pre-filled. Tab completion
-   works as for `stow-file`.
-4. stows the file and its transcript, exactly as `stow-file` does, and prints
-   the destination path on stdout
-
-- Confirmation is always interactive.
-- Empty input at any prompt cancels without moving anything. An invalid value
-  is rejected and the prompt asks again.
-- The cabinet is chosen as for `stow-file` (`--cabinet NAME`, the only
-  cabinet, or a prompt) before anything is sent to the model, and the whole
-  configuration is checked first.
-- `--dry-run` transcribes, classifies and prompts as usual, then prints where
-  the file (and its transcript) would go, without moving anything.
+However the values are supplied (flags, stdin, prompts or the AI), every
+field other than `date` ends up hyphen-separated-lower: accents are
+stripped, letters are lowercased, and each run of anything other than `a-z`
+and `0-9` becomes a single hyphen, trimmed at both ends. So
+`Royal Bank of Canada` becomes `royal-bank-of-canada`, and the value can
+never contain `/` or `..`. A value with nothing left (such as `../`) is
+rejected: from a flag or stdin, `stow` exits with an error; typed at a
+prompt, the prompt asks again. A normalized value typed at a prompt is used
+without asking again.
 
 ### Command Line Options
+
+`filez4eva --help` lists the commands, and `filez4eva COMMAND --help`
+describes a command and its options.
 
 Global options:
 - `--config PATH`: Specify path to config file
@@ -585,26 +543,6 @@ Global options:
 ingest command:
 - `--meta, -m KEY=VALUE`: Record source metadata (repeatable)
 - `path`: Path to the file, or directory of files, to ingest
-
-stow-file command:
-- `--cabinet, -c NAME`: Specify the cabinet (destination) to stow into
-- `--date, -d DATE`: Specify date in YYYYMMDD format
-- `--field, -f NAME=VALUE`: Specify the value of a field (repeatable)
-- `file`: Path to the file to stow
-
-After a successful move, `stow-file` prints the absolute destination path on
-stdout (the `Done` status goes to stderr), so scripts can capture it, e.g.
-`dest=$(filez4eva stow-file -d 20240213 -f title=receipt file.pdf)`.
-
-If the file has a transcript (`FILE.md`, e.g. written by `process` or
-`transcribe`), `stow-file` moves it too, named after the stowed file. By
-default it goes adjacent to the stowed file: `.../20261002-receipt.pdf`
-gets `.../20261002-receipt.pdf.md`. It can instead go into a parallel tree;
-see [Transcript location](#transcript-location). If a transcript already
-exists at its destination, `stow-file` fails before moving anything.
-
-scan-dir command:
-- `dir`: Optional path to directory to scan (defaults to configured source)
 
 transcribe command:
 - `--only`: Transcribe only documents already ingested; skip other files
@@ -631,18 +569,13 @@ stow command:
   single file with input data (flags or a record on stdin; see
   [Stowing a file with input data](#stowing-a-file-with-input-data))
 
-process command:
-- `--cabinet, -c NAME`: Specify the cabinet to classify for and stow into
-- `--dry-run`: Show where the file would go without moving anything
-- `file`: Path to the file to process
-
 ## Configuration
 
 Create a `filez4eva.yml` file with:
 
 ```yaml
 filez4eva:
-  source: '~/Desktop'          # Default source directory
+  intake: '~/Dropbox/intake'   # Optional; default ~/.filez4eva/intake
   target: '~/Dropbox/accounts' # Target directory for stowed files
 ```
 
@@ -654,8 +587,9 @@ date and a title, keeping their extension:
 
 ### Intake
 
-`ingest` moves files into the intake directory, set with the optional
-`intake` key:
+The intake is the directory where documents wait between stages. `ingest`
+(or any other command, given a file outside the intake) moves files into
+it. It is set with the optional `intake` key:
 
 ```yaml
 filez4eva:
@@ -839,8 +773,8 @@ text is used literally. Since field values contain hyphens, use another
 separator such as `_` between two fields if you want to tell them apart
 later.
 
-A pattern is a configuration error, and `stow-file` exits before moving
-anything or prompting, if it:
+A pattern is a configuration error, and `classify`, `review` and `stow` exit
+before touching any file or prompting, if it:
 - doesn't contain `{date}`
 - has a placeholder that isn't a valid field name, such as `{}`, `{0}`,
   `{Title}`, `{title:>4}`, `{title!r}` or `{title[0]}`
@@ -897,9 +831,10 @@ account:
     last_used: '2026-10-15'
 ```
 
-- A value is recorded only when `stow-file` (or `process` or `scan-dir`)
-  actually moves a file, wherever the value came from. A dry run records
-  nothing, and existing files aren't scanned, so the list starts empty.
+- A value is recorded only when `stow` actually moves a file into the
+  cabinet, wherever the value came from (the model, a review, flags, stdin
+  or a prompt). `classify` and `review` record nothing, and existing files
+  aren't scanned, so the list starts empty.
 - Tab completion, and the AI model, are offered values used at least twice,
   most-used first, at most 100 per field. A value used once is remembered,
   but only offered once it is used again.
@@ -953,15 +888,19 @@ Each cabinet has:
   go, with `location` and `root` keys. Each key defaults to the top-level
   `transcripts` value; see [Transcript location](#transcript-location)
 
-Choose the cabinet with `--cabinet NAME` (or `-c NAME`), or with a `cabinet`
-key on stdin; the flag wins if both are given. If neither is given and there
-is more than one cabinet, `stow-file` prompts for one, with tab-completion of
-the names. With only one cabinet it is used without asking. An unknown name
-from the flag or stdin is an error; an unknown name typed at the prompt is
-rejected and the prompt asks again. `scan-dir` asks for a cabinet for each
-file it stows (once per file, before classifying it). `classify` never asks:
-see [Classifying Files](#classifying-files). `review` lets you change the
-cabinet before confirming: see [Reviewing Files](#reviewing-files).
+How a document's cabinet is chosen:
+
+- `classify` never asks: it uses `--cabinet NAME` (or `-c NAME`), the only
+  cabinet, or the model's pick. See [Classifying Files](#classifying-files).
+- `review` (and `stow`, for a document not yet reviewed) lets you change
+  the cabinet before confirming: see [Reviewing Files](#reviewing-files).
+- `stow` with [input data](#stowing-a-file-with-input-data) uses
+  `--cabinet NAME` (or `-c NAME`) or a `cabinet` key on stdin; the flag wins
+  if both are given. If neither is given and there is more than one
+  cabinet, it prompts for one, with tab-completion of the names.
+- With only one cabinet, it is used without asking.
+- An unknown name from a flag or stdin is an error; an unknown name typed at
+  a prompt is rejected and the prompt asks again.
 
 Prompts, tab completion and learned values use the chosen cabinet's fields
 and target.
@@ -976,8 +915,8 @@ error even if it isn't the one being used.
 
 ### Transcript location
 
-When `stow-file` stows a file that has a transcript, the transcript goes
-next to the stowed file by default (`adjacent`). To keep transcripts in a
+When `stow` stows a document, its transcript goes next to the stowed file
+by default (`adjacent`). To keep transcripts in a
 parallel tree instead:
 
 ```yaml
@@ -1014,16 +953,15 @@ filez4eva:
 
 A `location` other than `adjacent` or `parallel`, `parallel` without a
 `root`, or a `transcripts` value (top-level or in a cabinet) that isn't a
-mapping is a configuration error, and `stow-file` exits before prompting or
-moving anything. An error in a top-level setting names the top level rather
+mapping is a configuration error, and `classify`, `review` and `stow` exit
+before prompting or touching any file. An error in a top-level setting names the top level rather
 than a cabinet. An empty `transcripts:` block, or an empty `location`, counts
 as unset, but other values such as `no` or `0` are rejected as invalid
 locations.
 
-This only affects `stow-file`. `transcribe` writes the transcript next to
-the document in the intake (also when `classify` transcribes it), and
-`scan-dir` and `process` write it next to the incoming file, as
-`FILE.md`.
+This only affects `stow`. Until a document is stowed, `transcribe` keeps
+its transcript next to it in the intake (also when `classify` or another
+command transcribes it).
 
 ### Transcription settings
 
@@ -1080,6 +1018,39 @@ filez4eva:
   or a description that isn't text is a configuration error, and `classify`
   exits before calling the model.
 
+### Migrating from stow-file, scan-dir and process
+
+The `stow-file`, `scan-dir` and `process` commands have been removed, with
+no aliases: running one gives the usual error for an unknown command.
+Running `filez4eva` with no command no longer scans a directory; it is an
+error too. Use the [five commands](#the-five-commands) instead:
+
+| Instead of | Use |
+|------------|-----|
+| `filez4eva stow-file FILE` with `--cabinet`, `--date`, `--field NAME=VALUE` or a record on stdin | `filez4eva stow FILE` with the same flags or stdin record. See [Stowing a file with input data](#stowing-a-file-with-input-data). |
+| `filez4eva stow-file FILE`, typing every value at the prompts | `filez4eva stow FILE` to have the model propose the values, which you confirm or edit; or `filez4eva stow -c CABINET FILE` to type them yourself, as before. |
+| `filez4eva scan-dir DIR`, or `filez4eva` on its own with `source:` configured | `filez4eva classify DIR` (unattended), then `filez4eva stow`; or `filez4eva stow DIR` for one interactive pass. The menu offers confirm, skip, preview, delete and quit. |
+| `filez4eva process FILE` | `filez4eva stow FILE`: it transcribes and classifies the file, asks you to confirm or edit the record, then stows it. |
+| `filez4eva process --cabinet NAME FILE` | `filez4eva classify --cabinet NAME FILE`, then `filez4eva stow`. |
+| `filez4eva process --dry-run FILE` | `filez4eva review FILE`, which saves the confirmed record without moving the file into a cabinet; then `filez4eva stow`. |
+
+Differences to be aware of:
+
+- Every file now goes through the [intake](#intake) on its way to a
+  cabinet: it is moved there and renamed when it is ingested, and its
+  transcript `X.md` is written there, rather than next to the original
+  file. Where it ends up in the cabinet is the same as before.
+- `stow FILE` transcribes the file before stowing it, even with input data,
+  so it needs an Anthropic API key (see
+  [Transcription settings](#transcription-settings)) and a supported file
+  type, which `stow-file` didn't.
+- A directory is handled at its top level only: unlike `scan-dir`,
+  subdirectories are left alone.
+- The `source:` configuration key is no longer used and can be removed.
+- Status lines on stderr count the files of each stage, e.g.
+  `Ingested 1 file | Transcribed 1 file | Stowed 1 file`, instead of
+  `stow-file`'s `Done`. The destination path is still printed on stdout.
+
 ### Upgrading from version 5
 
 Version 6 replaces the fixed `account` and `part` with fields named by each
@@ -1091,9 +1062,10 @@ cabinet's pattern:
   extension is always added. In a version 6 pattern, `{year}` or `{ext}`
   would be an ordinary field that you are prompted for.
 - `stow-file --account/-a` and `--part/-p` are replaced by `--field/-f
-  NAME=VALUE`.
-- In `stow-file` stdin, the fields (including `date`) are under
-  `data:`.
+  NAME=VALUE` (`stow-file` has since been removed; `stow` takes the same
+  flags: see
+  [Migrating from stow-file, scan-dir and process](#migrating-from-stow-file-scan-dir-and-process)).
+- In a record on stdin, the fields (including `date`) are under `data:`.
 - Field values are normalized to hyphen-separated-lower, so existing
   directories with capitals or spaces won't match new values.
 - Tab completion no longer scans existing folders; it offers

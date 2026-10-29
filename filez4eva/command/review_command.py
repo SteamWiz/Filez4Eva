@@ -10,13 +10,13 @@ from filez4eva.command import Filez4EvaCommand
 from filez4eva.command import ingest_command
 from filez4eva.command.classify_command import ClassifyCommand
 from filez4eva.command.ingest_command import sidecar_path
-from filez4eva.command.stow_file_command import StowFileCommand
 from filez4eva.command.transcribe_command import (
     TranscribeCommand, transcript_path)
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import Field
 from filez4eva.stage import (
     NotDone, StageCommand, StopRun, load_sidecar, record_result)
+from filez4eva.stow import Stower
 
 
 def proposal(results: dict) -> dict:
@@ -44,6 +44,13 @@ class ReviewCommand(StageCommand):
     and data) in each document's X.yml. Never stows."""
 
     name = 'review'
+    summary = 'confirm or edit the proposed records'
+    description = """
+        Show each classified document's proposed record, then confirm (or
+        edit), skip, preview, delete or quit. A confirmed record is saved as
+        results.review in the document's X.yml sidecar. Nothing is stowed.
+        Files are ingested, transcribed and classified first where needed.
+        Prints each reviewed document's path."""
     stage = 'review'
     done = 'Reviewed'
     requires = (TranscribeCommand, ClassifyCommand)
@@ -96,7 +103,7 @@ class ReviewCommand(StageCommand):
         operator change the cabinet when there are several. Return
         results.review: the confirmed cabinet, and data with a value for
         each of its fields (date included), in pattern order."""
-        stow = StowFileCommand(self.app, use_stdin=False)
+        stow = Stower(self.app, use_stdin=False)
         values = stow.confirm_values(proposed['cabinet'], proposed['data'])
         cabinet = stow.cabinets[values['cabinet']]
         data = {field.name: values['date'] if field.is_date

@@ -12,13 +12,13 @@ from wizlib.test_case import WizLibTestCase
 
 from filez4eva import Filez4EvaApp
 from filez4eva.command.classify_command import (
-    CONTEXT_NOTE, DEFAULT_MODEL, Classifier, ClassifyCommand, build_schema,
+    CONTEXT_NOTE, DEFAULT_MODEL, ClassifyCommand, build_schema,
     document_text, load_doctypes, transcript_body)
 from filez4eva.command.ingest_command import read_sidecar, write_sidecar
-from filez4eva.command.stow_file_command import Cabinet
 from filez4eva.command.transcribe_command import format_transcript
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import values_path
+from filez4eva.stow import Cabinet
 
 
 EXTRACT = 'filez4eva.command.classify_command.extract'
@@ -565,7 +565,7 @@ class TestClassifyAlreadyDone(ClassifyTestCase):
         out, err, code, e = self.run_app(self.config_text(), '--force',
                                          source)
         self.assertEqual(code, 1)
-        self.assertIn('unrecognized arguments: --force', err)
+        self.assertRegex(err, 'unrecognized arguments: .*--force')
         e.assert_not_called()
         self.assertTrue(source.exists())
 
@@ -971,14 +971,6 @@ class TestClassifySettings(ClassifyTestCase):
             self.run_command(source, config=self.config(
                 filez4eva_cabinets={'a': {}}))
         self.assertTrue(source.exists())
-
-    def test_classifier_for_process_needs_a_file(self):
-        app = Filez4EvaApp()
-        app.config = ConfigHandler.fake(**self.config())
-        classifier = Classifier(app, file=str(self.source / 'missing.pdf'))
-        classifier.handle_vals()
-        with self.assertRaisesRegex(Filez4EvaError, 'must exist'):
-            classifier.classify()
 
     def test_empty_doctypes(self):
         self.assertEqual(list(load_doctypes(

@@ -294,19 +294,37 @@ class IngestCommand(Filez4EvaCommand):
     time-stamped name, with an X.yml sidecar"""
 
     name = 'ingest'
+    summary = 'move files into the intake, each with an X.yml sidecar'
+    description = """
+        Move a file, or the non-hidden files at the top level of a
+        directory, into the intake under a time-stamped name, and write an
+        X.yml sidecar next to each one recording when it was ingested, its
+        original name and any source metadata (--meta flags and a YAML
+        mapping on stdin). Prints each new path. The intake is set with the
+        `intake:` configuration key (default ~/.filez4eva/intake)."""
 
     # KEY=VALUE strings from repeated --meta flags
     meta: list = None
+
+    # File or directory to ingest (required, but optional to the parser so
+    # that `filez4eva ingest --help` works)
+    path: str = None
 
     @classmethod
     def add_args(cls, parser: WizParser):
         super().add_args(parser)
         parser.add_argument('--meta', '-m', action='append',
-                            metavar='KEY=VALUE')
-        parser.add_argument('path')
+                            metavar='KEY=VALUE',
+                            help='source metadata to record in X.yml '
+                            '(repeatable)')
+        parser.add_argument('path', nargs='?',
+                            help='a file, or a directory (top level only)')
 
     def handle_vals(self):
         super().handle_vals()
+        if not self.path:
+            raise Filez4EvaError(
+                "ingest needs a path: a file, or a directory")
         # Flags win over stdin. Stdin is read once, for every file.
         self.source = self.stdin_mapping()
         self.source.update(parse_meta(self.meta))

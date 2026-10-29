@@ -108,10 +108,9 @@ def transcribe_model(config) -> str:
 def transcribe_file(path: Path, model: str, api_key=None) -> tuple:
     """Transcribe a file in place, writing FILE.md next to it, unless that
     transcript's sha256 already matches the file. Return (transcript path,
-    'Transcribed' or 'Unchanged'). Nothing is ingested or moved; classify,
-    process and scan-dir use this directly. Raises Filez4EvaError if the
-    file is missing or transcription fails, leaving any existing transcript
-    as it was."""
+    'Transcribed' or 'Unchanged'). Nothing is ingested or moved. Raises
+    Filez4EvaError if the file is missing or transcription fails, leaving
+    any existing transcript as it was."""
     if not path.is_file():
         raise Filez4EvaError(f"File {path} must exist")
     sha256 = file_sha256(path)
@@ -137,6 +136,12 @@ class TranscribeCommand(StageCommand):
     results.transcribe in X.yml."""
 
     name = 'transcribe'
+    summary = 'transcribe documents to Markdown (X.md) with an AI model'
+    description = """
+        Transcribe documents to Markdown with an AI model, writing X.md next
+        to each document X in the intake and recording results.transcribe
+        in its X.yml sidecar. Files not in the intake yet are ingested
+        first. Prints each transcript's path."""
     stage = 'transcribe'
     done = 'Transcribed'
 

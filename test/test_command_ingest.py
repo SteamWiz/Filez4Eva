@@ -715,9 +715,3 @@ class TestIngestCommand(WizLibTestCase):
         with self.assertRaises(Filez4EvaError):
             self.run_command(link)
         self.assertTrue(link.is_symlink())
-
-    def test_existing_commands_still_registered(self):
-        names = {c.name for c in
-                 Filez4EvaApp.base.family_members('name')}
-        self.assertTrue({'ingest', 'stow-file', 'scan-dir', 'transcribe',
-                         'classify', 'process'} <= names)

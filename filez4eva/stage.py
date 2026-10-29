@@ -142,8 +142,16 @@ class StageCommand(Filez4EvaCommand):
     @classmethod
     def add_args(cls, parser: WizParser):
         super().add_args(parser)
-        parser.add_argument('--only', action='store_true')
-        parser.add_argument('path', nargs='?')
+        earlier = ', '.join(['ingest'] + [c.name for c in cls.requires])
+        parser.add_argument(
+            '--only', action='store_true',
+            help="act only on documents that have had every earlier stage "
+            f"({earlier}); skip the rest instead of running the missing "
+            "stages")
+        parser.add_argument(
+            'path', nargs='?',
+            help="a file, or a directory (top level only); default: every "
+            "document in the intake")
 
     def act(self, path: Path) -> str:  # pragma: no cover
         """Run the stage on an ingested document that hasn't had it yet,

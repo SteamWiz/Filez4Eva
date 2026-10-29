@@ -8,12 +8,11 @@ from filez4eva.command.classify_command import ClassifyCommand
 from filez4eva.command.ingest_command import (
     archived_sidecar, intake_dir, sidecar_path)
 from filez4eva.command.review_command import ReviewCommand
-from filez4eva.command.stow_file_command import (
-    StowFileCommand, load_cabinets, stdin_null)
 from filez4eva.command.transcribe_command import TranscribeCommand
 from filez4eva.error import Filez4EvaError
 from filez4eva.stage import (
     StageCommand, documents, load_sidecar, record_result, resolve_path)
+from filez4eva.stow import Stower, load_cabinets, stdin_null
 
 
 def confirmed(results: dict, cabinets: dict) -> dict:
@@ -52,17 +51,32 @@ class StowCommand(StageCommand):
     review, results.stow is recorded, and X.yml moves to
     <intake>/archive/.
 
-    With input data (--cabinet, --date, --field, or a record on stdin, as
-    for stow-file) for a single file, classify and review are skipped: the
-    record is saved as results.review with `input: true`, and the file is
-    stowed with it."""
+    With input data (--cabinet, --date, --field NAME=VALUE, or a record on
+    stdin) for a single file, classify and review are skipped: missing
+    values are prompted for, the record is saved as results.review with
+    `input: true`, and the file is stowed with it."""
 
     name = 'stow'
+    summary = 'move confirmed documents into their cabinets'
+    description = """
+        Move each reviewed document, with its transcript, into its cabinet,
+        named by the cabinet's pattern, then record results.stow and move
+        its X.yml sidecar to <intake>/archive/. A document not reviewed yet
+        is reviewed first (and ingested, transcribed and classified where
+        needed), and stowed as soon as it's confirmed. Prints each
+        destination.
+
+        Main use: `filez4eva classify ~/Scans`, then `filez4eva stow`.
+
+        Input data (--cabinet, --date, --field, or a YAML record on stdin
+        with `cabinet` and the fields under `data`) stows a single file with
+        that record instead of classifying and reviewing it. Anything
+        missing is prompted for."""
     stage = 'stow'
     done = 'Stowed'
     requires = (TranscribeCommand, ClassifyCommand, ReviewCommand)
 
-    # Input data, as for stow-file
+    # Input data
     date: str = None
     # NAME=VALUE strings from repeated --field flags
     field: list = None
@@ -75,10 +89,14 @@ class StowCommand(StageCommand):
     @classmethod
     def add_args(cls, parser: WizParser):
         super().add_args(parser)
-        parser.add_argument('--date', '-d')
+        parser.add_argument('--date', '-d',
+                            help='input data: the date, as YYYYMMDD')
         parser.add_argument('--field', '-f', action='append',
-                            metavar='NAME=VALUE')
-        parser.add_argument('--cabinet', '-c')
+                            metavar='NAME=VALUE',
+                            help='input data: the value of a field '
+                            '(repeatable)')
+        parser.add_argument('--cabinet', '-c',
+                            help='input data: the cabinet to stow into')
 
     def handle_vals(self):
         super().handle_vals()
@@ -100,9 +118,9 @@ class StowCommand(StageCommand):
                     and stdin_null(record.get('data')))
 
     def read_input(self) -> dict:
-        """Check the path, then read the input data the way stow-file does
-        (flags win over stdin; missing values are prompted for), all before
-        any file is touched. Return the cabinet name and data (every field
+        """Check the path, then read the input data with a Stower (flags
+        win over stdin; missing values are prompted for), all before any
+        file is touched. Return the cabinet name and data (every field
         of the cabinet, date included, in pattern order). Raises
         Filez4EvaError if the path isn't a single file or a value is
         invalid."""
@@ -116,18 +134,18 @@ class StowCommand(StageCommand):
             raise Filez4EvaError(f"{rule}, not a directory: {path}")
         # Fails on the sidecar or transcript of a document in the intake
         documents(path, intake)
-        stower = StowFileCommand(self.app, use_stdin=True, file=str(path),
-                                 cabinet=self.cabinet, date=self.date,
-                                 field=self.field)
-        stower.handle_vals()
+        stower = Stower(self.app, use_stdin=True, file=str(path),
+                        cabinet=self.cabinet, date=self.date,
+                        field=self.field)
+        stower.read_values()
         # Check every value (the date included) against the cabinet now,
         # so a bad one fails before anything moves
         data = stower.field_values()
         return {'cabinet': stower.resolve_cabinet().name, 'data': data}
 
-    def stower(self, path: Path, review: dict) -> StowFileCommand:
-        """A stow-file command for the document, with the reviewed cabinet,
-        date and other fields, so it never prompts"""
+    def stower(self, path: Path, review: dict) -> Stower:
+        """A Stower for the document, with the reviewed cabinet, date and
+        other fields, so it never prompts"""
         cabinet = self.cabinets[review['cabinet']]
         date = None
         data = {}
@@ -137,8 +155,8 @@ class StowCommand(StageCommand):
                 date = value
             else:
                 data[field.name] = value
-        return StowFileCommand(self.app, use_stdin=False, file=str(path),
-                               cabinet=cabinet.name, date=date, data=data)
+        return Stower(self.app, use_stdin=False, file=str(path),
+                      cabinet=cabinet.name, date=date, data=data)
 
     def act(self, path: Path) -> str:
         """Stow a reviewed document with the cabinet and data from

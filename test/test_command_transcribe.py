@@ -41,7 +41,7 @@ def split_transcript(text):
 
 class TestTranscribeFile(WizLibTestCase):
     """The in-place transcription with the sha256 cache, used by the
-    transcribe stage and by classify, process and scan-dir"""
+    transcribe stage"""
 
     def setUp(self):
         self.tempdir = TemporaryDirectory()
@@ -578,7 +578,7 @@ class TestTranscribeCommand(TranscribeTestCase):
         with patch(TRANSCRIBE) as t:
             out, err, code = self.run_app('--force', source)
         self.assertEqual(code, 1)
-        self.assertIn('unrecognized arguments: --force', err)
+        self.assertRegex(err, 'unrecognized arguments: .*--force')
         t.assert_not_called()
         self.assertTrue(source.exists())
 
