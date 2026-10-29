@@ -301,6 +301,17 @@ class TestIngestCommand(WizLibTestCase):
         self.assertEqual(Path(result).name, NEXT_STAMP + '.pdf')
         self.assertEqual(existing.read_text(), 'raced in')
 
+    def test_archived_sidecar_takes_the_name(self):
+        # A document stowed earlier left STAMP.pdf.yml in the archive
+        archive = self.intake / 'archive'
+        archive.mkdir(parents=True)
+        (archive / (STAMP + '.pdf.yml')).write_text('stowed')
+        result, _, _ = self.run_command(self.make('a.pdf'))
+        self.assertEqual(Path(result).name, NEXT_STAMP + '.pdf')
+        # Another extension under the same stamp is free
+        result, _, _ = self.run_command(self.make('b.jpg'))
+        self.assertEqual(Path(result).name, STAMP + '.jpg')
+
     def test_repeated_collisions(self):
         self.intake.mkdir(parents=True)
         for ms in range(42, 45):

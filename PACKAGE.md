@@ -47,8 +47,9 @@ by its original extensions in lower case. The new path is printed on stdout
   transcript). If it's taken, the next millisecond is used, until a free
   stamp is found. So ingesting `notes` and `notes.md` together gives
   `20261025-140307-042` and `20261025-140307-043.md`, and a later
-  transcript of the first can never land on the second. An existing file is
-  never overwritten.
+  transcript of the first can never land on the second. A name whose
+  sidecar is in the intake's `archive/` (a document stowed earlier) is
+  passed over in the same way. An existing file is never overwritten.
 - This also holds when several `ingest` runs into the same intake overlap on
   one machine: each run locks the intake while it checks and claims a
   stamp, so documents from different runs never share one. The lock is
@@ -432,7 +433,69 @@ Other rules:
 - The whole configuration (cabinets and doctypes) is checked before any file
   is touched.
 
-Nothing is stowed: the document stays in the intake.
+Nothing is stowed: the document stays in the intake. To review and stow in
+one pass, use [`stow`](#stowing-files).
+
+### Stowing Files
+
+To review and stow every document in the intake:
+
+```bash
+filez4eva stow
+```
+
+`stow` selects documents the same way as [`transcribe`](#transcribing-files):
+the path can be a file, a directory (top level only), or left out for every
+document in the [intake](#intake). A file that hasn't been
+[ingested](#ingesting-files), [transcribed](#transcribing-files),
+[classified](#classifying-files) or [reviewed](#reviewing-files) yet goes
+through those stages first. So the main use case is:
+
+```bash
+filez4eva classify ~/Scans   # unattended: ingest, transcribe, classify
+filez4eva stow               # interactive: confirm or edit, then stow
+```
+
+For each document that hasn't been reviewed, `stow` shows the proposed
+record and offers the same choices as [`review`](#reviewing-files): confirm
+(or edit), skip, preview, delete or quit. A confirmed document is stowed
+straight away, before the next one is shown. A document that was already
+reviewed is stowed without asking. A skipped document stays in the intake
+with its results, and the next `stow` offers it again.
+
+Stowing a document:
+
+1. moves the file to the cabinet, named by the cabinet's pattern, exactly as
+   [`stow-file`](#command-line-options) does, with its transcript `X.md`
+   (adjacent or in a parallel tree; see
+   [Transcript location](#transcript-location)). The learned values are
+   recorded as for `stow-file`.
+2. records `results.stow` in its sidecar `X.yml`: when it was stowed and
+   where the file went (see [The X.yml sidecar](#the-xyml-sidecar)).
+3. moves `X.yml` to `<intake>/archive/`, for later reference.
+
+The destination path is printed on stdout.
+
+- The cabinet and field values come from `results.review`, so a cabinet
+  changed at review is the one used, not the one in `results.classify`.
+- An existing file is never overwritten. If something already exists where
+  the file, its transcript or its archived `X.yml` would go, the document
+  fails before anything moves and stays in the intake.
+- `--only` stows only documents already ingested, transcribed, classified
+  and reviewed. Any other file is left as it is, with a note on stderr
+  (e.g. `Skipped FILE: not reviewed yet`), and counted in the status, e.g.
+  `Skipped 1 file (not reviewed)`. So `filez4eva review` followed by
+  `filez4eva stow --only` stows without any prompts.
+- If a document fails, the error is reported on stderr and the run carries
+  on with the next file. At the end, the documents that were stowed are
+  printed and `stow` exits non-zero. If the file was stowed but its sidecar
+  couldn't be archived, the error says where the file went.
+- The whole configuration (cabinets and doctypes) is checked before any file
+  is touched.
+
+The status on stderr counts the files, e.g.
+`Reviewed 2 files | Stowed 3 files | Skipped 1 file`, with `Quit` at the end
+if you quit.
 
 ### Processing a File with AI
 
@@ -511,6 +574,11 @@ review command:
   classified; skip other files
 - `path`: Optional file or directory to review (defaults to the intake)
 
+stow command:
+- `--only`: Stow only documents already ingested, transcribed, classified
+  and reviewed; skip other files
+- `path`: Optional file or directory to stow (defaults to the intake)
+
 process command:
 - `--cabinet, -c NAME`: Specify the cabinet to classify for and stow into
 - `--dry-run`: Show where the file would go without moving anything
@@ -545,6 +613,10 @@ filez4eva:
 It defaults to `~/.filez4eva/intake`, and is created (with any missing
 parent directories) if it doesn't exist. It can also be set with the
 `FILEZ4EVA_INTAKE` environment variable.
+
+When [`stow`](#stowing-files) stows a document, its sidecar `X.yml` moves to
+`<intake>/archive/`. The stage commands only look at the top level of the
+intake, so archived sidecars are never documents. Nothing removes them.
 
 ### The X.yml sidecar
 
@@ -637,6 +709,28 @@ results:
   `results.classify.cabinet` (see [Reviewing Files](#reviewing-files)).
 - `data`: the confirmed value of each of that cabinet's fields, in pattern
   order, with `date` as YYYYMMDD.
+
+`stow` adds, once the file is in the cabinet, and then moves the sidecar to
+`<intake>/archive/`:
+
+```yaml
+results:
+  ingest: ...
+  transcribe: ...
+  classify: ...
+  review: ...
+  stow:
+    at: '2026-10-25T15:20:42-07:00'
+    location: /Users/me/Dropbox/accounts/20261002-usb-hub-receipt.pdf
+```
+
+- `at`: when the document was stowed, in ISO-8601 local time with its UTC
+  offset, to the second.
+- `location`: the absolute path of the stowed file.
+
+`stow` stows with the cabinet and data in `results.review`. A hand-edited
+sidecar is checked first: an unknown cabinet or an invalid value fails the
+document without moving anything.
 
 Keys use hyphens. A file in the intake counts as ingested only if its
 sidecar exists; the sidecar is written before the file is moved in, so a

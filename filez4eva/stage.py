@@ -1,5 +1,5 @@
-"""Shared logic for the stage commands (transcribe, classify and review now;
-stow later): which path to work on, which files in it are documents,
+"""Shared logic for the stage commands (transcribe, classify, review and
+stow): which path to work on, which files in it are documents,
 the prerequisite rule (ingest, then each earlier stage the command
 requires), the `results` in each document's X.yml sidecar, and running a
 stage over every document with per-file errors."""

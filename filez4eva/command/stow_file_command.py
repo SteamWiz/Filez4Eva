@@ -541,8 +541,14 @@ class StowFileCommand(Filez4EvaCommand):
                 f"Could not record values in "
                 f"{values_path(cabinet.targetdir)}: {error}", Emphasis.ERROR)
 
-    @Filez4EvaCommand.wrap
-    def execute(self):
+    def stow(self) -> Path:
+        """Move the file (and its transcript, if any) to the chosen
+        cabinet, then record its learned values. Return the destination.
+        Nothing is ever overwritten: if something already exists at a
+        destination, Filez4EvaError is raised before anything moves. If the
+        transcript can't be moved, the file is moved back. The cabinet, date
+        and data must already be set (handle_vals, or given by the caller,
+        as stow does)."""
         path, targetpath, source_transcript, target_transcript = self.plan()
         targetpath.parent.mkdir(parents=True, exist_ok=True)
         path.rename(targetpath)
@@ -564,5 +570,10 @@ class StowFileCommand(Filez4EvaCommand):
                     f"Could not move transcript {source_transcript}: "
                     f"{error}") from error
         self.remember()
+        return targetpath
+
+    @Filez4EvaCommand.wrap
+    def execute(self):
+        targetpath = self.stow()
         self.status = 'Done'
         return str(targetpath)
