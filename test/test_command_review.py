@@ -56,6 +56,9 @@ class ReviewTestCase(WizLibTestCase):
     touches the real one), a source directory, a cabinet target with
     learned values, and a frozen clock"""
 
+    # The stage command run_command runs
+    command_class = ReviewCommand
+
     def setUp(self):
         super().setUp()
         tmp = TemporaryDirectory()
@@ -122,13 +125,13 @@ class ReviewTestCase(WizLibTestCase):
 
     def run_command(self, path=None, keys='', answers=(), config=None,
                     result=RESULT, extract=None, transcribe=None, **vals):
-        """Run review directly with fake config, menu keys (one character
-        each) and answers to the text prompts. Return (output, command,
-        get_text mock, extract mock, transcribe mock); stderr is kept in
-        self.err, also when the command raises."""
+        """Run command_class (review) directly with fake config, menu keys
+        (one character each) and answers to the text prompts. Return
+        (output, command, get_text mock, extract mock, transcribe mock);
+        stderr is kept in self.err, also when the command raises."""
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(**(config or self.config()))
-        command = ReviewCommand(
+        command = self.command_class(
             app, path=None if path is None else str(path), **vals)
         effect = {'side_effect': extract} if extract \
             else {'return_value': result}

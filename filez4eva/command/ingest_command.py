@@ -27,6 +27,9 @@ EXTENSION = re.compile(r'[A-Za-z0-9]{1,5}')
 
 SIDECAR_SUFFIX = '.yml'
 
+# Subdirectory of the intake where stow moves a stowed document's sidecar
+ARCHIVE = 'archive'
+
 
 def now() -> datetime:
     """The current local time, with its UTC offset. Tests patch this."""
@@ -74,6 +77,12 @@ def stamp_name(dt: datetime, exts: str = '') -> str:
 def sidecar_path(path: Path) -> Path:
     """Return the sidecar path for a document: the full name plus '.yml'"""
     return Path(str(path) + SIDECAR_SUFFIX)
+
+
+def archived_sidecar(path: Path) -> Path:
+    """Return where stow archives the sidecar of a document in the intake:
+    <intake>/archive/X.yml"""
+    return path.parent / ARCHIVE / sidecar_path(path).name
 
 
 def in_intake(path: Path, intake: Path) -> bool:
@@ -192,14 +201,17 @@ def reserve(intake: Path, dt: datetime, exts: str, record: dict) -> Path:
     a millisecond at a time while the stamp is taken, so each document has
     its own stamp and a later stage's X.yml or X.md can never land on
     another document. Creates an empty placeholder for the file and writes
-    its sidecar, both exclusively, so nothing is ever overwritten. The check
+    its sidecar, both exclusively, so nothing is ever overwritten. A name
+    whose sidecar is already in the archive (a document stowed earlier) is
+    passed over too, so stow can always archive the new one. The check
     and the claim happen under the intake lock, so concurrent ingest runs on
     one machine never share a stamp. Return the placeholder path."""
     with intake_lock(intake):
         while True:
             stamp = stamp_name(dt)
             target = intake / (stamp + exts)
-            if not stamp_taken(intake, stamp):
+            if not stamp_taken(intake, stamp) \
+                    and not archived_sidecar(target).exists():
                 try:
                     os.close(os.open(target,
                                      os.O_CREAT | os.O_EXCL | os.O_WRONLY,
