@@ -1,5 +1,5 @@
 filez4eva:
-  source: './sandbox/test-source'
+  intake: './sandbox/test-intake'
   target: './sandbox/test-target'
   groupname: 'Account'
   # pattern: '{date.year}/{account}/{date}_{part}'

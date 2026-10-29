@@ -1,4 +1,5 @@
-"""Tests for the stow stage command (stow-file is in test_command_stow.py)"""
+"""Tests for the stow command (Stower, the stow logic it uses, is in
+test_stow.py)"""
 
 from pathlib import Path
 from unittest.mock import patch
