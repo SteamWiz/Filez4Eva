@@ -556,8 +556,58 @@ class TestStowInput(StowInputTestCase):
         self.assertEqual(self.stowed.read_text(), 'already here')
         document = self.intake / f'{STAMP}.pdf'
         self.assertTrue(document.is_file())
-        self.assertEqual(self.results(document)['review'], INPUT)
+        self.assertEqual(list(self.results(document)),
+                         ['ingest', 'transcribe'])
+
+    def test_failed_stow_keeps_existing_review(self):
+        document = self.make_document(review=REVIEW)
+        self.stowed.parent.mkdir(parents=True)
+        self.stowed.write_text('already here')
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file failed'):
+            self.run_command(document, **FLAGS)
+        self.assertEqual(self.results(document)['review'], REVIEW)
         self.assertNotIn('stow', self.results(document))
+
+    def test_rerun_after_failed_stow(self):
+        """A failed input stow leaves the document transcribed only, so
+        stow runs classify and review as usual, and --only skips it"""
+        source = self.make('Scan 1.PDF')
+        self.stowed.parent.mkdir(parents=True)
+        self.stowed.write_text('already here')
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file failed'):
+            self.run_command(source, **FLAGS)
+        self.stowed.unlink()
+        document = self.intake / f'{STAMP}.pdf'
+        _, command, _, _, _ = self.run_command(document, only=True)
+        self.assertTrue(document.is_file())
+        self.assertEqual(command.status, 'Skipped 1 file (not classified)')
+        out, command, _, e, t = self.run_command(document, keys='c',
+                                                 answers=ANSWERS)
+        t.assert_not_called()
+        e.assert_called_once()
+        self.assertEqual(out, str(self.stowed))
+        self.assertEqual(list(self.archived()), [
+            'ingest', 'transcribe', 'classify', 'review', 'stow'])
+        self.assertNotIn('input', self.archived()['review'])
+        self.assertEqual(command.status,
+                         'Classified 1 file | Reviewed 1 file | '
+                         'Stowed 1 file')
+
+    def test_rerun_with_input_after_failed_stow(self):
+        source = self.make('Scan 1.PDF')
+        self.stowed.parent.mkdir(parents=True)
+        self.stowed.write_text('already here')
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file failed'):
+            self.run_command(source, **FLAGS)
+        self.stowed.unlink()
+        out, command, gt, e, t = self.run_command(
+            self.intake / f'{STAMP}.pdf', **FLAGS)
+        t.assert_not_called()
+        e.assert_not_called()
+        gt.assert_not_called()
+        self.assertEqual(out, str(self.stowed))
+        self.assert_stowed_with_input()
+        self.assertEqual(command.status, 'Stowed 1 file')
 
 
 class TestStowInputErrors(StowInputTestCase):

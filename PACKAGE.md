@@ -515,7 +515,8 @@ printf 'cabinet: accounts\ndata:\n  date: 2024-02-13\n  account: royal-bank\n  p
 ```
 
 The flags and stdin follow the `stow-file` rules: flags win over stdin,
-`date` may be `20240213` or `2024-02-13`, other fields are normalized, and
+`--date` must be `20240213` (on stdin, `date` may also be `2024-02-13`),
+other fields are normalized, and
 stdin that is empty, isn't valid YAML, isn't a mapping, or has neither a
 `cabinet` nor `data` is ignored (so `stow` runs as usual). Input data is
 supplied when any of the flags is given, or stdin has a `cabinet` or `data`.
@@ -533,6 +534,10 @@ With input data:
   [The X.yml sidecar](#the-xyml-sidecar)), and the file is stowed with it
   exactly as above. `results.classify` isn't written. A document already in
   the intake with a `results.review` gets the supplied record instead.
+  The record is saved only once the file has moved: if the stow fails (for
+  example, a file with that name is already in the cabinet), the sidecar
+  keeps what it had, so the document stays transcribed (or keeps its
+  earlier review) and a later `stow` treats it as usual.
 - A complete record never prompts. Anything missing is prompted for, as for
   `stow-file`, before any file is touched, so empty input at a prompt
   cancels without moving anything.

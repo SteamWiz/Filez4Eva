@@ -144,14 +144,19 @@ class StowCommand(StageCommand):
         """Stow a reviewed document with the cabinet and data from
         results.review: move the file and its transcript to the cabinet
         (never overwriting anything), record results.stow, then move X.yml
-        to the archive. With input data, first save it as results.review
-        (with `input: true`), replacing any review there. Return the
-        destination path."""
-        if self.input_record is not None:
-            record_result(path, 'review', {
+        to the archive. With input data, the file is stowed with it
+        instead, and it is saved as results.review (with `input: true`,
+        replacing any review there) only once the file has moved, so a
+        failed stow leaves the sidecar as it was. Return the destination
+        path."""
+        if self.input_record is None:
+            supplied = None
+            review = confirmed(load_sidecar(path)['results'], self.cabinets)
+        else:
+            supplied = {
                 'at': ingest_command.now().isoformat(timespec='seconds'),
-                'input': True, **self.input_record})
-        review = confirmed(load_sidecar(path)['results'], self.cabinets)
+                'input': True, **self.input_record}
+            review = confirmed({'review': supplied}, self.cabinets)
         sidecar = sidecar_path(path)
         archived = archived_sidecar(path)
         # Checked before the file moves, so a stowed document's sidecar
@@ -161,6 +166,8 @@ class StowCommand(StageCommand):
         archived.parent.mkdir(exist_ok=True)
         targetpath = self.stower(path, review).stow()
         try:
+            if supplied is not None:
+                record_result(path, 'review', supplied)
             record_result(path, self.stage, {
                 'at': ingest_command.now().isoformat(timespec='seconds'),
                 'location': str(targetpath)})
