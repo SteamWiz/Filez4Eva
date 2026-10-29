@@ -148,7 +148,9 @@ printf 'data:\n  date: 20240213\n  title: visa-statement\n' \
   `data` value that isn't a mapping is an error.
 - Values are read as plain text, so `0123` stays `0123` and `yes` stays `yes`.
 - `~` and `null` are treated as missing, so that value is prompted for.
-- Stdin is only read by `stow-file` itself. `scan-dir` ignores it.
+- Stdin is only read by `stow-file` itself, and by
+  [`stow`](#stowing-a-file-with-input-data) for a single file. `scan-dir`
+  ignores it.
 
 However the values are supplied (flags, stdin, prompts or the AI), every
 field other than `date` ends up hyphen-separated-lower: accents are
@@ -497,6 +499,46 @@ The status on stderr counts the files, e.g.
 `Reviewed 2 files | Stowed 3 files | Skipped 1 file`, with `Quit` at the end
 if you quit.
 
+#### Stowing a file with input data
+
+For scripts and other tools that already know the record for a file, `stow`
+takes the same input data as [`stow-file`](#stowing-individual-files): the
+`--cabinet`, `--date` and repeatable `--field NAME=VALUE` flags, and a YAML
+record on stdin with the cabinet and the fields under `data:`:
+
+```bash
+filez4eva stow -d 20240213 -f account=royal-bank -f part=visa \
+  ~/Desktop/statement.pdf
+
+printf 'cabinet: accounts\ndata:\n  date: 2024-02-13\n  account: royal-bank\n  part: visa\n' \
+  | filez4eva stow ~/Desktop/statement.pdf
+```
+
+The flags and stdin follow the `stow-file` rules: flags win over stdin,
+`date` may be `20240213` or `2024-02-13`, other fields are normalized, and
+stdin that is empty, isn't valid YAML, isn't a mapping, or has neither a
+`cabinet` nor `data` is ignored (so `stow` runs as usual). Input data is
+supplied when any of the flags is given, or stdin has a `cabinet` or `data`.
+
+With input data:
+
+- The path must be a single file. A directory, or no path (the intake), is
+  an error before anything moves: `Input data (--cabinet, --date, --field or
+  a record on stdin) needs a single file, ...`.
+- The file is [ingested](#ingesting-files) and
+  [transcribed](#transcribing-files) first if it hasn't been, as usual.
+  `classify` and `review` are skipped: no model is asked for a record and no
+  review menu is shown.
+- The record is saved as `results.review`, with `input: true` (see
+  [The X.yml sidecar](#the-xyml-sidecar)), and the file is stowed with it
+  exactly as above. `results.classify` isn't written. A document already in
+  the intake with a `results.review` gets the supplied record instead.
+- A complete record never prompts. Anything missing is prompted for, as for
+  `stow-file`, before any file is touched, so empty input at a prompt
+  cancels without moving anything.
+- An unknown cabinet or field, or an invalid date or value, is an error
+  before anything moves.
+
 ### Processing a File with AI
 
 To transcribe, classify, confirm and stow a file in one go:
@@ -576,8 +618,13 @@ review command:
 
 stow command:
 - `--only`: Stow only documents already ingested, transcribed, classified
-  and reviewed; skip other files
-- `path`: Optional file or directory to stow (defaults to the intake)
+  and reviewed; skip other files (with input data: ingested and transcribed)
+- `--cabinet, -c NAME`: Input data: the cabinet to stow into
+- `--date, -d DATE`: Input data: the date, in YYYYMMDD format
+- `--field, -f NAME=VALUE`: Input data: the value of a field (repeatable)
+- `path`: Optional file or directory to stow (defaults to the intake); a
+  single file with input data (flags or a record on stdin; see
+  [Stowing a file with input data](#stowing-a-file-with-input-data))
 
 process command:
 - `--cabinet, -c NAME`: Specify the cabinet to classify for and stow into
@@ -709,6 +756,23 @@ results:
   `results.classify.cabinet` (see [Reviewing Files](#reviewing-files)).
 - `data`: the confirmed value of each of that cabinet's fields, in pattern
   order, with `date` as YYYYMMDD.
+
+When `stow` is given [input data](#stowing-a-file-with-input-data), it
+writes `results.review` itself, in the same shape, with `input: true`, and
+there is no `results.classify`:
+
+```yaml
+results:
+  ingest: ...
+  transcribe: ...
+  review:
+    at: '2026-10-25T15:20:41-07:00'
+    input: true
+    cabinet: accounts
+    data:
+      date: '20261002'
+      title: usb-hub-receipt
+```
 
 `stow` adds, once the file is in the cabinet, and then moves the sidecar to
 `<intake>/archive/`:

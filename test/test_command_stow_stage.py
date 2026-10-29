@@ -5,14 +5,15 @@ from unittest.mock import patch
 
 import yaml
 
+from filez4eva import Filez4EvaApp
 from filez4eva.command.classify_command import ClassifyCommand
 from filez4eva.command.stow_command import StowCommand
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import load_store
 
 from test.test_command_review import (
-    ANSWERS, AT, CLASSIFY, DATA, PATTERN, SECOND, STAMP,
-    ReviewTestCase)
+    ANSWERS, AT, CLASSIFY, DATA, EXTRACT, PATTERN, SECOND, STAMP,
+    TRANSCRIBE, ReviewTestCase)
 
 
 REVIEW = {'at': AT, 'cabinet': 'default', 'data': DATA}
@@ -38,6 +39,12 @@ class StowTestCase(ReviewTestCase):
         """The results in an archived sidecar"""
         text = (self.archive / f'{name}.yml').read_text()
         return yaml.safe_load(text)['results']
+
+    def run_command(self, path=None, stdin='', **kwargs):
+        """Run stow with stdin text (none by default, so a record piped to
+        the test run is never read); see ReviewTestCase.run_command"""
+        with self.patch_stream(stdin):
+            return super().run_command(path, **kwargs)
 
     def run_classify(self, path=None, **kwargs):
         self.command_class = ClassifyCommand
@@ -409,3 +416,233 @@ class TestMainUseCase(StowTestCase):
         self.assertEqual(self.intake_names(), ['archive'])
         self.assertEqual(self.archived(SECOND + '.pdf')['ingest'][
             'original-name'], 'Scan 2.PDF')
+
+
+FLAGS = {'date': '20261002', 'field': ['account=amazon', 'part=receipt']}
+
+INPUT = {'at': AT, 'input': True, 'cabinet': 'default', 'data': DATA}
+
+STDIN = ('cabinet: default\n'
+         'data:\n  date: 2026-10-02\n  account: amazon\n  part: receipt\n')
+
+
+class StowInputTestCase(StowTestCase):
+    """Run stow with input data"""
+
+    def assert_stowed_with_input(self, review=INPUT):
+        self.assertTrue(self.stowed.is_file())
+        results = self.archived()
+        self.assertEqual(list(results), [
+            'ingest', 'transcribe', 'review', 'stow'])
+        self.assertEqual(results['review'], review)
+        self.assertEqual(results['stow'], {'at': AT,
+                                           'location': str(self.stowed)})
+
+
+class TestStowInput(StowInputTestCase):
+    """AC 1-3: input data from flags or stdin skips classify and review"""
+
+    def test_flags_skip_classify_and_review(self):
+        source = self.make('Scan 1.PDF')
+        out, command, gt, e, t = self.run_command(source, **FLAGS)
+        t.assert_called_once()
+        e.assert_not_called()
+        gt.assert_not_called()
+        self.assertNotIn('(c)onfirm', self.err)
+        self.assertFalse(source.exists())
+        self.assertEqual(out, str(self.stowed))
+        self.assertEqual(Path(f'{self.stowed}.md').read_text().count('# Hi'),
+                         1)
+        self.assertEqual(self.intake_names(), ['archive'])
+        self.assert_stowed_with_input()
+        self.assertEqual(command.status, 'Ingested 1 file | '
+                         'Transcribed 1 file | Stowed 1 file')
+
+    def test_classify_config_not_needed(self):
+        source = self.make('Scan 1.PDF')
+        config = self.config()
+        del config['filez4eva_doctypes']
+        self.run_command(source, config=config, **FLAGS)
+        self.assert_stowed_with_input()
+
+    def test_stdin_record(self):
+        source = self.make('Scan 1.PDF')
+        out, _, gt, e, _ = self.run_command(source, stdin=STDIN)
+        e.assert_not_called()
+        gt.assert_not_called()
+        self.assertEqual(out, str(self.stowed))
+        self.assert_stowed_with_input()
+
+    def test_flags_win_over_stdin(self):
+        source = self.make('Scan 1.PDF')
+        out, _, gt, _, _ = self.run_command(
+            source, stdin=STDIN.replace('receipt', 'invoice').replace(
+                '2026-10-02', '2026-10-09'),
+            date='20261002', field=['part=receipt'])
+        gt.assert_not_called()
+        self.assert_stowed_with_input()
+
+    def test_cabinet_from_flag(self):
+        source = self.make('Scan 1.PDF')
+        out, _, gt, e, _ = self.run_command(
+            source, config=self.memories_cabinets(), cabinet='memories',
+            date='20261002', field=['event=grandma-bday', 'part=cake'])
+        gt.assert_not_called()
+        e.assert_not_called()
+        expected = self.memories / '2026' / 'grandma-bday' / \
+            '20261002-cake.pdf'
+        self.assertEqual(out, str(expected))
+        self.assertEqual(self.archived()['review'], {
+            'at': AT, 'input': True, 'cabinet': 'memories', 'data': MEMORY})
+
+    def test_partial_record_prompts_for_the_rest(self):
+        source = self.make('Scan 1.PDF')
+        _, _, gt, e, t = self.run_command(
+            source, stdin='data:\n  date: 20261002\n  account: amazon\n',
+            answers=['receipt'])
+        self.assertEqual([c[0] for c in self.prompts(gt)], ['Part: '])
+        e.assert_not_called()
+        self.assert_stowed_with_input()
+
+    def test_cancel_at_prompt_moves_nothing(self):
+        source = self.make('Scan 1.PDF')
+        _, _, _, _, t = self.run_command(source, date='20261002',
+                                         answers=[''])
+        t.assert_not_called()
+        self.assertTrue(source.is_file())
+        self.assertEqual(self.intake_names(), [])
+
+    def test_ingested_document_is_not_ingested_again(self):
+        document = self.make_document(classify=None)
+        out, command, _, e, t = self.run_command(document, **FLAGS)
+        t.assert_not_called()
+        e.assert_not_called()
+        self.assertEqual(out, str(self.stowed))
+        self.assert_stowed_with_input()
+        self.assertEqual(command.status, 'Stowed 1 file')
+
+    def test_untranscribed_document_is_transcribed(self):
+        document = self.make_document(classify=None, transcript=None)
+        _, command, _, e, t = self.run_command(document, **FLAGS)
+        t.assert_called_once()
+        e.assert_not_called()
+        self.assertEqual(command.status,
+                         'Transcribed 1 file | Stowed 1 file')
+
+    def test_only_still_needs_transcript(self):
+        document = self.make_document(classify=None, transcript=None)
+        _, command, _, _, t = self.run_command(document, only=True, **FLAGS)
+        t.assert_not_called()
+        self.assertTrue(document.is_file())
+        self.assertEqual(command.status,
+                         'Skipped 1 file (not transcribed)')
+
+    def test_input_replaces_existing_review(self):
+        document = self.make_document(review={
+            'at': AT, 'cabinet': 'default',
+            'data': dict(DATA, part='invoice')})
+        self.run_command(document, **FLAGS)
+        results = self.archived()
+        self.assertEqual(results['review'], INPUT)
+        self.assertEqual(results['classify'], CLASSIFY)
+
+    def test_existing_file_in_cabinet_is_not_overwritten(self):
+        source = self.make('Scan 1.PDF')
+        self.stowed.parent.mkdir(parents=True)
+        self.stowed.write_text('already here')
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file failed'):
+            self.run_command(source, **FLAGS)
+        self.assertIn('File already exists', self.err)
+        self.assertEqual(self.stowed.read_text(), 'already here')
+        document = self.intake / f'{STAMP}.pdf'
+        self.assertTrue(document.is_file())
+        self.assertEqual(self.results(document)['review'], INPUT)
+        self.assertNotIn('stow', self.results(document))
+
+
+class TestStowInputErrors(StowInputTestCase):
+    """AC 4: input data needs a single file; bad input moves nothing"""
+
+    def test_directory_is_an_error(self):
+        source = self.make('Scan 1.PDF')
+        for vals in [FLAGS, {'stdin': STDIN}]:
+            with self.subTest(vals=vals):
+                with self.assertRaisesRegex(
+                        Filez4EvaError, 'needs a single file, not a '
+                        f'directory: {self.source}$'):
+                    self.run_command(self.source, **vals)
+                self.assertTrue(source.is_file())
+                self.assertEqual(self.intake_names(), [])
+
+    def test_no_path_is_an_error(self):
+        document = self.make_document()
+        for vals in [FLAGS, {'cabinet': 'default'}, {'stdin': STDIN}]:
+            with self.subTest(vals=vals):
+                with self.assertRaisesRegex(
+                        Filez4EvaError,
+                        r'Input data \(--cabinet, --date, --field or a '
+                        r'record on stdin\) needs a single file, not the '
+                        'intake'):
+                    self.run_command(**vals)
+                self.assertTrue(document.is_file())
+                self.assertNotIn('review', self.results(document))
+
+    def test_bad_input_fails_before_anything_moves(self):
+        source = self.make('Scan 1.PDF')
+        for vals, message in [
+                ({'cabinet': 'nope'}, 'Unknown cabinet nope'),
+                (dict(FLAGS, date='20261332'), 'Date must match'),
+                ({'stdin': 'data:\n  date: 2 Oct\n'}, 'Date from stdin'),
+                (dict(FLAGS, field=['colour=red']), 'Unknown field colour'),
+                (dict(FLAGS, field=['account']), '--field must be')]:
+            with self.subTest(vals=vals):
+                with self.assertRaisesRegex(Filez4EvaError, message):
+                    self.run_command(source, **vals)
+                self.assertTrue(source.is_file())
+                self.assertEqual(self.intake_names(), [])
+
+    def test_companion_file_is_an_error(self):
+        document = self.make_document()
+        with self.assertRaisesRegex(Filez4EvaError, 'not a document'):
+            self.run_command(f'{document}.yml', **FLAGS)
+        self.assertNotIn('review', self.results(document))
+
+
+class TestStowWithoutInput(StowInputTestCase):
+    """AC 5: no input data, or stdin that isn't a record, behaves as
+    before"""
+
+    def test_stdin_without_record_is_no_input(self):
+        for stdin in ['', '   \n', 'just text', '- a\n- b\n', ': [',
+                      'cabinet: ~\ndata: ~\n', 'other: x\n']:
+            with self.subTest(stdin=stdin):
+                self.make_document()
+                out, command, _, _, _ = self.run_command(
+                    stdin=stdin, keys='c', answers=ANSWERS)
+                self.assertEqual(out, str(self.stowed))
+                self.assertEqual(command.status,
+                                 'Reviewed 1 file | Stowed 1 file')
+                self.assertNotIn('input', self.archived()['review'])
+                self.stowed.unlink()
+                Path(f'{self.stowed}.md').unlink()
+                (self.archive / f'{STAMP}.pdf.yml').unlink()
+
+
+class TestStowInputCommandLine(StowInputTestCase):
+    """AC 1: the flags and stdin from the command line"""
+
+    def test_command_line(self):
+        source = self.make('Scan 1.PDF')
+        config = self.dir / 'config.yml'
+        config.write_text(yaml.safe_dump({'filez4eva': {
+            'intake': str(self.intake), 'target': str(self.target),
+            'pattern': PATTERN}}))
+        with patch(TRANSCRIBE, return_value='# Hi'), \
+                patch(EXTRACT) as e, \
+                self.patch_stream('data:\n  part: receipt\n'), \
+                self.patch_ttyin(''), self.patchout(), self.patcherr():
+            Filez4EvaApp.start('--config', str(config), 'stow',
+                               str(source), '-d', '20261002',
+                               '-f', 'account=amazon', debug=True)
+        e.assert_not_called()
+        self.assert_stowed_with_input()
