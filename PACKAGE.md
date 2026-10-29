@@ -489,7 +489,11 @@ The destination path is printed on stdout.
 - If a document fails, the error is reported on stderr and the run carries
   on with the next file. At the end, the documents that were stowed are
   printed and `stow` exits non-zero. If the file was stowed but its sidecar
-  couldn't be archived, the error says where the file went.
+  couldn't be archived, the error says where the file went and that `X.yml`
+  should be moved to `<intake>/archive/` by hand. Until it is, every
+  command that reads the intake (`ingest`, `transcribe`, `classify`,
+  `review` and `stow`) reports that `X.yml` as a failure rather than take it
+  for a new document.
 - The whole configuration (cabinets and doctypes) is checked before any file
   is touched.
 
@@ -617,6 +621,12 @@ parent directories) if it doesn't exist. It can also be set with the
 When [`stow`](#stowing-files) stows a document, its sidecar `X.yml` moves to
 `<intake>/archive/`. The stage commands only look at the top level of the
 intake, so archived sidecars are never documents. Nothing removes them.
+
+A sidecar left in the intake without its document (a file `X.yml` with
+`results.ingest` and no `X` next to it) is never a document either: the
+commands that read the intake report it as a failure, saying to move it to
+`<intake>/archive/` by hand. Any other YAML file dropped into the intake is
+an ordinary new document.
 
 ### The X.yml sidecar
 

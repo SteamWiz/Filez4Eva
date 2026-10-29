@@ -13,7 +13,8 @@ from wizlib.ui.shell_ui import Emphasis
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command.ingest_command import (
     files, in_intake, ingest_file, intake_dir, is_companion, is_ingested,
-    sidecar_path, top_level_documents, write_sidecar)
+    refuse_orphaned_sidecar, sidecar_path, top_level_documents,
+    write_sidecar)
 from filez4eva.error import Filez4EvaError
 
 
@@ -187,6 +188,7 @@ class StageCommand(Filez4EvaCommand):
             current = document
             try:
                 if not ingested(document, intake):
+                    refuse_orphaned_sidecar(document, intake)
                     if self.only:
                         self.skip(document, 'ingested', skipped)
                         continue

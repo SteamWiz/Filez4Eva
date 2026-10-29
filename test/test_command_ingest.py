@@ -16,7 +16,8 @@ from wizlib.test_case import WizLibTestCase
 from filez4eva import Filez4EvaApp
 from filez4eva.command.ingest_command import (
     DEFAULT_INTAKE, IngestCommand, extensions, in_intake, ingest_file,
-    intake_dir, intake_lock, is_companion, is_ingested, now, parse_meta,
+    intake_dir, intake_lock, is_companion, is_ingested, is_orphaned_sidecar,
+    now, parse_meta,
     read_sidecar, sidecar_path, stamp_name, write_sidecar)
 from filez4eva.error import Filez4EvaError
 
@@ -571,6 +572,39 @@ class TestIngestCommand(WizLibTestCase):
         _, command, _ = self.run_command(sidecar)
         self.assertEqual(command.status, 'Already ingested')
         self.assertTrue(sidecar.is_file())
+
+    def test_orphaned_sidecar_in_intake_is_refused(self):
+        orphan = self.in_intake('20250101-000000-000.pdf.yml',
+                                'results:\n  ingest: {}\n')
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    'no longer in the intake'):
+            self.run_command(orphan)
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file failed'):
+            self.run_command(self.intake)
+        self.assertEqual(self.intake_names(), [orphan.name])
+        self.assertEqual(orphan.read_text(), 'results:\n  ingest: {}\n')
+
+    def test_orphaned_sidecar_outside_intake_is_ingested(self):
+        source = self.make('a.pdf.yml', 'results:\n  ingest: {}\n')
+        _, command, _ = self.run_command(source)
+        self.assertEqual(command.status, 'Ingested')
+
+    def test_is_orphaned_sidecar(self):
+        self.in_intake('a.pdf')
+        sidecar = 'results:\n  ingest: {}\n'
+        cases = {
+            'a.pdf.yml': (sidecar, False),
+            'b.pdf.yml': (sidecar, True),
+            'c.yml': ('results: {}\n', False),
+            'd.yml': ('- list\n', False),
+            'e.yml': (': [bad\n', False),
+            'f.txt': (sidecar, False),
+            '.yml': (sidecar, False),
+        }
+        for name, (content, expected) in cases.items():
+            with self.subTest(name=name):
+                path = self.in_intake(name, content)
+                self.assertEqual(is_orphaned_sidecar(path), expected)
 
     def test_pair_outside_intake_is_ingested(self):
         # Outside the intake, X and X.yml are two new documents

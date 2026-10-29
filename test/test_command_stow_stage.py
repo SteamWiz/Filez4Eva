@@ -265,7 +265,40 @@ class TestStowing(StowTestCase):
         self.assertIn(f'Stowed to {self.stowed}, but could not archive',
                       self.err)
         self.assertIn('disk full', self.err)
+        self.assertIn(f'move it to {self.archive}/ by hand', self.err)
         self.assertTrue(self.stowed.is_file())
+
+    def test_orphaned_sidecar_is_refused(self):
+        """X.yml left in the intake without X (stow could not archive it) is
+        never taken for a new document, by stow, classify or ingest"""
+        self.make_document(review=REVIEW)
+        with patch('filez4eva.command.stow_command.record_result',
+                   side_effect=OSError('disk full')), \
+                self.assertRaises(Filez4EvaError):
+            self.run_command()
+        orphan = self.intake / f'{STAMP}.pdf.yml'
+        names = [f'{STAMP}.pdf.yml', 'archive']
+        self.assertEqual(self.intake_names(), names)
+        for run in (lambda: self.run_command(),
+                    lambda: self.run_command(only=True),
+                    lambda: self.run_command(orphan),
+                    lambda: self.run_classify()):
+            with self.subTest(run=run):
+                with self.assertRaisesRegex(Filez4EvaError,
+                                            '1 of 1 file failed'):
+                    run()
+                self.assertIn('Failed to', self.err)
+                self.assertIn('no longer in the intake', self.err)
+                self.assertIn(f'move it to {self.archive}/ by hand',
+                              self.err)
+                self.assertEqual(self.intake_names(), names)
+
+    def test_yaml_file_without_ingest_is_a_document(self):
+        """Only a sidecar with results.ingest counts as orphaned"""
+        self.make('notes.yml', content='results: {other: 1}\n',
+                  where=self.intake)
+        _, command, _, _, _ = self.run_command(only=True)
+        self.assertIn('not ingested yet', self.err)
 
     def test_bad_review_results(self):
         for review, message in [

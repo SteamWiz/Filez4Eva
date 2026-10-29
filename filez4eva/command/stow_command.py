@@ -95,7 +95,8 @@ class StowCommand(StageCommand):
         except (Filez4EvaError, OSError) as error:
             raise Filez4EvaError(
                 f"Stowed to {targetpath}, but could not archive {sidecar}: "
-                f"{error}") from error
+                f"{error}; move it to {archived.parent}/ by hand") \
+                from error
         return str(targetpath)
 
     @Filez4EvaCommand.wrap

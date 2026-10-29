@@ -112,6 +112,36 @@ def is_companion(path: Path) -> bool:
     return False
 
 
+def is_orphaned_sidecar(path: Path) -> bool:
+    """True if path is a sidecar left without its document: a file X.yml
+    with no X next to it whose content is a mapping with results.ingest,
+    e.g. because stow moved X to its cabinet but could not archive X.yml.
+    Any other YAML file is an ordinary new document."""
+    name = path.name
+    if not name.endswith(SIDECAR_SUFFIX) or len(name) <= len(SIDECAR_SUFFIX):
+        return False
+    if path.with_name(name[:-len(SIDECAR_SUFFIX)]).exists():
+        return False
+    try:
+        data = yaml.safe_load(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return False
+    results = data.get('results') if isinstance(data, dict) else None
+    return isinstance(results, dict) and 'ingest' in results
+
+
+def refuse_orphaned_sidecar(path: Path, intake: Path):
+    """Raise Filez4EvaError if path is an orphaned sidecar (see
+    is_orphaned_sidecar) in the intake, so it is never taken for a new
+    document"""
+    if in_intake(path, intake) and is_orphaned_sidecar(path):
+        archive = path.parent / ARCHIVE
+        raise Filez4EvaError(
+            f"{path} is the sidecar of a document that is no longer in the "
+            f"intake, not a document; if the document was stowed, move it "
+            f"to {archive}/ by hand")
+
+
 def read_sidecar(path: Path) -> dict:
     """Return the sidecar of a document as a dict, or an empty dict if it is
     missing, unreadable, or not a YAML mapping"""
@@ -332,6 +362,7 @@ class IngestCommand(Filez4EvaCommand):
                     (is_ingested(path) or is_companion(path)):
                 self.status = 'Already ingested'
                 return None
+            refuse_orphaned_sidecar(path, intake)
             target = ingest_file(path, intake, self.source)
             self.status = 'Ingested'
             return str(target)
@@ -340,6 +371,7 @@ class IngestCommand(Filez4EvaCommand):
         failed = 0
         for file in todo:
             try:
+                refuse_orphaned_sidecar(file, intake)
                 done.append(str(ingest_file(file, intake, self.source)))
             except (Filez4EvaError, OSError) as error:
                 failed += 1
