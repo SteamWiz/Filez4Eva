@@ -20,6 +20,18 @@ FRONT_MATTER_DELIMITER = '---'
 
 CHUNK_SIZE = 1024 * 1024
 
+# The binary file types the model transcribes (lower-case suffixes): PDF
+# and images. Any other file that decodes as UTF-8 text is a text document,
+# its own transcript (see read_text).
+TRANSCRIBABLE = ('.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp')
+
+# Key in results.transcribe of a text document: the document is its own
+# transcript, so no X.md is written and later stages read the file itself
+RAW = 'raw'
+
+# Status label for text documents (`Not transcribed 1 file (text)`)
+TEXT_DONE = ('Not transcribed', 'text')
+
 
 def file_sha256(path: Path) -> str:
     """Return the hex SHA-256 digest of a file, read in chunks"""
@@ -34,6 +46,43 @@ def transcript_path(path: Path) -> Path:
     """Return the transcript path for a file: the full name plus '.md', so
     scan.pdf becomes scan.pdf.md"""
     return Path(str(path) + '.md')
+
+
+def transcribable(path: Path) -> bool:
+    """True if the file's extension is one of the binary types the model
+    transcribes (TRANSCRIBABLE, any case)"""
+    return path.suffix.lower() in TRANSCRIBABLE
+
+
+def read_text(path: Path):
+    """Return the content of a text document, or None if the file isn't
+    one: its extension is a type the model transcribes, or its content
+    doesn't decode as UTF-8 or has a NUL byte. Raises OSError if the file
+    can't be read."""
+    if transcribable(path):
+        return None
+    data = path.read_bytes()
+    if b'\x00' in data:
+        return None
+    try:
+        return data.decode('utf-8')
+    except UnicodeDecodeError:
+        return None
+
+
+def unsupported(path: Path) -> Filez4EvaError:
+    """The error for a file that is neither a type the model transcribes
+    nor UTF-8 text"""
+    return Filez4EvaError(
+        f"Unsupported file type {path.suffix or '(none)'}: transcribe "
+        f"supports {', '.join(TRANSCRIBABLE)} and UTF-8 text")
+
+
+def is_raw(results: dict) -> bool:
+    """True if a document's results.transcribe says it is its own
+    transcript (a text document: `raw: true`)"""
+    transcribed = results.get('transcribe')
+    return isinstance(transcribed, dict) and transcribed.get(RAW) is True
 
 
 def recorded_transcript(path: Path, results: dict) -> Path:
@@ -110,10 +159,13 @@ def transcribe_file(path: Path, model: str, api_key=None) -> tuple:
     """Transcribe a file in place, writing FILE.md next to it, unless that
     transcript's sha256 already matches the file. Return (transcript path,
     'Transcribed' or 'Unchanged'). Nothing is ingested or moved. Raises
-    Filez4EvaError if the file is missing or transcription fails, leaving
-    any existing transcript as it was."""
+    Filez4EvaError if the file is missing, isn't a type the model
+    transcribes (TRANSCRIBABLE; checked before any model call), or
+    transcription fails, leaving any existing transcript as it was."""
     if not path.is_file():
         raise Filez4EvaError(f"File {path} must exist")
+    if not transcribable(path):
+        raise unsupported(path)
     sha256 = file_sha256(path)
     target = transcript_path(path)
     if target.is_file():
@@ -135,17 +187,27 @@ class TranscribeCommand(StageCommand):
     """Transcribe new files (ingesting them first), the documents already in
     the intake, or the ones named with --ingested, to Markdown with Claude.
     Writes X.md next to each document X in the intake and records
-    results.transcribe in X.yml."""
+    results.transcribe in X.yml. A text document is its own transcript: no
+    model call and no X.md, just results.transcribe with `raw: true`."""
 
     name = 'transcribe'
     summary = 'transcribe documents to Markdown (X.md) with an AI model'
     description = """
         Transcribe documents to Markdown with an AI model, writing X.md next
         to each document X in the intake and recording results.transcribe
-        in its X.yml sidecar. Prints each transcript's path."""
+        in its X.yml sidecar. Prints each transcript's path.
+
+        The model transcribes PDF and image files (.pdf, .png, .jpg,
+        .jpeg, .gif, .webp). Any other file whose content is UTF-8 text
+        (e.g. .txt, .md, .csv, .json, or no extension) is a text document:
+        it is its own transcript, so there is no model call and no X.md;
+        results.transcribe records `raw: true`, later stages read the file
+        itself, and its path is printed. Any other file fails as an
+        unsupported file type."""
     stage = 'transcribe'
     done = 'Transcribed'
     doing = 'Transcribing'
+    outcomes = (TEXT_DONE,)
 
     @property
     def model(self) -> str:
@@ -162,7 +224,22 @@ class TranscribeCommand(StageCommand):
     def act(self, path: Path) -> str:
         """Transcribe an ingested document (reusing a transcript whose
         sha256 matches), record results.transcribe, and return the
-        transcript path"""
+        transcript path. A text document (see read_text) is its own
+        transcript: record results.transcribe with `raw: true` and its
+        length, with no model call and no X.md (one already there is left
+        alone and never used), count it as TEXT_DONE, and return its
+        path."""
+        if not path.is_file():
+            raise Filez4EvaError(f"File {path} must exist")
+        text = read_text(path)
+        if text is not None:
+            record_result(path, self.stage, {
+                'at': ingest_command.now().isoformat(timespec='seconds'),
+                RAW: True,
+                'length': len(text),
+            })
+            self.outcome = TEXT_DONE
+            return str(path)
         target, _ = transcribe_file(path, self.model, self.api_key)
         at = ingest_command.now()
         try:

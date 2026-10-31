@@ -267,6 +267,10 @@ class Stower:
     field: list = None
     cabinet: str = None
 
+    # False for a text document, which is its own transcript: no X.md
+    # moves with it, even if one is there
+    transcript: bool = True
+
     # False when values must not come from stdin (e.g. when stowing a
     # reviewed document), so a record piped to a run isn't applied to
     # every file
@@ -518,7 +522,8 @@ class Stower:
         """Work out where the file (and its transcript, if any) would go,
         without moving anything. Return (source, targetpath,
         source_transcript, target_transcript); the transcript paths are None
-        if the file has no transcript. Raises Filez4EvaError if the file is
+        if the file has no transcript, or transcript is False (a text
+        document). Raises Filez4EvaError if the file is
         missing, a value is invalid, a destination is outside its tree, or
         something already exists at a destination."""
         pattern = self.pattern
@@ -541,9 +546,10 @@ class Stower:
         if targetpath.exists():
             raise Filez4EvaError(f"File already exists at {targetpath}")
         # A transcript (FILE.md) travels with the file, named after it
+        # (unless the file is its own transcript)
         source_transcript = transcript_path(path)
         target_transcript = None
-        if source_transcript.is_file():
+        if self.transcript and source_transcript.is_file():
             target_transcript = self.target_transcript(relative, targetpath)
             if target_transcript.exists():
                 raise Filez4EvaError(

@@ -25,10 +25,10 @@ Filez4Eva works in stages, one command for each:
 | Command | What it does | Prompts? |
 |---------|--------------|----------|
 | [`ingest`](#ingesting-files) | Moves files into the intake under a time-stamped name, each with an `X.yml` sidecar | No |
-| [`transcribe`](#transcribing-files) | Transcribes each document to Markdown, `X.md`, with an AI model | No |
+| [`transcribe`](#transcribing-files) | Transcribes each document to Markdown, `X.md`, with an AI model ([text documents](#text-documents) are their own transcript) | No |
 | [`classify`](#classifying-files) | Has an AI model propose a value for each field of the document's cabinet that isn't [given](#given-data), for each document | Only for a document's cabinet, with several cabinets and no `-c` |
 | [`review`](#reviewing-files) | Shows each proposed record, to confirm, update or redo with another cabinet | Yes, unless every value is [given](#given-data) |
-| [`stow`](#stowing-files) | Moves each confirmed document and its transcript into its cabinet, named by the cabinet's pattern | For documents not yet reviewed, unless every value is [given](#given-data) |
+| [`stow`](#stowing-files) | Moves each confirmed document and its transcript (if it has one) into its cabinet, named by the cabinet's pattern | For documents not yet reviewed, unless every value is [given](#given-data) |
 
 The main use case is two commands:
 
@@ -324,8 +324,13 @@ Other rules:
   path (new files) it transcribes nothing: each file is left where it is,
   with a note on stderr (`Skipped FILE: not ingested yet`), and counted in
   the status as `Skipped 1 file (not ingested)`.
-- Supported file types are PDF, PNG, JPEG, GIF, WebP, plain text, Markdown
-  and CSV.
+- Supported file types: the model transcribes PDF and images (`.pdf`,
+  `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, in any case). Any other file
+  whose content is UTF-8 text is a [text document](#text-documents), which
+  isn't transcribed. Anything else (e.g. `.docx`, `.heic`, or a binary file
+  with no extension) fails before the model is called, with
+  `Unsupported file type .docx: transcribe supports .pdf, .png, .jpg, .jpeg,
+  .gif, .webp and UTF-8 text`.
 - If a file fails (e.g. an unsupported file type, an API error, or a sidecar
   that can't be read), the error is reported on stderr, with the file's new
   name if it was ingested, and the run carries on with the next file. Its
@@ -337,6 +342,26 @@ Other rules:
 
 See [Transcription settings](#transcription-settings) for the model and API
 key.
+
+#### Text documents
+
+A document is text if its extension isn't one the model transcribes (see
+above) and its content decodes as UTF-8 with no NUL bytes. The extension
+doesn't matter otherwise: `.txt`, `.md`, `.csv`, `.json`, `.yaml`, `.html`,
+`.log` and files with no extension all count when they decode. A text file
+in another encoding (e.g. Latin-1) is not text and fails as an unsupported
+file type.
+
+A text document is its own transcript. `transcribe` calls no model and
+writes no `X.md`: it records `results.transcribe` with `raw: true` (see
+[The X.yml sidecar](#the-xyml-sidecar)), prints the document's own path, and
+counts it in the status apart from the transcribed ones, e.g.
+`Ingested 2 files | Transcribed 1 file | Not transcribed 1 file (text)`.
+Later stages use the file the way they use a transcript: `classify` gives
+the model the file's text, whole (a Markdown file's front matter included),
+and `stow` moves the file alone, with no transcript. An `X.md` that happens
+to be next to a text document is never used or moved. `review`'s delete is
+the same as for any document.
 
 ### Classifying Files
 
@@ -376,9 +401,13 @@ other fields. With the cabinet and every field given, nothing is asked of
 the model: the record is saved as reviewed (`results.review`, with
 `input: true`).
 
-The model is given the transcript, along with the file's original name and
-source (`results.ingest.original-name` and `results.ingest.source`). The
-result is recorded under `results.classify` in the document's
+The model is given the transcript (for a [text document](#text-documents),
+the file's own text), along with the file's original name and source
+(`results.ingest.original-name` and `results.ingest.source`). Only the first
+100,000 characters of the transcript or text are given, to protect the
+model's context from large logs or CSV files; when more are cut, the model
+is told (e.g. `Document text (cut: only the first 100,000 of 250,000
+characters are shown)`). The result is recorded under `results.classify` in the document's
 [sidecar](#the-xyml-sidecar):
 
 ```yaml
@@ -629,8 +658,9 @@ Stowing a document:
    transcript `X.md` with it, named after the stowed file: by default next
    to it (`.../20261002-receipt.pdf` gets `.../20261002-receipt.pdf.md`),
    or in a parallel tree (see [Transcript location](#transcript-location)).
-   Missing directories are created. If the transcript can't be moved, the
-   file is moved back. Stowing records no
+   A [text document](#text-documents) is its own transcript, so it moves
+   alone. Missing directories are created. If the transcript can't be
+   moved, the file is moved back. Stowing records no
    [learned values](#learned-values): they were recorded when the record
    was reviewed.
 2. records `results.stow` in its sidecar `X.yml`: when it was stowed and
@@ -918,6 +948,24 @@ results:
   file, and `review`'s delete removes `X.md` whatever the sidecar says.
 - `length`: the length of the transcribed Markdown in characters, without
   the front matter and disclaimer.
+
+For a [text document](#text-documents), which is its own transcript,
+`transcribe` adds instead:
+
+```yaml
+results:
+  ingest: ...
+  transcribe:
+    at: '2026-10-25T14:03:12-07:00'
+    raw: true
+    length: 812
+```
+
+- `at`: when the document was found to be text, as above.
+- `raw`: `true`: the document is its own transcript. There is no `X.md`:
+  `classify` reads the document itself and `stow` moves no transcript, even
+  if an `X.md` is there.
+- `length`: the length of the document's text in characters.
 
 Before a document is classified (by `classify`, or by `review` or `stow`
 running classify first), its cabinet is chosen (see

@@ -330,8 +330,8 @@ class TestTranscribeCommand(TranscribeTestCase):
         self.assertEqual(list(read_sidecar(document)['results']), ['ingest'])
 
     def test_companions_in_intake_are_not_documents(self):
-        document = self.make_document(f'{STAMP}.txt')
-        transcript = self.make(f'{STAMP}.txt.md', 'stale', self.intake)
+        document = self.make_document(f'{STAMP}.png')
+        transcript = self.make(f'{STAMP}.png.md', 'stale', self.intake)
         self.make('.hidden', where=self.intake)
         with patch(TRANSCRIBE, return_value='x') as t:
             self.run_command()
@@ -339,7 +339,7 @@ class TestTranscribeCommand(TranscribeTestCase):
                                   api_key=None)
         self.assertTrue(transcript.read_text().endswith('\nx\n'))
         self.assertEqual(self.intake_names(), [
-            '.hidden', f'{STAMP}.txt', f'{STAMP}.txt.md', f'{STAMP}.txt.yml'])
+            '.hidden', f'{STAMP}.png', f'{STAMP}.png.md', f'{STAMP}.png.yml'])
 
     def test_no_path_ingests_nothing(self):
         document = self.make_document(f'{STAMP}.pdf')
@@ -522,19 +522,19 @@ class TestTranscribeCommand(TranscribeTestCase):
 
     def test_failure_is_reported_and_run_carries_on(self):
         self.make('a.pdf')
-        self.make('b.zip')
+        self.make('b.png')
         self.make('c.pdf')
 
         def fake(path, **kwargs):
-            if path.suffix == '.zip':
+            if path.suffix == '.png':
                 raise APIError('unsupported')
             return 'x'
         with patch(TRANSCRIBE, side_effect=fake) as t:
             out, err, code = self.run_app(self.source)
         self.assertEqual(t.call_count, 3)
         self.assertEqual(code, 1)
-        failed = self.intake / '20261025-140307-043.zip'
-        self.assertIn(f"Failed to transcribe {self.source / 'b.zip'} "
+        failed = self.intake / '20261025-140307-043.png'
+        self.assertIn(f"Failed to transcribe {self.source / 'b.png'} "
                       f"(now {failed}): Transcription failed: unsupported",
                       err)
         self.assertIn('1 of 3 files failed to transcribe', err)
@@ -720,17 +720,17 @@ class TestTranscribeThroughSymlink(TranscribeTestCase):
 
     def test_failure_names_source_and_intake_as_given(self):
         self.make('a.pdf')
-        self.make('b.zip')
+        self.make('b.png')
 
         def fake(path, **kwargs):
-            if path.suffix == '.zip':
+            if path.suffix == '.png':
                 raise APIError('unsupported')
             return 'x'
         with patch(TRANSCRIBE, side_effect=fake):
             out, err, code = self.run_app(self.source)
         self.assertEqual(code, 1)
-        failed = self.intake / '20261025-140307-043.zip'
-        self.assertIn(f"Failed to transcribe {self.source / 'b.zip'} "
+        failed = self.intake / '20261025-140307-043.png'
+        self.assertIn(f"Failed to transcribe {self.source / 'b.png'} "
                       f"(now {failed}): Transcription failed: unsupported",
                       err)
         self.assertEqual(out.strip(), str(self.intake / f'{STAMP}.pdf.md'))
@@ -906,3 +906,127 @@ class TestTranscribeSettings(TranscribeTestCase):
                 self.file, config_text=f"filez4eva:\n  intake: {other}\n")
         self.assertEqual(code, 0)
         self.assertEqual(out.strip(), str(other / f'{STAMP}.pdf.md'))
+
+
+SUPPORTED = ('transcribe supports .pdf, .png, .jpg, .jpeg, .gif, .webp '
+             'and UTF-8 text')
+
+
+class TestTextDocuments(TranscribeTestCase):
+    """A text document is its own transcript: no model call, no X.md, and
+    results.transcribe with raw: true. Other files the model can't
+    transcribe fail."""
+
+    def make_bytes(self, name, data, where=None):
+        path = (where or self.source) / name
+        path.write_bytes(data)
+        return path
+
+    def test_text_files_are_not_transcribed(self):
+        cases = [('notes.txt', 'Invoice 42\nTotal: 10\n'),
+                 ('readme.md', '---\ntitle: x\n---\n# Readme\n'),
+                 ('data.csv', 'a,b\n1,2\n'),
+                 ('data.json', '{"a": 1}\n'),
+                 ('conf.yaml', 'a: 1\n'),
+                 ('page.html', '<p>caf\u00e9</p>\n'),
+                 ('server.log', 'started\n'),
+                 ('NOTES', 'no extension\n'),
+                 ('empty.txt', '')]
+        for name, content in cases:
+            with self.subTest(name=name):
+                source = self.make(name, content)
+                with patch(TRANSCRIBE) as t:
+                    out, command, _ = self.run_command(source)
+                t.assert_not_called()
+                document = self.intake / (
+                    STAMP + ''.join(Path(name).suffixes))
+                self.assertEqual(out, str(document))
+                self.assertEqual(
+                    command.status,
+                    'Ingested 1 file | Not transcribed 1 file (text)')
+                self.assertFalse(Path(f'{document}.md').exists())
+                self.assertEqual(
+                    read_sidecar(document)['results']['transcribe'],
+                    {'at': AT, 'raw': True, 'length': len(content)})
+                for path in self.intake.iterdir():
+                    path.unlink()
+
+    def test_text_and_binary_counted_apart(self):
+        self.make('a.pdf')
+        self.make('b.txt', 'text')
+        with patch(TRANSCRIBE, return_value='x') as t:
+            out, command, _ = self.run_command(self.source)
+        t.assert_called_once()
+        self.assertEqual(out.splitlines(), [
+            str(self.intake / f'{STAMP}.pdf.md'),
+            str(self.intake / '20261025-140307-043.txt')])
+        self.assertEqual(command.status,
+                         'Ingested 2 files | Transcribed 1 file | '
+                         'Not transcribed 1 file (text)')
+
+    def test_text_document_is_done_once(self):
+        self.make_document(f'{STAMP}.txt', content='hello')
+        with patch(TRANSCRIBE) as t:
+            self.run_command()
+            _, command, _ = self.run_command()
+        t.assert_not_called()
+        self.assertEqual(command.status,
+                         'Nothing to transcribe (1 file already transcribed)')
+
+    def test_stale_transcript_of_text_document_is_left_alone(self):
+        document = self.make_document(f'{STAMP}.txt', content='hello')
+        stale = self.make(f'{STAMP}.txt.md', 'stale', self.intake)
+        with patch(TRANSCRIBE) as t:
+            out, _, _ = self.run_command()
+        t.assert_not_called()
+        self.assertEqual(out, str(document))
+        self.assertEqual(stale.read_text(), 'stale')
+        self.assertNotIn('transcript',
+                         read_sidecar(document)['results']['transcribe'])
+
+    def test_binary_types_go_to_the_model_whatever_the_content(self):
+        for name in ['a.PDF', 'b.png', 'c.jpg', 'd.jpeg', 'e.gif', 'f.WEBP']:
+            self.make(name, 'decodes as text')
+        with patch(TRANSCRIBE, return_value='x') as t:
+            _, command, _ = self.run_command(self.source)
+        self.assertEqual(t.call_count, 6)
+        self.assertEqual(command.status,
+                         'Ingested 6 files | Transcribed 6 files')
+
+    def test_unsupported_binary_files_fail(self):
+        cases = [('blob.bin', b'\x00\x01\x02', '.bin'),
+                 ('report.docx', b'PK\x03\x04\x14\x00\x00\x00', '.docx'),
+                 ('photo.heic', b'\x00\x00\x00\x18ftypheic', '.heic'),
+                 ('BLOB', b'abc\x00def', '(none)'),
+                 ('latin.txt', 'caf\u00e9'.encode('latin-1'), '.txt')]
+        for name, data, suffix in cases:
+            with self.subTest(name=name):
+                source = self.make_bytes(name, data)
+                with patch(TRANSCRIBE) as t:
+                    out, err, code = self.run_app(source)
+                t.assert_not_called()
+                self.assertEqual(code, 1)
+                self.assertIn(
+                    f'Unsupported file type {suffix}: {SUPPORTED}', err)
+                document = self.intake / (
+                    STAMP + ''.join(Path(name).suffixes))
+                self.assertEqual(list(read_sidecar(document)['results']),
+                                 ['ingest'])
+                self.assertFalse(Path(f'{document}.md').exists())
+                for path in self.intake.iterdir():
+                    path.unlink()
+
+    def test_transcribe_file_refuses_other_types(self):
+        source = self.make('notes.txt', 'hello')
+        with patch(TRANSCRIBE) as t, \
+                self.assertRaisesRegex(Filez4EvaError, SUPPORTED):
+            transcribe_file(source, DEFAULT_MODEL)
+        t.assert_not_called()
+        self.assertFalse(Path(f'{source}.md').exists())
+
+    def test_missing_document_is_a_failure(self):
+        document = self.make_document(f'{STAMP}.txt', content='hello')
+        command = TranscribeCommand(Filez4EvaApp())
+        document.unlink()
+        with self.assertRaisesRegex(Filez4EvaError, 'must exist'):
+            command.act(document)

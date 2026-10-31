@@ -194,6 +194,16 @@ def record_result(path: Path, stage: str, result: dict):
     write_sidecar(path, data)
 
 
+def status_label(label, count: int) -> str:
+    """A part of the status: a label and its count of files, e.g.
+    `Transcribed 2 files`. A label can also be a (label, note) pair, e.g.
+    ('Not transcribed', 'text') for `Not transcribed 1 file (text)`."""
+    if isinstance(label, tuple):
+        label, note = label
+        return f"{label} {files(count)} ({note})"
+    return f"{label} {files(count)}"
+
+
 def progress(path: Path) -> int:
     """The position in STAGES of the latest stage recorded for a document,
     or -1 if none is, or its sidecar can't be read (the run reports that
@@ -242,6 +252,14 @@ class StageCommand(Filez4EvaCommand):
 
     # Status label for documents the stage acted on
     done: str = None
+
+    # Other status labels act may count a document under instead of done
+    # (by setting outcome), in the order they appear in the status
+    outcomes: tuple = ()
+
+    # Set by act to count the document under one of outcomes; reset
+    # before each act
+    outcome = None
 
     # What the stage is doing, for the progress line on stderr before it
     # starts on a document (e.g. 'Transcribing')
@@ -637,9 +655,19 @@ class StageCommand(Filez4EvaCommand):
     def act(self, path: Path) -> str:  # pragma: no cover
         """Run the stage on an ingested document that hasn't had it yet,
         record results.<stage>, and return the line to print on stdout.
-        May raise NotDone to leave the document without the stage, or
-        StopRun to end the run."""
+        May set self.outcome to one of outcomes to count the document
+        under that label instead of done, raise NotDone to leave the
+        document without the stage, or StopRun to end the run."""
         raise NotImplementedError
+
+    def perform(self, command, path: Path) -> str:
+        """Run command's act on a document and count it in the status,
+        under the outcome act set, or command.done. Return act's line."""
+        command.outcome = None
+        line = command.act(path)
+        label = command.outcome or command.done
+        self.counts[label] = self.counts.get(label, 0) + 1
+        return line
 
     @property
     def already(self) -> str:
@@ -723,8 +751,7 @@ class StageCommand(Filez4EvaCommand):
                         self.counts[self.already] += 1
                 elif stage_result(current, self.stage) is None:
                     self.announce(transcriber.doing, current)
-                    line = transcriber.act(current)
-                    self.counts[transcriber.done] += 1
+                    line = self.perform(transcriber, current)
                     if transcriber is self:
                         lines.append(line)
             except (Filez4EvaError, OSError) as error:
@@ -786,12 +813,10 @@ class StageCommand(Filez4EvaCommand):
                 for command in missing:
                     if not command.heading:
                         self.announce(command.doing, current)
-                    command.act(current)
-                    self.counts[command.done] += 1
+                    self.perform(command, current)
                 if not self.heading:
                     self.announce(self.doing, current)
-                lines.append(self.act(current))
-                self.counts[self.done] += 1
+                lines.append(self.perform(self, current))
             except NotDone as outcome:
                 self.counts[outcome.label] = \
                     self.counts.get(outcome.label, 0) + 1
@@ -837,6 +862,8 @@ class StageCommand(Filez4EvaCommand):
             if command.stage == CLASSIFY:
                 self.counts[GIVEN_DONE] = 0
             self.counts[command.done] = 0
+            for label in command.outcomes:
+                self.counts[label] = 0
         self.counts[self.already] = 0
         # Skipped documents, by the earlier stage they lack
         self.skipped = {}
@@ -858,7 +885,7 @@ class StageCommand(Filez4EvaCommand):
                 print('\n'.join(lines))
             raise Filez4EvaError(
                 f"{self.failed} of {files(len(todo))} failed to {self.name}")
-        labels = [f"{label} {files(count)}"
+        labels = [status_label(label, count)
                   for label, count in self.counts.items() if count]
         labels += [f"Skipped {files(count)} (not {reason})"
                    for reason, count in self.skipped.items()]

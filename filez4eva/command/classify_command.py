@@ -7,7 +7,7 @@ from kwark.ai import KwarkAIError, extract
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command import ingest_command
 from filez4eva.command.transcribe_command import (
-    TranscribeCommand, recorded_transcript, transcript_body)
+    TranscribeCommand, is_raw, recorded_transcript, transcript_body)
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import check_value, load_store, suggestions
 from filez4eva.progress import ai_progress
@@ -34,11 +34,15 @@ Classify the document below so it can be filed. Return:
 - summary: a one-line summary of the document"""
 
 # Told to the model when the document's original name and source come
-# before its transcript
-CONTEXT_NOTE = ("Before the transcript you are given the document's "
-                "original file name and where it came from (its source). "
-                "Use them as hints, but go by the transcript when they "
-                "disagree.")
+# before its transcript (or, for a text document, its own text)
+CONTEXT_NOTE = ("Before the document's transcript (or, for a text file, "
+                "its text) you are given its original file name and where "
+                "it came from (its source). Use them as hints, but go by "
+                "the transcript or text when they disagree.")
+
+# The most characters of a transcript, or of a text document, given to the
+# model; the rest is cut, with a note, to protect its context
+MAX_CLASSIFY_CHARS = 100_000
 
 # Fixed rules for the date, whatever its guidance says
 DATE_RULES = ("Give it as YYYYMMDD. If you can't determine the document's "
@@ -249,6 +253,29 @@ def read_transcript(transcript: Path) -> str:
     return text
 
 
+def read_raw(path: Path) -> str:
+    """Return a text document's own text, whole (it is its own transcript,
+    see is_raw). Raises Filez4EvaError if it can't be read as UTF-8 or is
+    empty."""
+    try:
+        text = path.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError) as err:
+        raise Filez4EvaError(
+            f"Could not read document {path}: {err}") from err
+    if not text.strip():
+        raise Filez4EvaError(f"Document {path} is empty")
+    return text
+
+
+def document_source(path: Path, results: dict) -> tuple:
+    """Return (text, raw) for a document: its own text if it is a text
+    document (results.transcribe has `raw: true`; any X.md is ignored),
+    otherwise its transcript X.md without front matter"""
+    if is_raw(results):
+        return read_raw(path), True
+    return read_transcript(recorded_transcript(path, results)), False
+
+
 def ask_model(text: str, schema: dict, instructions: str, model: str,
               api_key):
     """Call extract, turning a Kwark error into Filez4EvaError"""
@@ -280,10 +307,12 @@ def classify_text(text: str, cabinet: Cabinet, doctypes: dict, model: str,
     return checked
 
 
-def document_text(transcript: str, ingest: dict) -> str:
+def document_text(transcript: str, ingest: dict, raw: bool = False) -> str:
     """Return the text given to the model for a document in the intake: its
     original file name and source (from results.ingest), then its
-    transcript"""
+    transcript, or with raw, the document's own text (a text document).
+    Only the first MAX_CLASSIFY_CHARS characters of it are given; when
+    more are cut, its heading says so."""
     ingest = ingest if isinstance(ingest, dict) else {}
     lines = [f"Original file name: {ingest.get('original-name') or '(none)'}"]
     source = ingest.get('source')
@@ -294,7 +323,12 @@ def document_text(transcript: str, ingest: dict) -> str:
         lines.extend(f'  {line}' for line in dumped.splitlines())
     else:
         lines.append('Source: (none recorded)')
-    return '\n'.join(lines) + '\n\nTranscript:\n\n' + transcript
+    heading = 'Document text' if raw else 'Transcript'
+    if len(transcript) > MAX_CLASSIFY_CHARS:
+        heading += (f" (cut: only the first {MAX_CLASSIFY_CHARS:,} of "
+                    f"{len(transcript):,} characters are shown)")
+        transcript = transcript[:MAX_CLASSIFY_CHARS]
+    return '\n'.join(lines) + f'\n\n{heading}:\n\n' + transcript
 
 
 class ClassifyCommand(StageCommand):
@@ -310,11 +344,17 @@ class ClassifyCommand(StageCommand):
 
     name = 'classify'
     summary = 'have an AI model propose field values for each cabinet'
-    description = """
+    description = f"""
         Have an AI model propose a doctype, a summary and a value for each
         of the cabinet's fields for each document, and record them as
         results.classify in its X.yml sidecar. Prints each document's
         path.
+
+        The model is given the document's transcript X.md, or a text
+        document's own text (it has no transcript), with its original
+        name and source. Only the first {MAX_CLASSIFY_CHARS:,}
+        characters of the transcript or text are given; the model is told
+        when the rest is cut.
 
         The model never picks the cabinet (see Cabinet below). With
         several cabinets and no --cabinet, classify prompts for each
@@ -362,15 +402,15 @@ class ClassifyCommand(StageCommand):
 
     def act(self, path: Path) -> str:
         """Classify an ingested, transcribed document for its saved cabinet
-        from its transcript, original name and source, asking the model only
+        from its transcript (or, for a text document, its own text; see
+        document_source), original name and source, asking the model only
         for the fields not given for it (results.given.data), record
         results.classify (data: the given values and the model's), and
         return the document's path"""
         results = load_sidecar(path)['results']
         cabinet = self.document_cabinet(path, results)
-        transcript = recorded_transcript(path, results)
-        text = document_text(read_transcript(transcript),
-                             results.get('ingest'))
+        source, raw = document_source(path, results)
+        text = document_text(source, results.get('ingest'), raw)
         given = {name: value for name, value in given_values(results).items()
                  if cabinet.field(name) is not None}
         values = classify_text(text, cabinet, self.doctypes, self.model,
