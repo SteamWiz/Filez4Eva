@@ -98,7 +98,7 @@ class TestStowSelection(StowTestCase):
         e.assert_called_once()
         self.assertEqual(out, str(self.stowed))
         self.assertEqual(list(self.archived()), [
-            'ingest', 'transcribe', 'classify', 'review', 'stow'])
+            'ingest', 'transcribe', 'given', 'classify', 'review', 'stow'])
         self.assertEqual(
             command.status, 'Ingested 1 file | Transcribed 1 file | '
             'Classified 1 file | Reviewed 1 file | Stowed 1 file')
@@ -325,26 +325,34 @@ class TestStowing(StowTestCase):
         self.assertIn('royal-bank', load_store(self.target)['account'])
 
     def test_uses_reviewed_cabinet_not_classified_one(self):
+        # A sidecar from before results.given, whose cabinet was changed
+        # at review
         self.make_document(
-            classify=dict(CLASSIFY, cabinet='accounts'),
+            classify=dict(CLASSIFY, cabinet='accounts'), given=None,
             review={'at': AT, 'cabinet': 'memories', 'data': MEMORY})
-        out, _, _, _, _ = self.run_command(config=self.memories_cabinets())
+        out, _, _, _, _ = self.run_command(config=self.memories_cabinets(),
+                                           cabinet='memories')
         expected = self.memories / '2026' / 'grandma-bday' / \
             '20261002-cake.pdf'
         self.assertEqual(out, str(expected))
         self.assertTrue(expected.is_file())
         self.assertFalse((self.target / '2026').exists())
 
-    def test_cabinet_changed_at_review(self):
-        self.make_document(classify=dict(CLASSIFY, cabinet='accounts'))
-        out, _, _, _, _ = self.run_command(
+    def test_old_shape_sidecar_is_reviewed_and_stowed(self):
+        # Classified before results.given: the cabinet is in
+        # results.classify, and review doesn't ask for it
+        self.make_document(classify=dict(CLASSIFY, cabinet='memories'),
+                           given=None)
+        out, _, gt, e, _ = self.run_command(
             config=self.memories_cabinets(), keys='c',
-            answers=['memories', '20261002', 'grandma-bday', 'cake'])
+            answers=['20261002', 'grandma-bday', 'cake'])
+        e.assert_not_called()
+        self.assertNotIn('Cabinet: ', [p[0] for p in self.prompts(gt)])
         expected = self.memories / '2026' / 'grandma-bday' / \
             '20261002-cake.pdf'
         self.assertEqual(out, str(expected))
         self.assertEqual(self.archived()['review']['cabinet'], 'memories')
-        self.assertEqual(self.archived()['classify']['cabinet'], 'accounts')
+        self.assertEqual(self.archived()['classify']['cabinet'], 'memories')
 
     def test_hand_edited_number_is_used_as_text(self):
         self.make_document(review=dict(REVIEW, data=dict(
@@ -824,7 +832,7 @@ class TestStowInput(StowInputTestCase):
         e.assert_called_once()
         self.assertEqual(out, str(self.stowed))
         self.assertEqual(list(self.archived()), [
-            'ingest', 'transcribe', 'classify', 'review', 'stow'])
+            'ingest', 'transcribe', 'given', 'classify', 'review', 'stow'])
         self.assertNotIn('input', self.archived()['review'])
         self.assertEqual(command.status,
                          'Classified 1 file | Reviewed 1 file | '
@@ -864,12 +872,12 @@ class TestStowInputErrors(StowInputTestCase):
 
     def test_no_path_is_an_error(self):
         document = self.make_document()
-        for vals in [FLAGS, {'cabinet': 'default'}, {'stdin': STDIN}]:
+        for vals in [FLAGS, {'stdin': STDIN}]:
             with self.subTest(vals=vals):
                 with self.assertRaisesRegex(
                         Filez4EvaError,
-                        r'Input data \(--cabinet, --date, --field or a '
-                        r'record on stdin\) needs a single document: one '
+                        r'Input data \(--date, --field or a record on '
+                        r'stdin\) needs a single document: one '
                         'new file, or one --ingested NAME, not every '
                         'document in the intake'):
                     self.run_command(**vals)
@@ -952,3 +960,109 @@ class TestStowInputCommandLine(StowInputTestCase):
                                '-f', 'account=amazon', debug=True)
         e.assert_not_called()
         self.assert_stowed_with_input()
+
+
+class TestStowCabinet(StowTestCase):
+    """#72: --cabinet on stow gives the cabinet of documents that have none
+    saved, and is checked against the saved one"""
+
+    def test_cabinet_alone_is_not_input_data(self):
+        source = self.make('Scan 1.PDF')
+        out, command, gt, e, t = self.run_command(
+            source, config=self.memories_cabinets(), cabinet='accounts',
+            keys='c', answers=ANSWERS)
+        t.assert_called_once()
+        e.assert_called_once()
+        self.assertNotIn('Cabinet: ', [p[0] for p in self.prompts(gt)])
+        self.assertEqual(out, str(self.stowed))
+        results = self.archived()
+        self.assertEqual(results['given'], {'at': AT, 'cabinet': 'accounts'})
+        self.assertNotIn('input', results['review'])
+        self.assertEqual(
+            command.status, 'Ingested 1 file | Transcribed 1 file | '
+            'Classified 1 file | Reviewed 1 file | Stowed 1 file')
+
+    def test_prompt_before_classify_then_review_and_stow(self):
+        source = self.make('Scan 1.PDF')
+        out, _, gt, e, _ = self.run_command(
+            source, config=self.memories_cabinets(), keys='c',
+            answers=['accounts'] + ANSWERS)
+        self.assertEqual(self.prompts(gt)[0],
+                         ('Cabinet: ', ['accounts', 'memories']))
+        self.assertEqual([p[0] for p in self.prompts(gt)[1:]],
+                         ['Date: ', 'Account: ', 'Part: '])
+        self.assertEqual(out, str(self.stowed))
+
+    def test_classify_then_stow_with_another_cabinet(self):
+        # classify -c accounts, then stow -c memories with no path
+        first = self.make_document(classify=None)
+        self.run_classify(config=self.memories_cabinets(), cabinet='accounts')
+        self.assertEqual(self.results(first)['given']['cabinet'], 'accounts')
+        second = self.make_document(f'{SECOND}.pdf', classify=None)
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    '1 of 2 files failed to stow'):
+            self.run_command(
+                config=self.memories_cabinets(), cabinet='memories',
+                keys='c', answers=['20261002', 'grandma-bday', 'cake'],
+                result={'data': MEMORY, 'doctype': 'other',
+                        'summary': 'Cake'})
+        self.assertIn(f'Failed to stow {first}: Cabinet memories given, but '
+                      f'{first.name} already has cabinet accounts', self.err)
+        self.assertTrue(first.is_file())
+        self.assertNotIn('review', self.results(first))
+        self.assertEqual(self.archived(f'{SECOND}.pdf')['given']['cabinet'],
+                         'memories')
+        self.assertFalse(second.exists())
+        # The same cabinet is fine
+        out, command, _, _, _ = self.run_command(
+            config=self.memories_cabinets(), cabinet='accounts', keys='c',
+            answers=ANSWERS)
+        self.assertEqual(out, str(self.stowed))
+
+    def test_conflict_with_a_reviewed_document(self):
+        document = self.make_document(review=REVIEW)
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file failed'):
+            self.run_command(config=self.memories_cabinets(),
+                             cabinet='memories')
+        self.assertIn('already has cabinet default', self.err)
+        self.assertTrue(document.is_file())
+
+    def test_unknown_cabinet_touches_nothing(self):
+        source = self.make('scan.pdf')
+        document = self.make_document()
+        before = Path(f'{document}.yml').read_text()
+        for path in [source, None]:
+            with self.subTest(path=path), \
+                    self.assertRaisesRegex(Filez4EvaError,
+                                           'Unknown cabinet nope'):
+                self.run_command(path, cabinet='nope')
+        self.assertTrue(source.is_file())
+        self.assertEqual(Path(f'{document}.yml').read_text(), before)
+
+    def test_input_data_uses_the_saved_cabinet(self):
+        document = self.make_document(classify=None, given=None)
+        data = yaml.safe_load(Path(f'{document}.yml').read_text())
+        data['results']['given'] = {'at': AT, 'cabinet': 'memories'}
+        Path(f'{document}.yml').write_text(yaml.safe_dump(data))
+        out, _, gt, _, _ = self.run_command(
+            config=self.memories_cabinets(), ingested=[document.name],
+            date='20261002', field=['event=grandma-bday', 'part=cake'])
+        gt.assert_not_called()
+        self.assertEqual(self.archived()['review'], {
+            'at': AT, 'input': True, 'cabinet': 'memories', 'data': MEMORY})
+        self.assertTrue(Path(out).is_file())
+
+    def test_input_data_with_a_conflicting_cabinet(self):
+        document = self.make_document(given='accounts')
+        for vals in [{'cabinet': 'memories'},
+                     {'stdin': 'cabinet: memories\n'}]:
+            with self.subTest(vals=vals), \
+                    self.assertRaisesRegex(
+                        Filez4EvaError, 'Cabinet memories given, but '
+                        f'{document.name} already has cabinet accounts'):
+                self.run_command(
+                    config=self.memories_cabinets(), ingested=[document.name],
+                    date='20261002',
+                    field=['event=grandma-bday', 'part=cake'], **vals)
+        self.assertTrue(document.is_file())
+        self.assertNotIn('review', self.results(document))

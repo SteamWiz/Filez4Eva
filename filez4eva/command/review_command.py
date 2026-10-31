@@ -15,42 +15,48 @@ from filez4eva.command.transcribe_command import (
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import Field
 from filez4eva.stage import (
-    NotDone, StageCommand, StopRun, load_sidecar, record_result)
+    NotDone, StageCommand, StopRun, load_sidecar, record_result,
+    saved_cabinet)
 from filez4eva.stow import Stower
 
 
 def proposal(results: dict) -> dict:
-    """Return results.classify from a document's results, checked: a
-    mapping with a cabinet name and data. Raises Filez4EvaError if it can't
-    be used."""
+    """Return results.classify from a document's results, checked, with
+    the document's saved cabinet (see saved_cabinet; for sidecars from
+    before results.given, the cabinet in results.classify). Raises
+    Filez4EvaError if it can't be used."""
     classify = results.get('classify')
     if not isinstance(classify, dict):
         raise Filez4EvaError("results.classify must be a mapping")
-    cabinet = classify.get('cabinet')
-    if not isinstance(cabinet, str) or not cabinet.strip():
-        raise Filez4EvaError("results.classify has no cabinet")
+    cabinet = saved_cabinet(results)
+    if cabinet is None:
+        raise Filez4EvaError("No cabinet saved (results.given)")
     data = classify.get('data')
     if data is None:
         data = {}
     if not isinstance(data, dict):
         raise Filez4EvaError("results.classify data must be a mapping")
-    return dict(classify, cabinet=cabinet.strip(), data=data)
+    return dict(classify, cabinet=cabinet, data=data)
 
 
 class ReviewCommand(StageCommand):
     """Show the proposed record of new files (ingesting them first), the
     documents already in the intake, or the ones named with --ingested, to
-    confirm or edit, transcribing and classifying them first if needed.
-    Records results.review (cabinet and data) in each document's X.yml.
+    confirm or edit, transcribing and classifying them first if needed
+    (choosing each one's cabinet before it is classified). Records
+    results.review (the saved cabinet and data) in each document's X.yml.
     Never stows."""
 
     name = 'review'
     summary = 'confirm or edit the proposed records'
     description = """
         Show each classified document's proposed record, then confirm (or
-        edit), skip, preview, delete or quit (which ends the run). A
-        confirmed record is saved as results.review in the document's X.yml
-        sidecar. Nothing is stowed. Prints each reviewed document's
+        edit the field values), skip, preview, delete or quit (which ends
+        the run). A confirmed record is saved as results.review in the
+        document's X.yml sidecar, with the cabinet saved for the document;
+        review doesn't change the cabinet. A document not classified yet
+        is classified first, after its cabinet is chosen (see Cabinet
+        below). Nothing is stowed. Prints each reviewed document's
         path."""
     stage = 'review'
     done = 'Reviewed'
@@ -75,7 +81,6 @@ class ReviewCommand(StageCommand):
         for key in ['summary', 'doctype']:
             if proposed.get(key):
                 self.app.ui.send(f"{key.capitalize()}: {proposed[key]}")
-        self.app.ui.send(f"Cabinet: {proposed['cabinet']}")
         for name, value in proposed['data'].items():
             label = Field(str(name)).label
             self.app.ui.send(
@@ -100,10 +105,10 @@ class ReviewCommand(StageCommand):
         sidecar_path(path).unlink(missing_ok=True)
 
     def confirm(self, proposed: dict) -> dict:
-        """Confirm the proposed record at pre-filled prompts, letting the
-        operator change the cabinet when there are several. Return
-        results.review: the confirmed cabinet, and data with a value for
-        each of its fields (date included), in pattern order."""
+        """Confirm the proposed record at pre-filled prompts, one for each
+        field of the document's saved cabinet. Return results.review: that
+        cabinet, and data with a value for each of its fields (date
+        included), in pattern order."""
         stow = Stower(self.app, use_stdin=False)
         values = stow.confirm_values(proposed['cabinet'], proposed['data'])
         cabinet = stow.cabinets[values['cabinet']]

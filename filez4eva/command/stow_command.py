@@ -11,8 +11,9 @@ from filez4eva.command.review_command import ReviewCommand
 from filez4eva.command.transcribe_command import TranscribeCommand
 from filez4eva.error import Filez4EvaError
 from filez4eva.stage import (
-    StageCommand, find_ingested, load_sidecar, record_result, resolve_path)
-from filez4eva.stow import Stower, load_cabinets, stdin_null
+    StageCommand, find_ingested, load_sidecar, record_result, resolve_path,
+    saved_cabinet)
+from filez4eva.stow import Stower, stdin_null
 
 
 def confirmed(results: dict, cabinets: dict) -> dict:
@@ -51,11 +52,13 @@ class StowCommand(StageCommand):
     transcript move to the cabinet chosen at review, results.stow is
     recorded, and X.yml moves to <intake>/archive/.
 
-    With input data (--cabinet, --date, --field NAME=VALUE, or a record on
-    stdin) for a single document (one new file, or one --ingested NAME),
-    classify and review are skipped: missing values are prompted for, the
-    record is saved as results.review with `input: true`, and the file is
-    stowed with it."""
+    With input data (--date, --field NAME=VALUE, or a record on stdin) for
+    a single document (one new file, or one --ingested NAME), classify and
+    review are skipped: --cabinet (or the cabinet saved for the document)
+    names the record's cabinet, missing values are prompted for, the record
+    is saved as results.review with `input: true`, and the file is stowed
+    with it. --cabinet alone is not input data: it gives the cabinet of
+    documents that have none saved yet, as for classify."""
 
     name = 'stow'
     summary = 'move confirmed documents into their cabinets'
@@ -66,12 +69,16 @@ class StowCommand(StageCommand):
         is classified and reviewed first where needed, and stowed as soon
         as it's confirmed. Prints each destination.
 
-        Main use: `filez4eva classify ~/Scans`, then `filez4eva stow`.
+        Main use: `filez4eva classify -c NAME ~/Scans`, then
+        `filez4eva stow`.
 
-        Input data (--cabinet, --date, --field, or a YAML record on stdin
-        with `cabinet` and the fields under `data`) stows a single document
-        (one new file, or one --ingested NAME) with that record instead of
-        classifying and reviewing it. Anything missing is prompted for."""
+        Input data (--date, --field, or a YAML record on stdin with
+        `cabinet` and the fields under `data`) stows a single document (one
+        new file, or one --ingested NAME) with that record instead of
+        classifying and reviewing it. With input data, --cabinet names the
+        record's cabinet (default: the cabinet saved for the document).
+        Anything missing is prompted for. --cabinet on its own is not input
+        data."""
     stage = 'stow'
     done = 'Stowed'
     requires = (TranscribeCommand, ClassifyCommand, ReviewCommand)
@@ -80,7 +87,6 @@ class StowCommand(StageCommand):
     date: str = None
     # NAME=VALUE strings from repeated --field flags
     field: list = None
-    cabinet: str = None
 
     # The supplied record, once checked: the cabinet name and data (every
     # field of the cabinet, date included). None without input data.
@@ -95,23 +101,19 @@ class StowCommand(StageCommand):
                             metavar='NAME=VALUE',
                             help='input data: the value of a field '
                             '(repeatable)')
-        parser.add_argument('--cabinet', '-c',
-                            help='input data: the cabinet to stow into')
 
     def handle_vals(self):
         super().handle_vals()
-        # Check the cabinets before any file is touched
-        self.cabinets = load_cabinets(self.app.config)
         if self.input_supplied():
             self.input_record = self.read_input()
             # The supplied record stands in for classify and review
             self.requires = (TranscribeCommand,)
 
     def input_supplied(self) -> bool:
-        """True if input data is supplied: any of --cabinet, --date or
-        --field, or a record on stdin with a cabinet or data. Empty,
-        malformed or non-mapping stdin is no input."""
-        if any(self.provided(name) for name in ['cabinet', 'date', 'field']):
+        """True if input data is supplied: --date or --field, or a record
+        on stdin with a cabinet or data. --cabinet alone is not input data.
+        Empty, malformed or non-mapping stdin is no input."""
+        if any(self.provided(name) for name in ['date', 'field']):
             return True
         record = self.stdin_mapping()
         return not (stdin_null(record.get('cabinet'))
@@ -123,31 +125,41 @@ class StowCommand(StageCommand):
         any file is touched. Return the cabinet name and data (every field
         of the cabinet, date included, in pattern order). Raises
         Filez4EvaError unless the run is on a single document (one new file
-        given as the path, or one --ingested document), or if a value is
-        invalid."""
-        rule = ("Input data (--cabinet, --date, --field or a record on "
-                "stdin) needs a single document: one new file, or one "
-                "--ingested NAME")
+        given as the path, or one --ingested document), if a value is
+        invalid, or if the record's cabinet differs from the one saved for
+        an --ingested document. With no cabinet given (--cabinet or stdin),
+        the cabinet saved for the document is used."""
+        rule = ("Input data (--date, --field or a record on stdin) needs a "
+                "single document: one new file, or one --ingested NAME")
+        saved = None
         intake = intake_dir(self.app.config)
         if self.ingested:
             names = {find_ingested(name, intake) for name in self.ingested}
             if len(names) > 1:
                 raise Filez4EvaError(f"{rule}, not several")
             path = names.pop()
+            saved = saved_cabinet(load_sidecar(path)['results'])
         elif not self.path:
             raise Filez4EvaError(f"{rule}, not every document in the intake")
         else:
             path = resolve_path(self.path, intake)
             if path.is_dir():
                 raise Filez4EvaError(f"{rule}, not a directory: {path}")
+        cabinet = self.cabinet
+        if not cabinet and stdin_null(self.stdin_mapping().get('cabinet')):
+            cabinet = saved
         stower = Stower(self.app, use_stdin=True, file=str(path),
-                        cabinet=self.cabinet, date=self.date,
-                        field=self.field)
+                        cabinet=cabinet, date=self.date, field=self.field)
         stower.read_values()
+        name = stower.resolve_cabinet().name
+        if saved is not None and name != saved:
+            raise Filez4EvaError(
+                f"Cabinet {name} given, but {path.name} already has "
+                f"cabinet {saved}")
         # Check every value (the date included) against the cabinet now,
         # so a bad one fails before anything moves
         data = stower.field_values()
-        return {'cabinet': stower.resolve_cabinet().name, 'data': data}
+        return {'cabinet': name, 'data': data}
 
     def stower(self, path: Path, review: dict) -> Stower:
         """A Stower for the document, with the reviewed cabinet, date and
