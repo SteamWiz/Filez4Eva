@@ -316,10 +316,11 @@ def document_text(transcript: str, ingest: dict) -> str:
 
 
 class ClassifyCommand(StageCommand):
-    """Classify a file, the files in a directory, or the documents in the
-    intake with Claude, ingesting and transcribing them first if needed.
-    Records results.classify (cabinet, doctype, summary and field values)
-    in each document's X.yml. Never prompts."""
+    """Classify new files (ingesting them first), the documents already in
+    the intake, or the ones named with --ingested, with Claude,
+    transcribing them first if needed. Records results.classify (cabinet,
+    doctype, summary and field values) in each document's X.yml. Never
+    prompts."""
 
     name = 'classify'
     summary = 'have an AI model propose a cabinet and field values'
@@ -327,9 +328,8 @@ class ClassifyCommand(StageCommand):
         Have an AI model propose a cabinet, a doctype, a summary and a value
         for each of the cabinet's fields for each document, and record them
         as results.classify in its X.yml sidecar. Never prompts, so it can
-        run unattended. Files are ingested and transcribed first where
-        needed. With several cabinets and no --cabinet, the model picks the
-        cabinet. Prints each document's path.
+        run unattended. With several cabinets and no --cabinet, the model
+        picks the cabinet. Prints each document's path.
 
         Main use: `filez4eva classify ~/Scans`, then `filez4eva stow`."""
     stage = 'classify'

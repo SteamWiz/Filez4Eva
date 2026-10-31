@@ -130,9 +130,9 @@ def transcribe_file(path: Path, model: str, api_key=None) -> tuple:
 
 
 class TranscribeCommand(StageCommand):
-    """Transcribe a file, the files in a directory, or the documents in the
-    intake to Markdown with Claude, ingesting them first if needed. Writes
-    X.md next to each document X in the intake and records
+    """Transcribe new files (ingesting them first), the documents already in
+    the intake, or the ones named with --ingested, to Markdown with Claude.
+    Writes X.md next to each document X in the intake and records
     results.transcribe in X.yml."""
 
     name = 'transcribe'
@@ -140,8 +140,7 @@ class TranscribeCommand(StageCommand):
     description = """
         Transcribe documents to Markdown with an AI model, writing X.md next
         to each document X in the intake and recording results.transcribe
-        in its X.yml sidecar. Files not in the intake yet are ingested
-        first. Prints each transcript's path."""
+        in its X.yml sidecar. Prints each transcript's path."""
     stage = 'transcribe'
     done = 'Transcribed'
 

@@ -215,11 +215,11 @@ class TestReviewSelection(ReviewTestCase):
         self.assertEqual(command.status,
                          'Classified 1 file | Reviewed 1 file')
 
-    def test_document_given_as_file(self):
+    def test_document_given_with_ingested(self):
         document = self.make_document()
         self.make_document(f'{SECOND}.pdf')
-        out, command, _, _, _ = self.run_command(document, keys='c',
-                                                 answers=ANSWERS)
+        out, command, _, _, _ = self.run_command(
+            keys='c', answers=ANSWERS, ingested=[document.name])
         self.assertEqual(out, str(document))
         self.assertNotIn('review', self.results(self.intake /
                                                 f'{SECOND}.pdf'))
@@ -234,7 +234,19 @@ class TestReviewSelection(ReviewTestCase):
     def test_empty_directory(self):
         out, command, _, _, _ = self.run_command(self.source)
         self.assertEqual(out, '')
-        self.assertEqual(command.status, 'No files to review')
+        self.assertEqual(command.status,
+                         f'Nothing to review: no files in {self.source}')
+
+    def test_everything_already_reviewed(self):
+        review = {'at': AT, 'cabinet': 'default', 'data': DATA}
+        self.make_document(review=review)
+        self.make_document(f'{SECOND}.pdf', review=review)
+        out, command, _, e, t = self.run_command()
+        e.assert_not_called()
+        t.assert_not_called()
+        self.assertEqual(out, '')
+        self.assertEqual(command.status,
+                         'Nothing to review (2 files already reviewed)')
 
 
 class TestReviewConfirm(ReviewTestCase):
@@ -449,9 +461,10 @@ class TestReviewOnly(ReviewTestCase):
         self.assertTrue(source.is_file())
         self.assertIn('not transcribed yet', self.err)
         self.assertIn('not classified yet', self.err)
+        # The most advanced first: classified, transcribed, ingested
         self.assertEqual(
             command.status, 'Reviewed 1 file | Skipped 1 file (not '
-            'transcribed) | Skipped 1 file (not classified)')
+            'classified) | Skipped 1 file (not transcribed)')
 
     def test_only_skips_files_not_ingested(self):
         source = self.make('scan.pdf')

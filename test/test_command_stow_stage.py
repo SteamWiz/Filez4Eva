@@ -8,9 +8,13 @@ import yaml
 
 from filez4eva import Filez4EvaApp
 from filez4eva.command.classify_command import ClassifyCommand
+from filez4eva.command.review_command import ReviewCommand
 from filez4eva.command.stow_command import StowCommand
+from filez4eva.command.transcribe_command import TranscribeCommand
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import load_store
+
+from kwark.ai import APIError
 
 from test.test_command_review import (
     ANSWERS, AT, CLASSIFY, DATA, EXTRACT, PATTERN, SECOND, STAMP,
@@ -20,6 +24,17 @@ from test.test_command_review import (
 REVIEW = {'at': AT, 'cabinet': 'default', 'data': DATA}
 
 MEMORY = {'date': '20261002', 'event': 'grandma-bday', 'part': 'cake'}
+
+
+def recording(calls: list, command_class):
+    """Patch a stage command's act to note (stage, document name) in calls
+    before running it"""
+    original = command_class.act
+
+    def act(self, path):
+        calls.append((command_class.stage, Path(path).name))
+        return original(self, path)
+    return patch.object(command_class, 'act', act)
 
 
 class StowTestCase(ReviewTestCase):
@@ -104,13 +119,35 @@ class TestStowSelection(StowTestCase):
         self.assertEqual(sorted(p.name for p in self.archive.iterdir()),
                          [f'{STAMP}.pdf.yml', f'{SECOND}.pdf.yml'])
 
-    def test_document_given_as_file(self):
+    def test_document_given_with_ingested(self):
         document = self.make_document(review=REVIEW)
         other = self.make_document(f'{SECOND}.pdf', review=REVIEW)
-        out, _, _, _, _ = self.run_command(document)
+        out, _, _, _, _ = self.run_command(ingested=[document.name])
         self.assertEqual(out, str(self.stowed))
         self.assertTrue(other.is_file())
         self.assertNotIn('stow', self.results(other))
+
+    def run_app(self, *args):
+        """Run stow via the app with a configuration file; return (stdout,
+        stderr, exit code)"""
+        config = self.dir / 'config.yml'
+        config.write_text(yaml.safe_dump({'filez4eva': {
+            'intake': str(self.intake), 'target': str(self.target),
+            'pattern': PATTERN}}))
+        code = 0
+        with patch(TRANSCRIBE) as t, patch(EXTRACT) as e, \
+                self.patch_stream(''), self.patchout() as o, \
+                self.patcherr() as err:
+            try:
+                Filez4EvaApp.start('--config', str(config), 'stow',
+                                   *[str(a) for a in args])
+            except SystemExit as exit:
+                code = exit.code
+            o.seek(0)
+            err.seek(0)
+            t.assert_not_called()
+            e.assert_not_called()
+            return o.read(), err.read(), code
 
     def test_reviewed_document_is_not_offered(self):
         self.make_document(review=REVIEW)
@@ -150,14 +187,101 @@ class TestStowSelection(StowTestCase):
     def test_empty_directory(self):
         out, command, _, _, _ = self.run_command(self.source)
         self.assertEqual(out, '')
-        self.assertEqual(command.status, 'No files to stow')
+        self.assertEqual(command.status,
+                         f'Nothing to stow: no files in {self.source}')
 
     def test_archive_is_never_a_document(self):
         self.make('old.pdf', where=self.archive)
         out, command, _, _, _ = self.run_command()
-        self.assertEqual(command.status, 'No files to stow')
-        with self.assertRaisesRegex(Filez4EvaError, 'subdirectory'):
+        self.assertEqual(command.status,
+                         'Nothing to stow: the intake is empty')
+        with self.assertRaisesRegex(Filez4EvaError, 'in the intake'):
             self.run_command(self.archive)
+
+    def test_no_path_ingests_nothing(self):
+        self.make_document(review=REVIEW)
+        stray = self.make('stray.pdf', where=self.intake)
+        source = self.make('new.pdf')
+        out, command, _, _, t = self.run_command()
+        t.assert_not_called()
+        self.assertEqual(out, str(self.stowed))
+        self.assertEqual(command.status, 'Stowed 1 file')
+        self.assertIn(f'Not ingested: {stray}', self.err)
+        self.assertTrue(stray.is_file())
+        self.assertTrue(source.is_file())
+        self.assertEqual(self.intake_names(), ['archive', 'stray.pdf'])
+
+    def test_path_run_leaves_intake_documents_alone(self):
+        reviewed = self.make_document(review=REVIEW)
+        transcribed = self.make_document(f'{SECOND}.pdf', classify=None,
+                                         transcript=None)
+        self.make('new.pdf', content='new')
+        out, command, _, e, t = self.run_command(
+            self.source, keys='c',
+            answers=['20261003', 'amazon', 'receipt'])
+        new = '20261025-140307-044.pdf'
+        self.assertEqual(out, str(self.target / '2026' / 'amazon' /
+                                  '20261003-receipt.pdf'))
+        t.assert_called_once()
+        self.assertEqual(t.call_args.args[0].name, new)
+        e.assert_called_once()
+        self.assertEqual(command.status,
+                         'Ingested 1 file | Transcribed 1 file | '
+                         'Classified 1 file | Reviewed 1 file | '
+                         'Stowed 1 file')
+        self.assertTrue(reviewed.is_file())
+        self.assertNotIn('stow', self.results(reviewed))
+        self.assertEqual(list(self.results(transcribed)), ['ingest'])
+
+    def test_path_in_intake_is_an_error(self):
+        document = self.make_document(review=REVIEW)
+        out, err, code = self.run_app(document)
+        self.assertEqual(code, 1)
+        self.assertIn(f'{document} is in the intake', err)
+        self.assertIn('--ingested NAME', err)
+        self.assertTrue(document.is_file())
+        self.assertFalse(self.stowed.exists())
+
+    def test_ingested_with_path_is_an_error(self):
+        document = self.make_document(review=REVIEW)
+        source = self.make('a.pdf')
+        out, err, code = self.run_app('--ingested', document.name, source)
+        self.assertEqual(code, 1)
+        self.assertIn("can't be combined with a path", err)
+        self.assertTrue(document.is_file())
+        self.assertTrue(source.is_file())
+
+    def test_ingested_two_documents(self):
+        first = self.make_document(review=REVIEW)
+        second = self.make_document(f'{SECOND}.pdf', classify=None,
+                                    transcript=None)
+        other = self.make_document('20261025-140307-044.pdf',
+                                   review=dict(REVIEW, data=dict(
+                                       DATA, date='20261005')))
+        calls = []
+        with recording(calls, TranscribeCommand), \
+                recording(calls, ClassifyCommand), \
+                recording(calls, ReviewCommand), \
+                recording(calls, StowCommand):
+            out, command, _, _, _ = self.run_command(
+                keys='c', answers=['20261003', 'amazon', 'receipt'],
+                ingested=[second.name, str(first)])
+        # In the order given, transcription first
+        self.assertEqual(calls, [
+            ('transcribe', second.name), ('classify', second.name),
+            ('review', second.name), ('stow', second.name),
+            ('stow', first.name)])
+        self.assertEqual(out.splitlines(), [
+            str(self.target / '2026' / 'amazon' / '20261003-receipt.pdf'),
+            str(self.stowed)])
+        self.assertTrue(other.is_file())
+        self.assertNotIn('stow', self.results(other))
+
+    def test_nothing_to_stow_from_app(self):
+        out, err, code = self.run_app()
+        self.assertEqual(code, 0)
+        self.assertEqual(out, '')
+        self.assertEqual(err, 'Nothing to stow: the intake is empty\n')
 
 
 class TestStowing(StowTestCase):
@@ -379,6 +503,114 @@ class TestStowMenu(StowTestCase):
         self.assertEqual(out, str(self.stowed))
 
 
+class TestStowOrder(StowTestCase):
+    """The transcribe batch, then one document at a time, the most advanced
+    first"""
+
+    def test_every_transcription_before_the_first_classification(self):
+        self.make('a.pdf')
+        self.make('b.pdf', content='second')
+        self.make('c.pdf', content='third')
+        calls = []
+        with recording(calls, TranscribeCommand), \
+                recording(calls, ClassifyCommand), \
+                recording(calls, ReviewCommand), \
+                recording(calls, StowCommand):
+            self.run_command(
+                self.source, keys='ccc',
+                answers=ANSWERS + ['20261003', 'amazon', 'receipt']
+                + ['20261004', 'amazon', 'receipt'])
+        third = '20261025-140307-044.pdf'
+        documents = [f'{STAMP}.pdf', f'{SECOND}.pdf', third]
+        self.assertEqual(calls, [('transcribe', d) for d in documents] + [
+            (stage, d) for d in documents
+            for stage in ['classify', 'review', 'stow']])
+
+    def test_most_advanced_first(self):
+        transcribed = self.make_document(classify=None)
+        classified = self.make_document(f'{SECOND}.pdf')
+        reviewed = self.make_document(
+            '20261025-140307-044.pdf',
+            review=dict(REVIEW, data=dict(DATA, date='20261005')))
+        ingested = self.make_document('20261025-140307-045.pdf',
+                                      classify=None, transcript=None)
+        calls = []
+        with recording(calls, TranscribeCommand), \
+                recording(calls, ClassifyCommand), \
+                recording(calls, ReviewCommand), \
+                recording(calls, StowCommand):
+            _, command, _, _, _ = self.run_command(
+                keys='ccc',
+                answers=['20261003', 'amazon', 'receipt'] + ANSWERS
+                + ['20261006', 'amazon', 'receipt'])
+        self.assertEqual(calls, [
+            ('transcribe', ingested.name),
+            ('stow', reviewed.name),
+            ('review', classified.name), ('stow', classified.name),
+            # Both transcribed by now: name order
+            ('classify', transcribed.name), ('review', transcribed.name),
+            ('stow', transcribed.name),
+            ('classify', ingested.name), ('review', ingested.name),
+            ('stow', ingested.name)])
+        self.assertEqual(command.status,
+                         'Transcribed 1 file | Classified 2 files | '
+                         'Reviewed 3 files | Stowed 4 files')
+
+    def test_only_transcribes_nothing(self):
+        reviewed = self.make_document(review=REVIEW)
+        untranscribed = self.make_document(f'{SECOND}.pdf', classify=None,
+                                           transcript=None)
+        out, command, gt, e, t = self.run_command(only=True)
+        t.assert_not_called()
+        e.assert_not_called()
+        gt.assert_not_called()
+        self.assertEqual(out, str(self.stowed))
+        self.assertFalse(reviewed.exists())
+        self.assertEqual(list(self.results(untranscribed)), ['ingest'])
+        self.assertEqual(command.status,
+                         'Stowed 1 file | Skipped 1 file (not transcribed)')
+
+    def test_review_ingested_then_stow_only(self):
+        first = self.make_document()
+        second = self.make_document(f'{SECOND}.pdf')
+        self.command_class = ReviewCommand
+        self.run_command(keys='c', answers=ANSWERS, ingested=[first.name])
+        self.command_class = StowCommand
+        out, command, gt, _, _ = self.run_command(only=True)
+        gt.assert_not_called()
+        self.assertEqual(out, str(self.stowed))
+        self.assertTrue(second.is_file())
+        self.assertEqual(command.status,
+                         'Stowed 1 file | Skipped 1 file (not reviewed)')
+
+    def test_transcription_failure_drops_the_document(self):
+        self.make('a.pdf')
+        self.make('b.pdf', content='second')
+        calls = iter([APIError('nope'), '# Hi'])
+
+        def transcribe(*args, **kwargs):
+            value = next(calls)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 2 files failed'):
+            self.run_command(self.source, keys='c', answers=ANSWERS,
+                             transcribe=transcribe)
+        self.assertIn('Transcription failed: nope', self.err)
+        failed = self.intake / f'{STAMP}.pdf'
+        self.assertEqual(list(self.results(failed)), ['ingest'])
+        self.assertTrue((self.archive / f'{SECOND}.pdf.yml').is_file())
+
+    def test_bad_sidecar_is_reported_in_its_turn(self):
+        bad = self.make_document()
+        Path(f'{bad}.yml').write_text('- a list')
+        self.make_document(f'{SECOND}.pdf', review=REVIEW)
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 2 files failed'):
+            self.run_command(only=True)
+        self.assertIn(f'Failed to stow {bad}', self.err)
+        self.assertTrue((self.archive / f'{SECOND}.pdf.yml').is_file())
+
+
 class TestMainUseCase(StowTestCase):
     """AC 5: classify a folder, then stow the intake"""
 
@@ -515,7 +747,8 @@ class TestStowInput(StowInputTestCase):
 
     def test_ingested_document_is_not_ingested_again(self):
         document = self.make_document(classify=None)
-        out, command, _, e, t = self.run_command(document, **FLAGS)
+        out, command, _, e, t = self.run_command(
+            ingested=[document.name], **FLAGS)
         t.assert_not_called()
         e.assert_not_called()
         self.assertEqual(out, str(self.stowed))
@@ -524,7 +757,8 @@ class TestStowInput(StowInputTestCase):
 
     def test_untranscribed_document_is_transcribed(self):
         document = self.make_document(classify=None, transcript=None)
-        _, command, _, e, t = self.run_command(document, **FLAGS)
+        _, command, _, e, t = self.run_command(ingested=[document.name],
+                                               **FLAGS)
         t.assert_called_once()
         e.assert_not_called()
         self.assertEqual(command.status,
@@ -532,7 +766,8 @@ class TestStowInput(StowInputTestCase):
 
     def test_only_still_needs_transcript(self):
         document = self.make_document(classify=None, transcript=None)
-        _, command, _, _, t = self.run_command(document, only=True, **FLAGS)
+        _, command, _, _, t = self.run_command(
+            ingested=[document.name], only=True, **FLAGS)
         t.assert_not_called()
         self.assertTrue(document.is_file())
         self.assertEqual(command.status,
@@ -542,7 +777,7 @@ class TestStowInput(StowInputTestCase):
         document = self.make_document(review={
             'at': AT, 'cabinet': 'default',
             'data': dict(DATA, part='invoice')})
-        self.run_command(document, **FLAGS)
+        self.run_command(ingested=[document.name], **FLAGS)
         results = self.archived()
         self.assertEqual(results['review'], INPUT)
         self.assertEqual(results['classify'], CLASSIFY)
@@ -565,7 +800,7 @@ class TestStowInput(StowInputTestCase):
         self.stowed.parent.mkdir(parents=True)
         self.stowed.write_text('already here')
         with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file failed'):
-            self.run_command(document, **FLAGS)
+            self.run_command(ingested=[document.name], **FLAGS)
         self.assertEqual(self.results(document)['review'], REVIEW)
         self.assertNotIn('stow', self.results(document))
 
@@ -579,11 +814,12 @@ class TestStowInput(StowInputTestCase):
             self.run_command(source, **FLAGS)
         self.stowed.unlink()
         document = self.intake / f'{STAMP}.pdf'
-        _, command, _, _, _ = self.run_command(document, only=True)
+        _, command, _, _, _ = self.run_command(ingested=[document.name],
+                                               only=True)
         self.assertTrue(document.is_file())
         self.assertEqual(command.status, 'Skipped 1 file (not classified)')
-        out, command, _, e, t = self.run_command(document, keys='c',
-                                                 answers=ANSWERS)
+        out, command, _, e, t = self.run_command(
+            keys='c', answers=ANSWERS, ingested=[document.name])
         t.assert_not_called()
         e.assert_called_once()
         self.assertEqual(out, str(self.stowed))
@@ -602,7 +838,7 @@ class TestStowInput(StowInputTestCase):
             self.run_command(source, **FLAGS)
         self.stowed.unlink()
         out, command, gt, e, t = self.run_command(
-            self.intake / f'{STAMP}.pdf', **FLAGS)
+            ingested=[str(self.intake / f'{STAMP}.pdf')], **FLAGS)
         t.assert_not_called()
         e.assert_not_called()
         gt.assert_not_called()
@@ -619,8 +855,9 @@ class TestStowInputErrors(StowInputTestCase):
         for vals in [FLAGS, {'stdin': STDIN}]:
             with self.subTest(vals=vals):
                 with self.assertRaisesRegex(
-                        Filez4EvaError, 'needs a single file, not a '
-                        f'directory: {self.source}$'):
+                        Filez4EvaError, 'needs a single document: one new '
+                        'file, or one --ingested NAME, not a directory: '
+                        f'{self.source}$'):
                     self.run_command(self.source, **vals)
                 self.assertTrue(source.is_file())
                 self.assertEqual(self.intake_names(), [])
@@ -632,8 +869,9 @@ class TestStowInputErrors(StowInputTestCase):
                 with self.assertRaisesRegex(
                         Filez4EvaError,
                         r'Input data \(--cabinet, --date, --field or a '
-                        r'record on stdin\) needs a single file, not the '
-                        'intake'):
+                        r'record on stdin\) needs a single document: one '
+                        'new file, or one --ingested NAME, not every '
+                        'document in the intake'):
                     self.run_command(**vals)
                 self.assertTrue(document.is_file())
                 self.assertNotIn('review', self.results(document))
@@ -654,9 +892,26 @@ class TestStowInputErrors(StowInputTestCase):
 
     def test_companion_file_is_an_error(self):
         document = self.make_document()
-        with self.assertRaisesRegex(Filez4EvaError, 'not a document'):
+        with self.assertRaisesRegex(Filez4EvaError, 'in the intake'):
             self.run_command(f'{document}.yml', **FLAGS)
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    'not a document ingested'):
+            self.run_command(ingested=[f'{document.name}.yml'], **FLAGS)
         self.assertNotIn('review', self.results(document))
+
+    def test_several_ingested_is_an_error(self):
+        first = self.make_document()
+        second = self.make_document(f'{SECOND}.pdf')
+        with self.assertRaisesRegex(Filez4EvaError, 'not several'):
+            self.run_command(ingested=[first.name, second.name], **FLAGS)
+        for document in [first, second]:
+            self.assertNotIn('review', self.results(document))
+
+    def test_same_ingested_twice_is_one_document(self):
+        document = self.make_document()
+        out, _, _, _, _ = self.run_command(
+            ingested=[document.name, str(document)], **FLAGS)
+        self.assertEqual(out, str(self.stowed))
 
 
 class TestStowWithoutInput(StowInputTestCase):

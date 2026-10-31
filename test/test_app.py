@@ -80,9 +80,24 @@ class TestCommands(WizLibTestCase):
                 out = ' '.join(out.split())
                 self.assertIn(text, out)
                 if name != 'ingest':
-                    self.assertIn('every document in the intake', out)
+                    self.assertIn('Default: the documents already in the '
+                                  'intake', out)
+                    self.assertIn('a path in the intake is an error', out)
+                    self.assertIn('--ingested NAME (repeatable), just '
+                                  'those documents', out)
                     self.assertIn('act only on documents that have had '
                                   'every earlier stage', out)
+                if name in ['ingest', 'transcribe']:
+                    self.assertNotIn('Order:', out)
+                else:
+                    self.assertIn('transcribed first, in one batch', out)
+                    self.assertIn('the most advanced documents come first',
+                                  out)
+
+    def test_order_help_names_the_remaining_stages(self):
+        out, _, _ = start('stow', '--help')
+        self.assertIn('remaining stages (classify, review, stow)',
+                      ' '.join(out.split()))
 
     def test_only_help_names_the_earlier_stages(self):
         out, _, _ = start('stow', '--help')
