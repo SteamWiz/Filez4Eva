@@ -241,7 +241,7 @@ class Stower:
     and other fields come from the caller, --field flags, a record on stdin
     (with use_stdin) or prompts (read_values), or from confirming a
     proposed record (confirm_values). Not a command: the stow command
-    builds one per file, and review uses it to confirm records."""
+    builds one per file, and review uses it to update records."""
 
     file: str = None
     date: str = None

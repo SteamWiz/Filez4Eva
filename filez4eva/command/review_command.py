@@ -9,15 +9,15 @@ from wizlib.ui.shell_ui import Emphasis
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command import ingest_command
 from filez4eva.command.classify_command import ClassifyCommand
-from filez4eva.command.ingest_command import sidecar_path
+from filez4eva.command.ingest_command import sidecar_path, write_sidecar
 from filez4eva.command.transcribe_command import (
     TranscribeCommand, transcript_path)
 from filez4eva.error import Filez4EvaError
-from filez4eva.fields import Field
+from filez4eva.fields import Field, normalize_value
 from filez4eva.stage import (
-    NotDone, StageCommand, StopRun, load_sidecar, record_result,
-    saved_cabinet)
-from filez4eva.stow import Stower
+    CLASSIFY, GIVEN, NotDone, StageCommand, StopRun, load_sidecar,
+    record_result, saved_cabinet)
+from filez4eva.stow import Stower, valid_date
 
 
 def proposal(results: dict) -> dict:
@@ -42,19 +42,22 @@ def proposal(results: dict) -> dict:
 class ReviewCommand(StageCommand):
     """Show the proposed record of new files (ingesting them first), the
     documents already in the intake, or the ones named with --ingested, to
-    confirm or edit, transcribing and classifying them first if needed
-    (choosing each one's cabinet before it is classified). Records
-    results.review (the saved cabinet and data) in each document's X.yml.
-    Never stows."""
+    confirm as it is, update, or redo with another cabinet, transcribing
+    and classifying them first if needed (choosing each one's cabinet
+    before it is classified). Records results.review (the saved cabinet and
+    data) in each document's X.yml. Never stows."""
 
     name = 'review'
-    summary = 'confirm or edit the proposed records'
+    summary = 'confirm, update or redo the proposed records'
     description = """
-        Show each classified document's proposed record, then confirm (or
-        edit the field values), skip, preview, delete or quit (which ends
-        the run). A confirmed record is saved as results.review in the
-        document's X.yml sidecar, with the cabinet saved for the document;
-        review doesn't change the cabinet. A document not classified yet
+        Show each classified document's proposed record, then choose:
+        confirm (save it as it is), update (edit the field values at
+        pre-filled prompts), redo (change the cabinet and classify the
+        document again), skip, preview, delete or quit (which ends the
+        run). A confirmed or updated record is saved as results.review in
+        the document's X.yml sidecar, with the cabinet saved for the
+        document. Confirm refuses a record with a missing field value
+        (e.g. no date found); use update. A document not classified yet
         is classified first, after its cabinet is chosen (see Cabinet
         below). Nothing is stowed. Prints each reviewed document's
         path."""
@@ -63,13 +66,18 @@ class ReviewCommand(StageCommand):
     requires = (TranscribeCommand, ClassifyCommand)
 
     # No Enter default: every action takes its own key
-    ACTION_CHOOSER = Chooser('', '', {'c': 'confirm', 'x': 'skip',
+    ACTION_CHOOSER = Chooser('', '', {'c': 'confirm', 'u': 'update',
+                                      'r': 'redo', 'x': 'skip',
                                       'p': 'preview', 'd': 'delete',
                                       'q': 'quit'})
 
     # WizLib's Chooser resolves Enter to the *first* choice, not to the
     # default text, so the default ('No') must be listed first.
     DELETE_CHOOSER = Chooser('Delete?', 'No', {'N': 'No', 'Y': 'Yes'})
+
+    # The classify command redo uses, built on first use (review also runs
+    # inside stow's cycle, so it can't rely on run()'s earlier commands)
+    _classifier = None
 
     def show(self, path: Path, results: dict, proposed: dict):
         """Show the document's name and its proposed record"""
@@ -81,6 +89,7 @@ class ReviewCommand(StageCommand):
         for key in ['summary', 'doctype']:
             if proposed.get(key):
                 self.app.ui.send(f"{key.capitalize()}: {proposed[key]}")
+        self.app.ui.send(f"Cabinet: {proposed['cabinet']}")
         for name, value in proposed['data'].items():
             label = Field(str(name)).label
             self.app.ui.send(
@@ -104,23 +113,104 @@ class ReviewCommand(StageCommand):
         transcript_path(path).unlink(missing_ok=True)
         sidecar_path(path).unlink(missing_ok=True)
 
-    def confirm(self, proposed: dict) -> dict:
-        """Confirm the proposed record at pre-filled prompts, one for each
-        field of the document's saved cabinet. Return results.review: that
-        cabinet, and data with a value for each of its fields (date
-        included), in pattern order."""
-        stow = Stower(self.app, use_stdin=False)
-        values = stow.confirm_values(proposed['cabinet'], proposed['data'])
-        cabinet = stow.cabinets[values['cabinet']]
-        data = {field.name: values['date'] if field.is_date
-                else values['data'][field.name] for field in cabinet.fields}
+    def cabinet_of(self, proposed: dict):
+        """The configured cabinet of the proposed record. Raises
+        Filez4EvaError if it isn't configured."""
+        name = proposed['cabinet']
+        if name not in self.cabinets:
+            raise Filez4EvaError(
+                f"Unknown cabinet {name}; known: "
+                + ', '.join(sorted(self.cabinets)))
+        return self.cabinets[name]
+
+    @staticmethod
+    def review_record(cabinet, data: dict) -> dict:
+        """results.review: now, the cabinet, and data (a value for each of
+        its fields, date included, in pattern order)"""
         return {'at': ingest_command.now().isoformat(timespec='seconds'),
-                'cabinet': cabinet.name, 'data': data}
+                'cabinet': cabinet.name,
+                'data': {field.name: data[field.name]
+                         for field in cabinet.fields}}
+
+    def confirm(self, proposed: dict):
+        """Return results.review for the proposed record as it is, without
+        prompting: the document's saved cabinet and the proposed value of
+        each of its fields (other fields normalized). If a field has no
+        value, or one that can't be used, say so and return None."""
+        cabinet = self.cabinet_of(proposed)
+        missing, invalid, data = [], [], {}
+        for field in cabinet.fields:
+            value = proposed['data'].get(field.name)
+            text = '' if value is None else str(value).strip()
+            if not text:
+                missing.append(field.name)
+                continue
+            if field.is_date:
+                cleaned = text if valid_date(text) else None
+            else:
+                cleaned = normalize_value(text)
+            if cleaned:
+                data[field.name] = cleaned
+            else:
+                invalid.append(field.name)
+        if missing or invalid:
+            parts = [f"{label}: {', '.join(names)}." for label, names in
+                     [('Missing', missing), ('Invalid', invalid)] if names]
+            self.app.ui.send(' '.join(parts) + ' Use (u)pdate.',
+                             Emphasis.PRINCIPAL)
+            return None
+        return self.review_record(cabinet, data)
+
+    def update(self, proposed: dict) -> dict:
+        """Edit the proposed record at pre-filled prompts, one for each
+        field of the document's saved cabinet (no cabinet prompt). Return
+        results.review. An empty answer raises CommandCancellation."""
+        cabinet = self.cabinet_of(proposed)
+        stow = Stower(self.app, use_stdin=False)
+        values = stow.confirm_values(cabinet.name, proposed['data'])
+        data = dict(values['data'])
+        for field in cabinet.fields:
+            if field.is_date:
+                data[field.name] = values['date']
+        return self.review_record(cabinet, data)
+
+    @property
+    def classifier(self) -> ClassifyCommand:
+        """The classify command redo uses, its configuration checked"""
+        if self._classifier is None:
+            classifier = ClassifyCommand(self.app)
+            classifier.handle_vals()
+            self._classifier = classifier
+        return self._classifier
+
+    def redo(self, path: Path, proposed: dict) -> bool:
+        """Change the document's cabinet and classify it again: with
+        several cabinets, prompt for it (pre-filled with the current one);
+        with one, use it. Save it as results.given, drop the old
+        results.classify (in one write) and classify the document right
+        away. Return False, changing nothing, on empty input."""
+        if len(self.cabinets) == 1:
+            name = next(iter(self.cabinets))
+        else:
+            name = self.prompt_cabinet(proposed['cabinet'])
+            if name is None:
+                return False
+        data = load_sidecar(path)
+        data['results'][GIVEN] = {
+            'at': ingest_command.now().isoformat(timespec='seconds'),
+            'cabinet': name}
+        data['results'].pop(CLASSIFY, None)
+        write_sidecar(path, data)
+        self.app.ui.send('Classifying...', Emphasis.INFO)
+        self.classifier.act(path)
+        return True
 
     def act(self, path: Path) -> str:
         """Show a classified document's proposed record and act on the
-        operator's choice: confirm (record results.review and return the
-        document's path), skip, preview, delete or quit"""
+        operator's choice: confirm or update (record results.review and
+        return the document's path), redo (classify again, possibly for
+        another cabinet, and show the new proposal), skip, preview, delete
+        or quit"""
         results = load_sidecar(path)['results']
         proposed = proposal(results)
         self.show(path, results, proposed)
@@ -128,26 +218,40 @@ class ReviewCommand(StageCommand):
             action = self.app.ui.get_option(self.ACTION_CHOOSER)
             if action == 'preview':
                 self.preview(path)
+                continue
             elif action == 'delete':
                 if self.app.ui.get_option(self.DELETE_CHOOSER) == 'Yes':
                     self.delete(path)
                     self.app.ui.send('Deleted', Emphasis.INFO)
                     raise NotDone('Deleted')
+                continue
             elif action == 'skip':
                 self.app.ui.send('Skipped', Emphasis.INFO)
                 raise NotDone('Skipped')
             elif action == 'quit':
                 raise StopRun()
-            else:
+            elif action == 'redo':
+                if self.redo(path, proposed):
+                    results = load_sidecar(path)['results']
+                    proposed = proposal(results)
+                    self.show(path, results, proposed)
+                else:
+                    self.app.ui.send(path.name)
+                continue
+            elif action == 'update':
                 try:
-                    review = self.confirm(proposed)
+                    review = self.update(proposed)
                 except CommandCancellation:
                     # Empty answer: back to the choice for this document
                     self.app.ui.send(path.name)
                     continue
-                record_result(path, self.stage, review)
-                self.app.ui.send('Reviewed', Emphasis.INFO)
-                return str(path)
+            else:
+                review = self.confirm(proposed)
+                if review is None:
+                    continue
+            record_result(path, self.stage, review)
+            self.app.ui.send('Reviewed', Emphasis.INFO)
+            return str(path)
 
     @Filez4EvaCommand.wrap
     def execute(self):

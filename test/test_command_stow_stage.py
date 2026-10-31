@@ -109,7 +109,7 @@ class TestStowSelection(StowTestCase):
         self.make('.hidden')
         self.make('inner.pdf', where=self.source / 'sub')
         out, command, _, _, _ = self.run_command(
-            self.source, keys='cc',
+            self.source, keys='uu',
             answers=ANSWERS + ['20261003', 'amazon', 'receipt'])
         self.assertEqual(out.splitlines(), [
             str(self.stowed),
@@ -173,7 +173,7 @@ class TestStowSelection(StowTestCase):
                 seen.append(self.stowed.is_file())
                 yield answer
 
-        self.run_command(keys='cc', answers=answers())
+        self.run_command(keys='uu', answers=answers())
         # The first document is in the cabinet before the second is asked
         self.assertEqual(seen, [False] * 3 + [True] * 3)
 
@@ -217,7 +217,7 @@ class TestStowSelection(StowTestCase):
                                          transcript=None)
         self.make('new.pdf', content='new')
         out, command, _, e, t = self.run_command(
-            self.source, keys='c',
+            self.source, keys='u',
             answers=['20261003', 'amazon', 'receipt'])
         new = '20261025-140307-044.pdf'
         self.assertEqual(out, str(self.target / '2026' / 'amazon' /
@@ -264,7 +264,7 @@ class TestStowSelection(StowTestCase):
                 recording(calls, ReviewCommand), \
                 recording(calls, StowCommand):
             out, command, _, _, _ = self.run_command(
-                keys='c', answers=['20261003', 'amazon', 'receipt'],
+                keys='u', answers=['20261003', 'amazon', 'receipt'],
                 ingested=[second.name, str(first)])
         # In the order given, transcription first
         self.assertEqual(calls, [
@@ -344,7 +344,7 @@ class TestStowing(StowTestCase):
         self.make_document(classify=dict(CLASSIFY, cabinet='memories'),
                            given=None)
         out, _, gt, e, _ = self.run_command(
-            config=self.memories_cabinets(), keys='c',
+            config=self.memories_cabinets(), keys='u',
             answers=['20261002', 'grandma-bday', 'cake'])
         e.assert_not_called()
         self.assertNotIn('Cabinet: ', [p[0] for p in self.prompts(gt)])
@@ -510,6 +510,33 @@ class TestStowMenu(StowTestCase):
         run.assert_called_once_with(['preview', document])
         self.assertEqual(out, str(self.stowed))
 
+    def test_confirm_stows_without_prompting(self):
+        self.make_document()
+        out, command, gt, _, _ = self.run_command(keys='c')
+        gt.assert_not_called()
+        self.assertEqual(out, str(self.stowed))
+        self.assertEqual(command.status, 'Reviewed 1 file | Stowed 1 file')
+
+    def test_redo_then_stow_in_the_new_cabinet(self):
+        self.make_document(given='accounts')
+        memory = {'data': {'date': '20261002', 'event': 'grandma-bday',
+                           'part': 'cake'},
+                  'doctype': 'other', 'summary': 'Photo'}
+        out, command, gt, e, _ = self.run_command(
+            keys='rc', answers=['memories'],
+            config=self.memories_cabinets(), result=memory)
+        e.assert_called_once()
+        self.assertEqual(self.prompts(gt), [
+            ('Cabinet: ', ['accounts', 'memories'], 'accounts')])
+        stowed = self.memories / '2026' / 'grandma-bday' / \
+            '20261002-cake.pdf'
+        self.assertEqual(out, str(stowed))
+        self.assertTrue(stowed.is_file())
+        archived = self.archived()
+        self.assertEqual(archived['given']['cabinet'], 'memories')
+        self.assertEqual(archived['review']['cabinet'], 'memories')
+        self.assertEqual(command.status, 'Reviewed 1 file | Stowed 1 file')
+
 
 class TestStowOrder(StowTestCase):
     """The transcribe batch, then one document at a time, the most advanced
@@ -525,7 +552,7 @@ class TestStowOrder(StowTestCase):
                 recording(calls, ReviewCommand), \
                 recording(calls, StowCommand):
             self.run_command(
-                self.source, keys='ccc',
+                self.source, keys='uuu',
                 answers=ANSWERS + ['20261003', 'amazon', 'receipt']
                 + ['20261004', 'amazon', 'receipt'])
         third = '20261025-140307-044.pdf'
@@ -548,7 +575,7 @@ class TestStowOrder(StowTestCase):
                 recording(calls, ReviewCommand), \
                 recording(calls, StowCommand):
             _, command, _, _, _ = self.run_command(
-                keys='ccc',
+                keys='uuu',
                 answers=['20261003', 'amazon', 'receipt'] + ANSWERS
                 + ['20261006', 'amazon', 'receipt'])
         self.assertEqual(calls, [
@@ -633,9 +660,9 @@ class TestMainUseCase(StowTestCase):
                          'Classified 3 files')
         self.assertEqual(list(self.source.iterdir()), [])
         third = f'{STAMP[:-3]}044.pdf'
-        # Confirm the first, skip the second, edit the third
+        # Confirm the first, skip the second, update the third
         out, command, _, e, t = self.run_command(
-            keys='cxc', answers=ANSWERS + ['20261004', 'amazon', 'invoice'])
+            keys='cxu', answers=['20261004', 'amazon', 'invoice'])
         e.assert_not_called()
         t.assert_not_called()
         self.assertEqual(out.splitlines(), [
@@ -651,7 +678,7 @@ class TestMainUseCase(StowTestCase):
                          [f'{STAMP}.pdf.yml', f'{third}.yml'])
         # The skipped one is offered again
         out, command, _, _, _ = self.run_command(
-            keys='c', answers=['20261003', 'amazon', 'receipt'])
+            keys='u', answers=['20261003', 'amazon', 'receipt'])
         self.assertEqual(out, str(self.target / '2026' / 'amazon' /
                                   '20261003-receipt.pdf'))
         self.assertEqual(self.intake_names(), ['archive'])
@@ -985,7 +1012,7 @@ class TestStowCabinet(StowTestCase):
     def test_prompt_before_classify_then_review_and_stow(self):
         source = self.make('Scan 1.PDF')
         out, _, gt, e, _ = self.run_command(
-            source, config=self.memories_cabinets(), keys='c',
+            source, config=self.memories_cabinets(), keys='u',
             answers=['accounts'] + ANSWERS)
         self.assertEqual(self.prompts(gt)[0],
                          ('Cabinet: ', ['accounts', 'memories']))
