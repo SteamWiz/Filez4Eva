@@ -37,10 +37,13 @@ DATA = {'date': '20261002', 'account': 'amazon', 'part': 'receipt'}
 RESULT = {'data': DATA, 'doctype': 'receipt',
           'summary': 'Amazon.ca order receipt for a USB hub'}
 
-CLASSIFY = {'at': AT, 'model': 'claude-haiku-4-5', 'cabinet': 'default',
-            'doctype': 'receipt',
+CLASSIFY = {'at': AT, 'model': 'claude-haiku-4-5', 'doctype': 'receipt',
             'summary': 'Amazon.ca order receipt for a USB hub',
             'data': DATA}
+
+# results.classify as written before results.given (#72): it held the
+# cabinet
+OLD_CLASSIFY = dict(CLASSIFY, cabinet='default')
 
 ANSWERS = ['20261002', 'amazon', 'receipt']
 
@@ -88,10 +91,12 @@ class ReviewTestCase(WizLibTestCase):
         return path
 
     def make_document(self, name=f'{STAMP}.pdf', classify=CLASSIFY,
-                      transcript='# Hi', review=None):
+                      transcript='# Hi', review=None, given='default'):
         """Create an ingested document in the intake with its sidecar and
         transcript; classified unless classify is None (and transcribed
-        unless transcript is None too)"""
+        unless transcript is None too). A classified document has
+        results.given with the given cabinet, unless given is None (as in
+        sidecars from before results.given)."""
         path = self.make(name, where=self.intake)
         results = {'ingest': {'at': AT, 'original-name': 'Scan 1.PDF',
                               'source': {}}}
@@ -103,6 +108,8 @@ class ReviewTestCase(WizLibTestCase):
                                      'transcript': f'{name}.md',
                                      'length': len(transcript)}
         if classify is not None:
+            if given is not None:
+                results['given'] = {'at': AT, 'cabinet': given}
             results['classify'] = classify
         if review is not None:
             results['review'] = review
@@ -187,7 +194,7 @@ class TestReviewSelection(ReviewTestCase):
         e.assert_called_once()
         self.assertEqual(out, str(document))
         self.assertEqual(list(self.results(document)), [
-            'ingest', 'transcribe', 'classify', 'review'])
+            'ingest', 'transcribe', 'given', 'classify', 'review'])
         self.assertEqual(
             command.status, 'Ingested 1 file | Transcribed 1 file | '
             'Classified 1 file | Reviewed 1 file')
@@ -258,8 +265,8 @@ class TestReviewConfirm(ReviewTestCase):
         self.run_command(keys='c', answers=ANSWERS)
         for line in [f'{STAMP}.pdf (Scan 1.PDF)',
                      'Summary: Amazon.ca order receipt for a USB hub',
-                     'Doctype: receipt', 'Cabinet: default',
-                     'Date: 20261002', 'Account: amazon', 'Part: receipt',
+                     'Doctype: receipt', 'Date: 20261002',
+                     'Account: amazon', 'Part: receipt',
                      '(c)onfirm', '(x)skip', '(p)review', '(d)elete',
                      '(q)uit', 'Reviewed']:
             self.assertIn(line, self.err)
@@ -497,21 +504,22 @@ class TestReviewFailures(ReviewTestCase):
                          self.results(self.intake / f'{STAMP}.pdf'))
 
     def test_bad_classify_result_is_a_failure(self):
-        for classify, message in [
-                ('text', 'must be a mapping'),
-                (dict(CLASSIFY, cabinet=''), 'has no cabinet'),
-                (dict(CLASSIFY, data='x'), 'data must be a mapping')]:
+        for classify, given, message in [
+                ('text', 'default', 'must be a mapping'),
+                (dict(CLASSIFY, cabinet=''), None, 'No cabinet saved'),
+                (dict(CLASSIFY, data='x'), 'default',
+                 'data must be a mapping')]:
             with self.subTest(message):
                 for path in self.intake.iterdir():
                     path.unlink()
-                self.make_document(classify=classify)
+                self.make_document(classify=classify, given=given)
                 with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
                     self.run_command()
                 self.assertIn(message, self.err)
 
     def test_classify_without_data_prompts_empty(self):
         document = self.make_document(
-            classify={'cabinet': 'default', 'data': None})
+            classify={'data': None})
         _, _, gt, _, _ = self.run_command(keys='c', answers=ANSWERS)
         self.assertEqual(self.prompts(gt), [
             ('Date: ', []), ('Account: ', ['amazon']), ('Part: ', [])])
@@ -541,29 +549,28 @@ class TestReviewFailures(ReviewTestCase):
 
 
 class TestReviewCabinet(ReviewTestCase):
-    """AC 11: change the cabinet before confirming"""
+    """#72: review never prompts for the cabinet; it uses the one saved
+    for the document, chosen before it is classified"""
 
-    def test_cabinet_prompt_prefilled(self):
-        document = self.make_document(
-            classify=dict(CLASSIFY, cabinet='accounts'))
-        _, _, gt, _, _ = self.run_command(
-            keys='c', answers=['accounts'] + ANSWERS,
-            config=self.two_cabinets())
-        self.assertEqual(self.prompts(gt)[0], (
-            'Cabinet: ', ['accounts', 'memories'], 'accounts'))
+    def test_saved_cabinet_no_prompt(self):
+        document = self.make_document(given='accounts')
+        _, _, gt, _, _ = self.run_command(keys='c', answers=ANSWERS,
+                                          config=self.two_cabinets())
+        self.assertEqual(self.prompts(gt), [
+            ('Date: ', [], '20261002'),
+            ('Account: ', ['amazon'], 'amazon'),
+            ('Part: ', [], 'receipt')])
         self.assertEqual(self.results(document)['review'], {
             'at': AT, 'cabinet': 'accounts', 'data': DATA})
 
-    def test_change_cabinet(self):
-        classify = dict(CLASSIFY, cabinet='accounts')
-        document = self.make_document(classify=classify)
+    def test_old_shape_sidecar(self):
+        # Written before results.given: the cabinet is in results.classify
+        classify = dict(CLASSIFY, cabinet='memories')
+        document = self.make_document(classify=classify, given=None)
         _, _, gt, _, _ = self.run_command(
-            keys='c', answers=['memories', '20261002', 'grandma-bday',
-                               'receipt'],
+            keys='c', answers=['20261002', 'grandma-bday', 'receipt'],
             config=self.two_cabinets())
-        # The new cabinet's fields; same-named ones keep their values
         self.assertEqual(self.prompts(gt), [
-            ('Cabinet: ', ['accounts', 'memories'], 'accounts'),
             ('Date: ', [], '20261002'),
             ('Event: ', ['grandma-bday']),
             ('Part: ', [], 'receipt')])
@@ -573,61 +580,83 @@ class TestReviewCabinet(ReviewTestCase):
             'data': {'date': '20261002', 'event': 'grandma-bday',
                      'part': 'receipt'}})
         self.assertEqual(results['classify'], classify)
+        self.assertNotIn('given', results)
 
-    def test_unknown_cabinet_rejected(self):
-        document = self.make_document(
-            classify=dict(CLASSIFY, cabinet='accounts'))
-        self.run_command(keys='c',
-                         answers=['nowhere', 'memories', '20261002',
-                                  'grandma-bday', 'receipt'],
-                         config=self.two_cabinets())
-        self.assertIn('Cabinet must be one of: accounts, memories',
-                      self.err)
-        self.assertEqual(self.results(document)['review']['cabinet'],
-                         'memories')
-
-    def test_classified_cabinet_no_longer_configured(self):
-        # The pre-filled name isn't accepted as it is
-        document = self.make_document(
-            classify=dict(CLASSIFY, cabinet='old'))
-        self.run_command(keys='c', answers=['old', 'accounts'] + ANSWERS,
-                         config=self.two_cabinets())
-        self.assertIn('Cabinet must be one of', self.err)
-        self.assertEqual(self.results(document)['review']['cabinet'],
-                         'accounts')
-
-    def test_single_cabinet_no_prompt(self):
-        document = self.make_document(
-            classify=dict(CLASSIFY, cabinet='old'))
-        _, _, gt, _, _ = self.run_command(keys='c', answers=ANSWERS)
-        self.assertNotIn('Cabinet: ', [p[0] for p in self.prompts(gt)])
-        self.assertEqual(self.results(document)['review']['cabinet'],
-                         'default')
-
-    def test_empty_cabinet_returns_to_menu(self):
-        document = self.make_document(
-            classify=dict(CLASSIFY, cabinet='accounts'))
-        _, command, _, _, _ = self.run_command(
-            keys='cx', answers=[''], config=self.two_cabinets())
-        self.assertIn('Cabinet required', self.err)
+    def test_saved_cabinet_no_longer_configured(self):
+        document = self.make_document(given='old')
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            self.run_command(keys='c', answers=ANSWERS,
+                             config=self.two_cabinets())
+        self.assertIn('Unknown cabinet old', self.err)
         self.assertNotIn('review', self.results(document))
-        self.assertEqual(command.status, 'Skipped 1 file')
 
-    def test_model_picks_cabinet_for_unclassified(self):
+    def test_cabinet_flag_on_review(self):
         source = self.make('photo.jpg')
+        memory = {'data': {'date': '20261002', 'event': 'Grandma Bday',
+                           'part': 'photo'},
+                  'doctype': 'other', 'summary': 'Photo'}
+        _, command, gt, e, _ = self.run_command(
+            source, keys='c', answers=['20261002', 'grandma-bday', 'photo'],
+            config=self.two_cabinets(), result=memory, cabinet='memories')
+        e.assert_called_once()
+        self.assertNotIn('Cabinet: ', [p[0] for p in self.prompts(gt)])
+        document = self.intake / f'{STAMP}.jpg'
+        results = self.results(document)
+        self.assertEqual(results['given'], {'at': AT, 'cabinet': 'memories'})
+        self.assertEqual(results['review']['cabinet'], 'memories')
 
-        def fake(text, schema, **kwargs):
-            if 'cabinet' in schema['properties']:
-                return {'cabinet': 'memories'}
-            return {'data': {'date': '20261002', 'event': 'Grandma Bday',
-                             'part': 'photo'},
-                    'doctype': 'other', 'summary': 'Photo'}
-        _, _, gt, _, _ = self.run_command(
+    def test_prompt_for_unclassified_before_classify(self):
+        source = self.make('photo.jpg')
+        memory = {'data': {'date': '20261002', 'event': 'Grandma Bday',
+                           'part': 'photo'},
+                  'doctype': 'other', 'summary': 'Photo'}
+        _, _, gt, e, _ = self.run_command(
             source, keys='c',
             answers=['memories', '20261002', 'grandma-bday', 'photo'],
-            config=self.two_cabinets(), extract=fake)
+            config=self.two_cabinets(), result=memory)
+        # The cabinet prompt has no pre-filled value: the model proposes
+        # none
         self.assertEqual(self.prompts(gt)[0], (
-            'Cabinet: ', ['accounts', 'memories'], 'memories'))
+            'Cabinet: ', ['accounts', 'memories']))
+        e.assert_called_once()
+        self.assertNotIn('cabinet', e.call_args.args[1]['properties'])
         document = self.intake / f'{STAMP}.jpg'
         self.assertEqual(self.results(document)['review']['cabinet'],
                          'memories')
+
+    def test_empty_cabinet_skips_unclassified(self):
+        document = self.make_document(classify=None)
+        _, command, _, e, _ = self.run_command(
+            answers=[''], config=self.two_cabinets())
+        e.assert_not_called()
+        self.assertEqual(command.status, 'Skipped 1 file')
+        self.assertEqual(list(self.results(document)),
+                         ['ingest', 'transcribe'])
+
+    def test_conflicting_cabinet_fails_that_document_only(self):
+        first = self.make_document(given='accounts')
+        second = self.make_document(f'{SECOND}.pdf', given='memories')
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    '1 of 2 files failed to review'):
+            self.run_command(keys='c', config=self.two_cabinets(),
+                             answers=['20261002', 'grandma-bday', 'x'],
+                             cabinet='memories')
+        self.assertIn(f'Failed to review {first}: Cabinet memories given, '
+                      f'but {first.name} already has cabinet accounts',
+                      self.err)
+        self.assertNotIn('review', self.results(first))
+        self.assertEqual(self.results(second)['review']['cabinet'],
+                         'memories')
+
+    def test_unknown_cabinet_flag_touches_nothing(self):
+        source = self.make('scan.pdf')
+        document = self.make_document()
+        before = Path(f'{document}.yml').read_text()
+        for path in [source, None]:
+            with self.subTest(path=path), \
+                    self.assertRaisesRegex(Filez4EvaError,
+                                           'Unknown cabinet nope'):
+                self.run_command(path, config=self.two_cabinets(),
+                                 cabinet='nope')
+        self.assertTrue(source.is_file())
+        self.assertEqual(Path(f'{document}.yml').read_text(), before)

@@ -26,16 +26,25 @@ Filez4Eva works in stages, one command for each:
 |---------|--------------|----------|
 | [`ingest`](#ingesting-files) | Moves files into the intake under a time-stamped name, each with an `X.yml` sidecar | No |
 | [`transcribe`](#transcribing-files) | Transcribes each document to Markdown, `X.md`, with an AI model | No |
-| [`classify`](#classifying-files) | Has an AI model propose a cabinet and a value for each of its fields, for each document | No |
+| [`classify`](#classifying-files) | Has an AI model propose a value for each field of the document's cabinet, for each document | Only for a document's cabinet, with several cabinets and no `-c` |
 | [`review`](#reviewing-files) | Shows each proposed record, to confirm or edit | Yes |
 | [`stow`](#stowing-files) | Moves each confirmed document and its transcript into its cabinet, named by the cabinet's pattern | For documents not yet reviewed |
 
 The main use case is two commands:
 
 ```bash
-filez4eva classify ~/Scans   # unattended: ingest, transcribe and classify every file
-filez4eva stow               # interactive: confirm or edit each record, then stow it
+filez4eva classify -c NAME ~/Scans   # unattended: ingest, transcribe and classify every file for cabinet NAME
+filez4eva stow                       # interactive: confirm or edit each record, then stow it
 ```
+
+**The cabinet comes first, and you choose it.** A document's
+[cabinet](#cabinets) is chosen before it is classified, so the model fills
+in that cabinet's fields; the model never picks the cabinet. With a single
+cabinet configured, it is used without asking. With several cabinets and no
+`-c NAME` (`--cabinet NAME`), `classify` prompts `Cabinet:` for each
+document, so to run it unattended give `-c`:
+`filez4eva classify -c NAME ~/Scans`. See
+[How a document's cabinet is chosen](#how-a-documents-cabinet-is-chosen).
 
 How the stages fit together:
 
@@ -63,6 +72,9 @@ How the stages fit together:
   `filez4eva review --ingested X` followed by `filez4eva stow --only` stows
   just the reviewed documents without any prompts, leaving the others as
   they are.
+- **`--cabinet NAME` (`-c NAME`)** on `classify`, `review` or `stow` gives
+  the cabinet of every document in the run that has none saved yet; see
+  [How a document's cabinet is chosen](#how-a-documents-cabinet-is-chosen).
 
 ### Which documents, in what order
 
@@ -102,9 +114,11 @@ The order of work:
    document. For `transcribe`, that's the whole run.
 3. **One document at a time:** for `classify`, `review` and `stow`, each
    document then goes through its remaining stages, from classify up to the
-   command's stage, before the next document starts. With `stow`, file 1
-   is classified, reviewed and stowed, then file 2 is classified, reviewed
-   and stowed, and so on.
+   command's stage, before the next document starts. Before a document is
+   classified, its cabinet is chosen (prompting for it if needed; see
+   [How a document's cabinet is chosen](#how-a-documents-cabinet-is-chosen)).
+   With `stow`, file 1 is classified, reviewed and stowed, then file 2 is
+   classified, reviewed and stowed, and so on.
 
 With no path, the most advanced documents come first in step 3: those
 already reviewed, then those classified, then those only transcribed, in
@@ -293,7 +307,7 @@ key.
 To have an AI model classify documents so they can be filed:
 
 ```bash
-filez4eva classify ~/Scans
+filez4eva classify -c NAME ~/Scans
 ```
 
 `classify` works on documents in the [intake](#intake), selected as in
@@ -302,10 +316,20 @@ files given as the path, the documents already in the intake (no path), or
 the ones named with `--ingested`. New files are
 [ingested](#ingesting-files), and every document that needs it is
 [transcribed](#transcribing-files), all before the first one is classified.
-So after `filez4eva classify ~/Scans` every file that was in `~/Scans` is in
-the intake with its transcript `X.md` and its sidecar `X.yml`, and the
-documents already in the intake are left as they were. `classify` never
-prompts, so you can start it and walk away.
+So after `filez4eva classify -c NAME ~/Scans` every file that was in
+`~/Scans` is in the intake with its transcript `X.md` and its sidecar
+`X.yml`, and the documents already in the intake are left as they were.
+
+Each document's [cabinet](#cabinets) is chosen just before it is
+classified, and saved as `results.given` in its sidecar; the model never
+picks it. It is the cabinet already saved for the document, otherwise
+`--cabinet NAME` (or `-c NAME`), otherwise the only cabinet when just one is
+configured. **With several cabinets and no `-c`, `classify` prompts
+`Cabinet:` for each document**, before classifying it (see
+[How a document's cabinet is chosen](#how-a-documents-cabinet-is-chosen)).
+So to start `classify` and walk away, give the cabinet:
+`filez4eva classify -c NAME ~/Scans`. With `-c`, or a single cabinet,
+`classify` never prompts.
 
 The model is given the transcript, along with the file's original name and
 source (`results.ingest.original-name` and `results.ingest.source`). The
@@ -316,10 +340,12 @@ result is recorded under `results.classify` in the document's
 results:
   ingest: ...
   transcribe: ...
+  given:
+    at: '2026-10-25T14:03:08-07:00'
+    cabinet: accounts
   classify:
     at: '2026-10-25T14:03:09-07:00'
     model: claude-haiku-4-5
-    cabinet: accounts
     doctype: receipt
     summary: Amazon.ca order receipt for a USB hub
     data:
@@ -328,8 +354,8 @@ results:
       title: usb-hub-receipt
 ```
 
-- `cabinet` is the [cabinet](#cabinets) the document is classified for (see
-  below).
+- `given.cabinet` is the [cabinet](#cabinets) the document is classified
+  for, saved before the model is asked (see above).
 - `data` holds a value for each of the cabinet's [fields](#fields), in
   pattern order (here the pattern is `{account}/{date}-{title}`).
 - `date` is the document's own date, as YYYYMMDD. If the document has no
@@ -346,16 +372,6 @@ results:
   [learned values](#learned-values), it is also given the common values
   (the same ones offered by tab completion) and asked to reuse one when it
   fits. It is also given the doctype names and descriptions.
-
-The cabinet is chosen without asking:
-
-- `--cabinet NAME` (or `-c NAME`) applies to every document in the run. An
-  unknown name is an error before any file is touched.
-- Without `--cabinet`, if only one cabinet is configured, it is used.
-- Without `--cabinet`, if several cabinets are configured, the model picks
-  one from the cabinet names and descriptions, then fills in that cabinet's
-  fields. A pick that isn't a configured cabinet is a failure for that
-  document (see below).
 
 For each document it classifies, `classify` prints the document's path in
 the intake on stdout. The status on stderr counts the files, e.g.
@@ -374,14 +390,18 @@ Other rules:
   `Skipped 1 file (not transcribed)`.
 - If a document fails (transcription or classification fails, the model's
   answer is missing a field, has a field value with no letters or digits,
-  or has an unknown doctype or cabinet, or the sidecar can't be read), the
+  or has an unknown doctype, the saved cabinet isn't configured, a
+  `--cabinet` differs from the cabinet saved for it, or the sidecar can't
+  be read), the
   error is reported on stderr and the run carries on with the next file.
   The document gets no `results.classify`, so a later run tries it again.
   At the end, the documents that were classified are printed and
   `classify` exits non-zero. This also applies to a single file. A date
   that isn't a valid YYYYMMDD date becomes `null` instead of an error.
-- The whole configuration (cabinets and doctypes) is checked before any file
-  is touched.
+- Empty input at the `Cabinet:` prompt skips the document: nothing is
+  saved, it is counted as `Skipped`, and a later run asks again.
+- The whole configuration (cabinets and doctypes) and the `--cabinet` name
+  are checked before any file is touched.
 
 Nothing is stowed: the document stays in the intake.
 
@@ -400,22 +420,25 @@ the ones named with `--ingested`. Every document that needs it is
 [transcribed](#transcribing-files) first, in one batch (new files are
 [ingested](#ingesting-files) before that). Then the documents come one at a
 time: each is [classified](#classifying-files) if it hasn't been, then
-reviewed, before the next one. With no path, the documents already
-classified come first. So the usual flow is `filez4eva classify ~/Scans`
-(unattended), then `filez4eva review`; to review just one document, give
+reviewed, before the next one; its cabinet is chosen before it is
+classified, as for `classify` (`--cabinet NAME` or `-c NAME` is accepted
+here too). With no path, the documents already classified come first. So
+the usual flow is `filez4eva classify -c NAME ~/Scans` (unattended), then
+`filez4eva review`; to review just one document, give
 `filez4eva review --ingested NAME`.
 
 For each document, `review` shows its name (and original name), then the
-proposed record from `results.classify`: the summary, doctype, cabinet and
-the value of each field (`(none)` for a document without a date). Then
+proposed record from `results.classify`: the summary, doctype and the value
+of each field of the document's saved cabinet (`(none)` for a document without a date). Then
 choose:
 
 - Confirm (c): prompts for each field are pre-filled with the proposed
   values. Press Enter to accept a value, or type a new one; tab completion
-  offers the [learned values](#learned-values) of the field. With more than one cabinet configured, a
-  `Cabinet:` prompt comes first, pre-filled with the proposed cabinet (see
-  below). The confirmed record is saved as `results.review` and the
-  document's path is printed on stdout.
+  offers the [learned values](#learned-values) of the field. There is no
+  `Cabinet:` prompt: the cabinet is the one saved for the document before
+  it was classified. The confirmed record (that cabinet and the field
+  values) is saved as `results.review` and the document's path is printed
+  on stdout.
 - Skip (x): the document is left in the intake as it is, and a later run
   offers it again.
 - Preview (p): opens the document with the `preview` command, then asks
@@ -428,13 +451,10 @@ An invalid value is rejected and the prompt asks again. Empty input at any
 prompt goes back to the choice for the same document, without saving
 anything.
 
-Changing the cabinet: when several cabinets are configured, the `Cabinet:`
-prompt accepts any configured cabinet (tab completion offers the names); an
-unknown name is rejected and the prompt asks again. The field prompts that
-follow are the chosen cabinet's fields. A field with the same name as one in
-the proposed record (such as `date`) is pre-filled with its proposed value;
-any other field starts empty. With a single cabinet there is no `Cabinet:`
-prompt, and that cabinet is used. `results.classify` is never changed.
+Review doesn't change the cabinet, and `results.classify` is never
+changed. A document classified before the cabinet was saved separately
+(its sidecar has `results.classify.cabinet` and no `results.given`) is
+reviewed for that cabinet.
 
 The status on stderr counts the files, e.g.
 `Reviewed 2 files | Skipped 1 file | Deleted 1 file`, with `Quit` at the end
@@ -451,7 +471,9 @@ Other rules:
   (e.g. `Skipped FILE: not classified yet`), and counted in the status, e.g.
   `Skipped 1 file (not classified)`.
 - If a document fails (an earlier stage fails, its `results.classify` can't
-  be used, or its sidecar can't be read), the error is reported on stderr
+  be used, its saved cabinet isn't configured, a `--cabinet` differs from
+  the cabinet saved for it, or its sidecar can't be read), the error is
+  reported on stderr
   and the run carries on with the next file. At the end, the documents that
   were reviewed are printed and `review` exits non-zero.
 - The whole configuration (cabinets and doctypes) is checked before any file
@@ -482,9 +504,17 @@ stows the classified ones, then classifies, reviews and stows the rest. So
 the main use case is:
 
 ```bash
-filez4eva classify ~/Scans   # unattended: ingest, transcribe, classify
-filez4eva stow               # interactive: confirm or edit, then stow
+filez4eva classify -c NAME ~/Scans   # unattended: ingest, transcribe, classify
+filez4eva stow                       # interactive: confirm or edit, then stow
 ```
+
+As for `classify`, a document's cabinet is chosen before it is classified:
+`--cabinet NAME` (or `-c NAME`) gives it for every document in the run that
+has none saved yet; without it, and with several cabinets, `stow` prompts
+`Cabinet:` for each such document. A `--cabinet` that differs from the
+cabinet already saved for a document fails that document (e.g.
+`filez4eva classify -c accounts ~/Scans`, then
+`filez4eva stow -c memories`); the run carries on with the others.
 
 To review and stow every file in a directory in one interactive pass, give
 the directory: `filez4eva stow ~/Scans`. That leaves the documents already
@@ -516,8 +546,7 @@ The absolute destination path is printed on stdout, so a script can
 capture it, e.g.
 `dest=$(filez4eva stow -d 20240213 -f title=receipt file.pdf)`.
 
-- The cabinet and field values come from `results.review`, so a cabinet
-  changed at review is the one used, not the one in `results.classify`.
+- The cabinet and field values come from `results.review`.
 - An existing file is never overwritten. If something already exists where
   the file, its transcript or its archived `X.yml` would go, the document
   fails before anything moves and stays in the intake.
@@ -532,8 +561,8 @@ capture it, e.g.
   on with the next file. At the end, the documents that were stowed are
   printed and `stow` exits non-zero. If the file was stowed but its sidecar
   couldn't be archived, the error says where the file went.
-- The whole configuration (cabinets and doctypes) is checked before any file
-  is touched.
+- The whole configuration (cabinets and doctypes) and the `--cabinet` name
+  are checked before any file is touched.
 
 The status on stderr counts the files, e.g.
 `Reviewed 2 files | Stowed 3 files | Skipped 1 file`, with `Quit` at the end
@@ -543,9 +572,11 @@ if you quit.
 
 For scripts and other tools that already know the record for a file, and
 for filing a file by hand without asking the model, `stow` takes input data:
-the `--cabinet` (or `-c`) and `--date` (or `-d`) flags, a repeatable
-`--field NAME=VALUE` (or `-f NAME=VALUE`) for each other field, and a YAML
-record on stdin with the cabinet and the fields under `data:`. For example,
+the `--date` (or `-d`) flag, a repeatable `--field NAME=VALUE` (or
+`-f NAME=VALUE`) for each other field, and a YAML record on stdin with the
+cabinet and the fields under `data:`. With input data, `--cabinet` (or `-c`)
+names the record's cabinet. `--cabinet` on its own is not input data: it
+gives the cabinet for classify, as above. For example,
 for a cabinet whose pattern is `{date.year}/{account}/{date}_{part}`:
 
 ```bash
@@ -556,29 +587,31 @@ printf 'cabinet: accounts\ndata:\n  date: 2024-02-13\n  account: royal-bank\n  p
   | filez4eva stow ~/Desktop/statement.pdf
 ```
 
-Input data is supplied when any of the flags is given, or stdin has a
+Input data is supplied when `--date` or `--field` is given, or stdin has a
 `cabinet` or `data`. With input data:
 
 - The run must be on a single document: one new file given as the path, or
   one document already in the intake given with `--ingested NAME`. A
   directory, no path (every document in the intake), or several
   `--ingested` documents is an error before anything moves:
-  `Input data (--cabinet, --date, --field or a record on stdin) needs a
-  single document: one new file, or one --ingested NAME, ...`.
+  `Input data (--date, --field or a record on stdin) needs a single
+  document: one new file, or one --ingested NAME, ...`.
 - A new file is [ingested](#ingesting-files), and the document is
   [transcribed](#transcribing-files) if it hasn't been, as usual.
   `classify` and `review` are skipped: no model is asked for a record and no
   review menu is shown.
+- The cabinet is `--cabinet`, then `cabinet` on stdin, then, for an
+  `--ingested` document, the cabinet saved for it. A cabinet that differs
+  from the one saved for the document is an error before anything moves.
 - Anything missing is prompted for, before any file is touched: the cabinet
   (only if several are configured; tab completion offers the names), then
   each of the cabinet's [fields](#fields) in pattern order, with tab
   completion of [learned values](#learned-values). An invalid value typed
   at a prompt is rejected and the prompt asks again; empty input cancels
   without moving anything. A complete record never prompts. So to file a
-  document by hand, give just its cabinet, e.g.
-  `filez4eva stow -c default ~/Desktop/statement.pdf` (`default` is the name
-  of the single cabinet when no `cabinets` are configured), and type the
-  rest.
+  document by hand, give one of its values, e.g.
+  `filez4eva stow -c accounts -d 20240213 ~/Desktop/statement.pdf`, and
+  type the rest.
 - The record is saved as `results.review`, with `input: true` (see
   [The X.yml sidecar](#the-xyml-sidecar)), and the file is stowed with it
   exactly as above. `results.classify` isn't written. A document already in
@@ -639,11 +672,15 @@ The stage commands (`transcribe`, `classify`, `review` and `stow`) all take
   name there, or a path to it) and no other; repeatable, taken in the order
   given; not with a path
 
+`classify`, `review` and `stow` also take:
+- `--cabinet, -c NAME`: The cabinet of every document in the run that has
+  none saved yet, instead of a `Cabinet:` prompt for each one (see
+  [How a document's cabinet is chosen](#how-a-documents-cabinet-is-chosen))
+
 transcribe command:
 - `--only`: Transcribe only documents already ingested; skip other files
 
 classify command:
-- `--cabinet, -c NAME`: Classify every document for this cabinet
 - `--only`: Classify only documents already ingested and transcribed; skip
   other files
 
@@ -654,7 +691,7 @@ review command:
 stow command:
 - `--only`: Stow only documents already ingested, transcribed, classified
   and reviewed; skip other files (with input data: ingested and transcribed)
-- `--cabinet, -c NAME`: Input data: the cabinet to stow into
+- `--cabinet, -c NAME`: With input data, the record's cabinet
 - `--date, -d DATE`: Input data: the date, in YYYYMMDD format
 - `--field, -f NAME=VALUE`: Input data: the value of a field (repeatable)
 - With input data (flags or a record on stdin; see
@@ -743,16 +780,39 @@ results:
 - `length`: the length of the transcribed Markdown in characters, without
   the front matter and disclaimer.
 
-`classify` adds:
+Before a document is classified (by `classify`, or by `review` or `stow`
+running classify first), its cabinet is chosen (see
+[How a document's cabinet is chosen](#how-a-documents-cabinet-is-chosen))
+and saved as `results.given`, before the model is asked:
 
 ```yaml
 results:
   ingest: ...
   transcribe: ...
+  given:
+    at: '2026-10-25T14:03:14-07:00'
+    cabinet: accounts
+```
+
+- `at`: when the cabinet was given, in ISO-8601 local time with its UTC
+  offset, to the second.
+- `cabinet`: the document's cabinet. Later commands use it without asking,
+  and a `--cabinet` that differs from it fails the document. If the
+  document is skipped at the `Cabinet:` prompt, nothing is saved.
+
+`results.given` holds what is given for a document rather than proposed by
+the model; for now, that is its cabinet.
+
+`classify` then adds:
+
+```yaml
+results:
+  ingest: ...
+  transcribe: ...
+  given: ...
   classify:
     at: '2026-10-25T14:03:15-07:00'
     model: claude-haiku-4-5
-    cabinet: accounts
     doctype: receipt
     summary: Amazon.ca order receipt for a USB hub
     data:
@@ -763,10 +823,15 @@ results:
 - `at`: when the document was classified, in ISO-8601 local time with its
   UTC offset, to the second.
 - `model`: the model that classified it.
-- `cabinet`, `doctype`, `summary` and `data`: the classification (see
+- `doctype`, `summary` and `data`: the classification (see
   [Classifying Files](#classifying-files)). `data` has a value for each of
-  the cabinet's fields, in pattern order, with `date` as YYYYMMDD or
-  `null`.
+  the fields of the cabinet in `results.given`, in pattern order, with
+  `date` as YYYYMMDD or `null`.
+
+Sidecars written before `results.given` was introduced have none, and hold
+the cabinet in `results.classify.cabinet` instead. They keep working: that cabinet (or, for a reviewed document,
+`results.review.cabinet`) is taken as the saved cabinet. They aren't
+rewritten.
 
 `review` adds, when you confirm the record:
 
@@ -774,6 +839,7 @@ results:
 results:
   ingest: ...
   transcribe: ...
+  given: ...
   classify: ...
   review:
     at: '2026-10-25T15:20:41-07:00'
@@ -785,14 +851,15 @@ results:
 
 - `at`: when the record was confirmed, in ISO-8601 local time with its UTC
   offset, to the second.
-- `cabinet`: the confirmed cabinet, which may differ from
-  `results.classify.cabinet` (see [Reviewing Files](#reviewing-files)).
+- `cabinet`: the document's cabinet, from `results.given` (review doesn't
+  change it).
 - `data`: the confirmed value of each of that cabinet's fields, in pattern
   order, with `date` as YYYYMMDD.
 
 When `stow` is given [input data](#stowing-a-file-with-input-data), it
 writes `results.review` itself, in the same shape, with `input: true`, and
-there is no `results.classify`:
+there is no `results.given` or `results.classify` (unless the document had
+them already):
 
 ```yaml
 results:
@@ -814,6 +881,7 @@ results:
 results:
   ingest: ...
   transcribe: ...
+  given: ...
   classify: ...
   review: ...
   stow:
@@ -982,19 +1050,47 @@ Each cabinet has:
   go, with `location` and `root` keys. Each key defaults to the top-level
   `transcripts` value; see [Transcript location](#transcript-location)
 
-How a document's cabinet is chosen:
+#### How a document's cabinet is chosen
 
-- `classify` never asks: it uses `--cabinet NAME` (or `-c NAME`), the only
-  cabinet, or the model's pick. See [Classifying Files](#classifying-files).
-- `review` (and `stow`, for a document not yet reviewed) lets you change
-  the cabinet before confirming: see [Reviewing Files](#reviewing-files).
+You choose each document's cabinet; the AI model never picks it. It is
+chosen before the document is classified, so the model fills in that
+cabinet's fields, guided by its description, field guidance and learned
+values. This happens one document at a time, in the per-document part of
+`classify`, `review` and `stow` (whichever runs classify for it). The
+first of these that applies wins:
+
+1. **The cabinet already saved for the document** (`results.given.cabinet`
+   in its [sidecar](#the-xyml-sidecar); for a sidecar from before
+   `results.given`, the cabinet in `results.review` or `results.classify`).
+2. **`--cabinet NAME` (or `-c NAME`)** on `classify`, `review` or `stow`,
+   for every document in the run.
+3. **The only cabinet**, when just one is configured: no prompt.
+4. **A `Cabinet:` prompt** for that document, after a line naming it (and
+   its original name), with tab completion of the cabinet names. An unknown
+   name is rejected and the prompt asks again. Empty input skips the
+   document: nothing is saved, it is counted as `Skipped`, and a later run
+   asks again.
+
+The cabinet is saved as `results.given` before the model is asked, so later
+commands use it without asking: `review` and `stow` never prompt for the
+cabinet of a classified document. So with several cabinets and no `-c`,
+`classify` prompts for each document; to run it unattended, give
+`filez4eva classify -c NAME ~/Scans`.
+
+- An unknown `--cabinet` name is an error before any file is touched.
+- A `--cabinet` that differs from the cabinet already saved for a document
+  fails that document, with an error such as
+  `Cabinet memories given, but 20261025-140307-042.pdf already has cabinet accounts`;
+  the run carries on with the others. For example,
+  `filez4eva classify -c accounts ~/Scans` followed by
+  `filez4eva stow -c memories` fails every document from `~/Scans`. The
+  same cabinet is fine.
 - `stow` with [input data](#stowing-a-file-with-input-data) uses
-  `--cabinet NAME` (or `-c NAME`) or a `cabinet` key on stdin; the flag wins
-  if both are given. If neither is given and there is more than one
-  cabinet, it prompts for one, with tab-completion of the names.
-- With only one cabinet, it is used without asking.
-- An unknown name from a flag or stdin is an error; an unknown name typed at
-  a prompt is rejected and the prompt asks again.
+  `--cabinet NAME` (or `-c NAME`), then a `cabinet` key on stdin, then the
+  cabinet saved for an `--ingested` document. If none of them gives one and
+  there is more than one cabinet, it prompts for one, with tab completion of
+  the names. An unknown name from stdin is an error.
+- Review doesn't change the cabinet.
 
 Prompts, tab completion and learned values use the chosen cabinet's fields
 and target.
@@ -1121,15 +1217,26 @@ error too. Use the [five commands](#the-five-commands) instead:
 
 | Instead of | Use |
 |------------|-----|
-| `filez4eva stow-file FILE` with `--cabinet`, `--date`, `--field NAME=VALUE` or a record on stdin | `filez4eva stow FILE` with the same flags or stdin record. See [Stowing a file with input data](#stowing-a-file-with-input-data). |
-| `filez4eva stow-file FILE`, typing every value at the prompts | `filez4eva stow FILE` to have the model propose the values, which you confirm or edit; or `filez4eva stow -c CABINET FILE` to type them yourself, as before. |
-| `filez4eva scan-dir DIR`, or `filez4eva` on its own with `source:` configured | `filez4eva classify DIR` (unattended), then `filez4eva stow`; or `filez4eva stow DIR` for one interactive pass. The menu offers confirm, skip, preview, delete and quit. |
-| `filez4eva process FILE` | `filez4eva stow FILE`: it transcribes and classifies the file, asks you to confirm or edit the record, then stows it. |
-| `filez4eva process --cabinet NAME FILE` | `filez4eva classify --cabinet NAME FILE`, then `filez4eva stow`. |
+| `filez4eva stow-file FILE` with `--date`, `--field NAME=VALUE` or a record on stdin (and possibly `--cabinet`) | `filez4eva stow FILE` with the same flags or stdin record. See [Stowing a file with input data](#stowing-a-file-with-input-data). |
+| `filez4eva stow-file FILE`, typing every value at the prompts | `filez4eva stow -c CABINET FILE` to have the model propose the values for that cabinet, which you confirm or edit; or give one value as input data, e.g. `filez4eva stow -c CABINET -d DATE FILE`, and type the rest yourself. `stow -c CABINET FILE` on its own is no longer input data. |
+| `filez4eva scan-dir DIR`, or `filez4eva` on its own with `source:` configured | `filez4eva classify -c NAME DIR` (unattended), then `filez4eva stow`; or `filez4eva stow DIR` for one interactive pass. The menu offers confirm, skip, preview, delete and quit. |
+| `filez4eva process FILE` | `filez4eva stow FILE`: it asks for the cabinet if there are several, transcribes and classifies the file, asks you to confirm or edit the record, then stows it. |
+| `filez4eva process --cabinet NAME FILE` | `filez4eva stow --cabinet NAME FILE`, or `filez4eva classify --cabinet NAME FILE`, then `filez4eva stow`. |
 | `filez4eva process --dry-run FILE` | `filez4eva review FILE`, which saves the confirmed record without moving the file into a cabinet; then `filez4eva stow`. |
 
 Differences to be aware of:
 
+- **You choose the cabinet; the model never picks it.** With several
+  cabinets and no `-c NAME`, `classify` (and `review` and `stow`, for a
+  document they classify) prompts `Cabinet:` for each document before
+  classifying it. The unattended main use is now
+  `filez4eva classify -c NAME ~/Scans`. See
+  [How a document's cabinet is chosen](#how-a-documents-cabinet-is-chosen).
+- `review` no longer has a `Cabinet:` prompt: the cabinet saved before
+  classify is used.
+- `stow -c CABINET` is no longer input data on its own: it gives the
+  cabinet for classify, and the file is classified and reviewed as usual.
+  Input data is `--date`, `--field` or a record on stdin.
 - Every file now goes through the [intake](#intake) on its way to a
   cabinet: it is moved there and renamed when it is ingested, and its
   transcript `X.md` is written there, rather than next to the original

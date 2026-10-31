@@ -326,21 +326,15 @@ class Stower:
             self.app.ui.send(rule, Emphasis.PRINCIPAL)
 
     def confirm_values(self, cabinet: str, proposed: dict) -> dict:
-        """Confirm a proposed record at pre-filled prompts. With several
-        cabinets configured, prompt for the cabinet first, pre-filled with
-        cabinet (only a configured name is accepted); otherwise use the only
-        one. Then prompt for each field of the final cabinet in pattern
+        """Confirm a proposed record for a cabinet at pre-filled prompts.
+        The cabinet is fixed (the document's cabinet is chosen before it is
+        classified, and never prompted for here); an unknown name raises
+        Filez4EvaError. Prompt for each field of the cabinet in pattern
         order, pre-filled with the proposed value of the same name (empty
-        if there is none, e.g. a field the proposed cabinet doesn't have or
-        a document without a date). Return the confirmed cabinet, date and
-        data (the other fields). An empty answer raises
+        if there is none, e.g. a document without a date). Return the
+        cabinet, date and data (the other fields). An empty answer raises
         CommandCancellation."""
-        if len(self.cabinets) > 1:
-            names = sorted(self.cabinets)
-            self.cabinet = self.prompt_value(
-                'Cabinet', names, lambda v: v if v in self.cabinets else None,
-                'Cabinet must be one of: ' + ', '.join(names),
-                cabinet or '')
+        self.cabinet = cabinet
         chosen = self.resolve_cabinet()
         proposed = proposed or {}
         date = None

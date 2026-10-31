@@ -59,16 +59,6 @@ def write_store(target, store):
     path.write_text(yaml.safe_dump(store))
 
 
-def picking(cabinet, answer):
-    """A fake extract that answers the cabinet question with cabinet and
-    the classification with answer"""
-    def fake(text, schema, **kwargs):
-        if 'cabinet' in schema['properties']:
-            return {'cabinet': cabinet}
-        return answer
-    return fake
-
-
 def no_prompt(*args, **kwargs):
     raise AssertionError('classify prompted')
 
@@ -146,21 +136,36 @@ class ClassifyTestCase(WizLibTestCase):
                          'description': 'Family photos'}}, **extra)
 
     def run_command(self, path=None, config=None, result=RESULT,
-                    markdown='# Hi', extract=None, **vals):
+                    markdown='# Hi', extract=None, answers=None, **vals):
         """Run the command directly with fake config; return (output,
-        command, stderr, extract mock, transcribe mock)"""
+        command, stderr, extract mock, transcribe mock). answers are the
+        answers to text prompts (or a function standing in for get_text);
+        without them, any prompt fails the test."""
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(**(config or self.config()))
         command = ClassifyCommand(
             app, path=None if path is None else str(path), **vals)
         effect = {'side_effect': extract} if extract \
             else {'return_value': result}
+        if answers is None:
+            ask = no_prompt
+        elif callable(answers):
+            ask = answers
+        else:
+            answers = iter(answers)
+
+            def ask(*args):
+                return next(answers)
         with patch(EXTRACT, **effect) as e, \
                 patch(TRANSCRIBE, return_value=markdown) as t, \
+                patch.object(app.ui, 'get_text', side_effect=ask), \
                 self.patchout(), self.patcherr() as err:
-            out = command.execute()
-            err.seek(0)
-            return out, command, err.read(), e, t
+            try:
+                out = command.execute()
+            finally:
+                err.seek(0)
+                self.err = err.read()
+            return out, command, self.err, e, t
 
     def run_app(self, config_text, *args, result=RESULT, extract=None,
                 transcribe=None):
@@ -321,7 +326,8 @@ class TestClassifyPrerequisites(ClassifyTestCase):
         t.assert_called_once()
         self.assertEqual(t.call_args.args[0], document)
         results = read_sidecar(document)['results']
-        self.assertEqual(list(results), ['ingest', 'transcribe', 'classify'])
+        self.assertEqual(list(results),
+                         ['ingest', 'transcribe', 'given', 'classify'])
         self.assertEqual(results['transcribe']['transcript'],
                          f'{STAMP}.pdf.md')
         self.assertIn('# Hi', e.call_args.args[0])
@@ -339,12 +345,12 @@ class TestClassifyPrerequisites(ClassifyTestCase):
         self.assertEqual(command.status,
                          'Transcribed 1 file | Classified 1 file')
 
-    def test_never_prompts_with_several_cabinets(self):
+    def test_never_prompts_with_cabinet_flag(self):
         # TTYIN raises if anything is asked
         self.make('scan.pdf')
         out, command, _, _, _ = self.run_command(
-            self.source, config=self.two_cabinets(),
-            extract=picking('memories', MEMORY))
+            self.source, config=self.two_cabinets(), cabinet='memories',
+            result=MEMORY)
         self.assertEqual(command.status, 'Ingested 1 file | Transcribed 1 '
                          'file | Classified 1 file')
 
@@ -430,11 +436,12 @@ class TestClassifyResult(ClassifyTestCase):
         results = read_sidecar(document)['results']
         self.assertEqual(results['ingest'], before['ingest'])
         self.assertEqual(results['transcribe'], before['transcribe'])
+        self.assertEqual(results['given'], {'at': AT, 'cabinet': 'default'})
         classify = results['classify']
         self.assertEqual(list(classify), [
-            'at', 'model', 'cabinet', 'doctype', 'summary', 'data'])
+            'at', 'model', 'doctype', 'summary', 'data'])
         self.assertEqual(classify, {
-            'at': AT, 'model': DEFAULT_MODEL, 'cabinet': 'default',
+            'at': AT, 'model': DEFAULT_MODEL,
             'doctype': 'receipt',
             'summary': 'Amazon.ca order receipt for a USB hub',
             'data': DATA})
@@ -733,7 +740,7 @@ class TestClassifyUseCase(ClassifyTestCase):
                   f"      pattern: '{{event}}/{{date}}'\n"
                   f"      description: Family photos\n")
         out, err, code, _ = self.run_app(
-            config, self.source, extract=picking('memories', MEMORY))
+            config, '-c', 'memories', self.source, result=MEMORY)
         self.assertEqual(code, 0)
         self.assertEqual(list(self.source.iterdir()), [])
         documents = [self.intake / f'{STAMP}.pdf',
@@ -744,15 +751,18 @@ class TestClassifyUseCase(ClassifyTestCase):
         for document in documents:
             names += [document.name, f'{document.name}.md',
                       f'{document.name}.yml']
-            self.assertEqual(list(read_sidecar(document)['results']),
-                             ['ingest', 'transcribe', 'classify'])
+            results = read_sidecar(document)['results']
+            self.assertEqual(list(results),
+                             ['ingest', 'transcribe', 'given', 'classify'])
+            self.assertEqual(results['given']['cabinet'], 'memories')
         self.assertEqual(self.intake_names(), sorted(names))
         self.assertEqual(err, 'Ingested 3 files | Transcribed 3 files | '
                          'Classified 3 files\n')
 
 
 class TestClassifyCabinets(ClassifyTestCase):
-    """AC 11: cabinet choice"""
+    """AC 11, #72: the cabinet is chosen before classify, never by the
+    model"""
 
     def test_cabinet_flag_applies_to_every_file(self):
         first = self.make_document()
@@ -767,10 +777,30 @@ class TestClassifyCabinets(ClassifyTestCase):
             self.assertIn('grandma-bday', text)
             self.assertNotIn('amazon', text)
         for document in [first, second]:
-            classify = self.classified(document)
-            self.assertEqual(classify['cabinet'], 'memories')
-            self.assertEqual(classify['data'], {'event': 'grandma-bday',
-                                                'date': '20261002'})
+            results = read_sidecar(document)['results']
+            self.assertEqual(results['given'],
+                             {'at': AT, 'cabinet': 'memories'})
+            self.assertNotIn('cabinet', results['classify'])
+            self.assertEqual(results['classify']['data'],
+                             {'event': 'grandma-bday', 'date': '20261002'})
+
+    def test_model_is_never_asked_for_a_cabinet(self):
+        document = self.make_document(transcript='A birthday photo')
+        _, _, _, e, _ = self.run_command(
+            config=self.two_cabinets(), answers=['memories'], result=MEMORY)
+        # One call, for that cabinet's fields, with its existing values
+        e.assert_called_once()
+        schema = e.call_args.args[1]
+        self.assertEqual(set(schema['properties']),
+                         {'data', 'doctype', 'summary'})
+        self.assertEqual(list(schema['properties']['data']['properties']),
+                         ['event', 'date'])
+        self.assertIn('A birthday photo', e.call_args.args[0])
+        text = e.call_args.kwargs['instructions']
+        self.assertIn('"memories": Family photos', text)
+        self.assertIn('grandma-bday', text)
+        self.assertNotIn('Personal account records', text)
+        self.assertNotIn('cabinet', self.classified(document))
 
     def test_unknown_cabinet_fails_before_any_file_is_touched(self):
         source = self.make('scan.pdf')
@@ -795,82 +825,189 @@ class TestClassifyCabinets(ClassifyTestCase):
         e.assert_not_called()
         self.assertTrue(source.exists())
 
+    def test_unknown_cabinet_touches_no_intake_document(self):
+        document = self.make_document()
+        before = Path(f'{document}.yml').read_text()
+        with patch(EXTRACT) as e, \
+                self.assertRaisesRegex(Filez4EvaError, 'Unknown cabinet'):
+            self.run_command(config=self.two_cabinets(), cabinet='nope')
+        e.assert_not_called()
+        self.assertEqual(Path(f'{document}.yml').read_text(), before)
+
     def test_only_cabinet_is_used(self):
+        # No prompt (TTYIN raises if anything is asked)
         document = self.make_document()
         config = self.config(filez4eva_cabinets={
             'accounts': {'target': str(self.target), 'pattern': PATTERN}})
         _, _, _, e, _ = self.run_command(config=config)
         e.assert_called_once()
         self.assertNotIn('cabinet', e.call_args.args[1]['properties'])
-        self.assertEqual(self.classified(document)['cabinet'], 'accounts')
+        self.assertEqual(read_sidecar(document)['results']['given'],
+                         {'at': AT, 'cabinet': 'accounts'})
 
-    def test_model_picks_cabinet_then_fields(self):
-        document = self.make_document(transcript='A birthday photo')
-        _, _, _, e, _ = self.run_command(
-            config=self.two_cabinets(), extract=picking('memories', MEMORY))
-        self.assertEqual(e.call_count, 2)
-        pick, fields = e.call_args_list
-        self.assertIn('A birthday photo', pick.args[0])
-        self.assertIn('Original file name: Scan 1.PDF', pick.args[0])
-        self.assertEqual(pick.args[1]['properties']['cabinet']['enum'],
-                         ['accounts', 'memories'])
-        self.assertEqual(pick.args[1]['required'], ['cabinet'])
-        text = pick.kwargs['instructions']
-        self.assertIn('- accounts: Personal account records', text)
-        self.assertIn('- memories: Family photos', text)
-        self.assertEqual(pick.kwargs['model'], DEFAULT_MODEL)
-        # Then that cabinet's fields, with its existing values
-        props = fields.args[1]['properties']['data']['properties']
-        self.assertEqual(list(props), ['event', 'date'])
-        text = fields.kwargs['instructions']
-        self.assertIn('"memories": Family photos', text)
-        self.assertIn('grandma-bday', text)
-        self.assertNotIn('amazon', text)
-        classify = self.classified(document)
-        self.assertEqual(classify['cabinet'], 'memories')
-        self.assertEqual(classify['data'], {'event': 'grandma-bday',
-                                            'date': '20261002'})
+    def test_one_prompt_per_document_before_its_classification(self):
+        self.make('a.pdf')
+        self.make('b.pdf')
+        events = []
+        answers = iter(['memories', 'accounts'])
 
-    def test_cabinet_without_description(self):
-        self.make_document()
-        config = self.two_cabinets()
-        del config['filez4eva_cabinets']['accounts']['description']
-        _, _, _, e, _ = self.run_command(
-            config=config, extract=picking('accounts', RESULT))
-        self.assertIn('- accounts\n',
-                      e.call_args_list[0].kwargs['instructions'] + '\n')
+        def ask(prompt, choices=(), *default):
+            events.append(('prompt', prompt, list(choices)))
+            return next(answers)
 
-    def test_pick_that_is_not_a_cabinet_is_a_failure(self):
-        for pick in ['nope', None, 5]:
-            with self.subTest(pick=pick):
-                first = self.make_document()
-                second = self.make_document('20261025-140307-099.pdf')
-                calls = []
+        def fake(text, schema, **kwargs):
+            fields = list(schema['properties']['data']['properties'])
+            events.append(('model', fields))
+            return MEMORY if 'event' in fields else RESULT
+        out, command, err, e, t = self.run_command(
+            self.source, config=self.two_cabinets(), extract=fake,
+            answers=ask)
+        names = ['accounts', 'memories']
+        self.assertEqual(events, [
+            ('prompt', 'Cabinet: ', names), ('model', ['event', 'date']),
+            ('prompt', 'Cabinet: ', names),
+            ('model', ['date', 'account', 'part'])])
+        first = self.intake / f'{STAMP}.pdf'
+        second = self.intake / '20261025-140307-043.pdf'
+        # Each prompt names its document
+        self.assertIn(f'{first.name} (a.pdf)', err)
+        self.assertIn(f'{second.name} (b.pdf)', err)
+        self.assertEqual(read_sidecar(first)['results']['given']['cabinet'],
+                         'memories')
+        self.assertEqual(read_sidecar(second)['results']['given']['cabinet'],
+                         'accounts')
+        self.assertEqual(command.status, 'Ingested 2 files | Transcribed 2 '
+                         'files | Classified 2 files')
 
-                def fake(text, schema, **kwargs):
-                    if 'cabinet' in schema['properties']:
-                        calls.append(text)
-                        return {'cabinet': pick if len(calls) == 1
-                                else 'memories'}
-                    return MEMORY
-                app = Filez4EvaApp()
-                app.config = ConfigHandler.fake(**self.two_cabinets())
-                with patch(EXTRACT, side_effect=fake), \
-                        self.patchout() as o, self.patcherr() as err, \
-                        self.assertRaisesRegex(Filez4EvaError,
-                                               '1 of 2 files failed'):
-                    ClassifyCommand(app).execute()
-                err.seek(0)
-                self.assertIn(f'Failed to classify {first}: Classification '
-                              f'failed: unknown cabinet {pick!r}; known: '
-                              'accounts, memories', err.read())
-                self.assertIsNone(self.classified(first))
-                self.assertEqual(self.classified(second)['cabinet'],
-                                 'memories')
-                o.seek(0)
-                self.assertEqual(o.read().strip(), str(second))
+    def test_prompt_rejects_an_unknown_name(self):
+        document = self.make_document()
+        _, _, err, e, _ = self.run_command(
+            config=self.two_cabinets(), answers=['nope', ' accounts '])
+        self.assertIn('Cabinet must be one of: accounts, memories', err)
+        e.assert_called_once()
+        self.assertEqual(read_sidecar(document)['results']['given'],
+                         {'at': AT, 'cabinet': 'accounts'})
 
-    def test_pick_from_config_file(self):
+    def test_empty_answer_skips_the_document_and_a_later_run_asks(self):
+        first = self.make_document()
+        second = self.make_document('20261025-140307-099.pdf')
+        before = Path(f'{first}.yml').read_text()
+        out, command, _, e, _ = self.run_command(
+            config=self.two_cabinets(), answers=['', 'accounts'])
+        e.assert_called_once()
+        self.assertEqual(out, str(second))
+        self.assertEqual(command.status,
+                         'Classified 1 file | Skipped 1 file')
+        # Nothing written for the skipped document
+        self.assertEqual(Path(f'{first}.yml').read_text(), before)
+        out, command, _, e, _ = self.run_command(
+            config=self.two_cabinets(), answers=['accounts'])
+        e.assert_called_once()
+        self.assertEqual(out, str(first))
+        self.assertEqual(command.status,
+                         'Classified 1 file | Already classified 1 file')
+
+    def test_saved_cabinet_is_used_without_asking(self):
+        # Saved by an earlier run that failed to classify
+        document = self.make_document()
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            self.run_command(config=self.two_cabinets(),
+                             answers=['memories'], extract=APIError('boom'))
+        self.assertEqual(read_sidecar(document)['results']['given'],
+                         {'at': AT, 'cabinet': 'memories'})
+        # TTYIN raises if anything is asked
+        _, command, _, e, _ = self.run_command(config=self.two_cabinets(),
+                                               result=MEMORY)
+        self.assertEqual(list(e.call_args.args[1]['properties']['data']
+                              ['properties']), ['event', 'date'])
+        self.assertEqual(command.status, 'Classified 1 file')
+
+    def test_saved_cabinet_wins_over_the_only_one(self):
+        document = self.make_document()
+        data = read_sidecar(document)
+        data['results']['given'] = {'at': AT, 'cabinet': 'memories'}
+        write_sidecar(document, data)
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            self.run_command()
+        self.assertIn('Unknown cabinet memories', self.err)
+        self.assertIsNone(self.classified(document))
+
+    def test_saved_cabinet_no_longer_configured_is_a_failure(self):
+        document = self.make_document()
+        data = read_sidecar(document)
+        data['results']['given'] = {'at': AT, 'cabinet': 'gone'}
+        write_sidecar(document, data)
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(**self.two_cabinets())
+        with patch(EXTRACT) as e, self.patchout(), \
+                self.patcherr() as err, \
+                self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            ClassifyCommand(app).execute()
+        e.assert_not_called()
+        err.seek(0)
+        self.assertIn(f'Unknown cabinet gone for {document.name}; known: '
+                      'accounts, memories', err.read())
+
+    def test_no_cabinet_given_is_a_failure(self):
+        document = self.make_document()
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(**self.config())
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    f'No cabinet given for {document.name}'):
+            command = ClassifyCommand(app)
+            command.handle_vals()
+            command.act(document)
+
+    def test_conflicting_cabinet_fails_that_document_only(self):
+        first = self.make_document()
+        data = read_sidecar(first)
+        data['results']['given'] = {'at': AT, 'cabinet': 'accounts'}
+        write_sidecar(first, data)
+        second = self.make_document('20261025-140307-099.pdf')
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(**self.two_cabinets())
+        with patch(EXTRACT, return_value=MEMORY) as e, \
+                self.patchout() as o, self.patcherr() as err, \
+                self.assertRaisesRegex(Filez4EvaError,
+                                       '1 of 2 files failed to classify'):
+            ClassifyCommand(app, cabinet='memories').execute()
+        e.assert_called_once()
+        err.seek(0)
+        self.assertIn(f'Failed to classify {first}: Cabinet memories given, '
+                      f'but {first.name} already has cabinet accounts',
+                      err.read())
+        o.seek(0)
+        self.assertEqual(o.read().strip(), str(second))
+        self.assertIsNone(self.classified(first))
+        self.assertEqual(read_sidecar(first)['results']['given']['cabinet'],
+                         'accounts')
+
+    def test_conflict_with_an_already_classified_document(self):
+        document = self.make_document()
+        data = read_sidecar(document)
+        data['results']['given'] = {'at': AT, 'cabinet': 'accounts'}
+        data['results']['classify'] = {'at': AT, 'data': DATA}
+        write_sidecar(document, data)
+        with patch(EXTRACT) as e, \
+                self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            self.run_command(config=self.two_cabinets(), cabinet='memories')
+        e.assert_not_called()
+        # The same cabinet is fine
+        _, command, _, e, _ = self.run_command(config=self.two_cabinets(),
+                                               cabinet='accounts')
+        e.assert_not_called()
+        self.assertEqual(command.status, 'Already classified 1 file')
+
+    def test_old_shape_cabinet_counts_as_saved(self):
+        document = self.make_document()
+        data = read_sidecar(document)
+        data['results']['classify'] = {'at': AT, 'cabinet': 'memories',
+                                       'data': {}}
+        write_sidecar(document, data)
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            self.run_command(config=self.two_cabinets(), cabinet='accounts')
+
+    def test_cabinet_from_config_file_and_flag(self):
         document = self.make_document()
         config = (f"filez4eva:\n  intake: {self.intake}\n"
                   f"  cabinets:\n"
@@ -880,11 +1017,12 @@ class TestClassifyCabinets(ClassifyTestCase):
                   f"    memories:\n"
                   f"      target: {self.memories}\n"
                   f"      pattern: '{{event}}/{{date}}'\n")
-        out, err, code, _ = self.run_app(config, extract=picking(
-            'accounts', dict(RESULT, doctype='other')))
+        out, err, code, _ = self.run_app(
+            config, '-c', 'accounts', result=dict(RESULT, doctype='other'))
         self.assertEqual(err, 'Classified 1 file\n')
         self.assertEqual(code, 0)
-        self.assertEqual(self.classified(document)['cabinet'], 'accounts')
+        self.assertEqual(read_sidecar(document)['results']['given'],
+                         {'at': AT, 'cabinet': 'accounts'})
 
 
 class TestClassifyOutput(ClassifyTestCase):

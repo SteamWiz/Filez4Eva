@@ -60,8 +60,10 @@ class TestCommands(WizLibTestCase):
             command = Filez4EvaApp.base.family_member('name', name)
             self.assertIn(f'  {name:<12}{command.summary}\n', out)
         self.assertLess(out.index('  ingest '), out.index('  stow '))
-        self.assertIn('Main use: `filez4eva classify ~/Scans`, then '
-                      '`filez4eva stow`', out)
+        self.assertIn('Main use: `filez4eva classify -c NAME ~/Scans`, '
+                      'then `filez4eva stow`. With several cabinets and no '
+                      '-c, classify prompts for each document\'s cabinet.',
+                      ' '.join(out.split()))
         for name in ['stow-file', 'scan-dir', 'process']:
             self.assertNotIn(name, out)
 
@@ -69,9 +71,10 @@ class TestCommands(WizLibTestCase):
         for name, text in [
                 ('ingest', 'into the intake under a time-stamped name'),
                 ('transcribe', 'Transcribe documents to Markdown'),
-                ('classify', 'Never prompts'),
+                ('classify', 'With several cabinets and no --cabinet, '
+                 'classify prompts for each document'),
                 ('review', 'Nothing is stowed'),
-                ('stow', 'Input data (--cabinet, --date, --field')]:
+                ('stow', 'Input data (--date, --field')]:
             with self.subTest(name=name):
                 out, _, code = start(name, '--help')
                 self.assertEqual(code, 0)
@@ -93,6 +96,21 @@ class TestCommands(WizLibTestCase):
                     self.assertIn('transcribed first, in one batch', out)
                     self.assertIn('the most advanced documents come first',
                                   out)
+
+    def test_cabinet_flag_on_classify_review_and_stow(self):
+        for name in ['classify', 'review', 'stow']:
+            with self.subTest(name=name):
+                out, _, code = start(name, '--help')
+                self.assertEqual(code, 0)
+                out = ' '.join(out.split())
+                self.assertIn('--cabinet, -c NAME the cabinet of every '
+                              'document in the run that has none saved yet',
+                              out)
+                self.assertIn('The model never picks the cabinet.', out)
+        for name in ['ingest', 'transcribe']:
+            with self.subTest(name=name):
+                out, _, _ = start(name, '--help')
+                self.assertNotIn('--cabinet', out)
 
     def test_order_help_names_the_remaining_stages(self):
         out, _, _ = start('stow', '--help')

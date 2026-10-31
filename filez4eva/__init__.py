@@ -31,6 +31,7 @@ class Filez4EvaApp(WizApp):
             'Each command but ingest takes a file, a directory or nothing',
             '(every document in the intake), and runs the earlier stages a',
             'document lacks first, unless --only is given.', '',
-            'Main use: `filez4eva classify ~/Scans`, then `filez4eva stow`.',
-            '',
+            'Main use: `filez4eva classify -c NAME ~/Scans`, then',
+            '`filez4eva stow`. With several cabinets and no -c, classify',
+            'prompts for each document\'s cabinet.', '',
             '`filez4eva COMMAND --help` describes a command.'])

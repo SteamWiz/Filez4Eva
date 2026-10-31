@@ -13,6 +13,7 @@ from wizlib.parser import WizParser
 from wizlib.ui.shell_ui import Emphasis
 
 from filez4eva.command import Filez4EvaCommand
+from filez4eva.command import ingest_command
 from filez4eva.command.ingest_command import (
     files, in_intake, ingest_file, intake_dir, is_ingested, sidecar_path,
     top_level_documents, write_sidecar)
@@ -23,9 +24,16 @@ from filez4eva.error import Filez4EvaError
 # recorded in its results.
 STAGES = ('ingest', 'transcribe', 'classify', 'review', 'stow')
 
+# The stage before which a document's cabinet must be known
+CLASSIFY = 'classify'
+
 # Stage of the batch that runs on every selected document before any later
 # stage starts on any of them
 BATCH_STAGE = 'transcribe'
+
+# Key under `results` of what is given for a document before it is
+# classified: when, and its cabinet
+GIVEN = 'given'
 
 # Line width of the generated paragraphs of `filez4eva COMMAND --help`
 HELP_WIDTH = 68
@@ -100,6 +108,21 @@ def load_sidecar(path: Path) -> dict:
         raise Filez4EvaError(
             f"results in sidecar {sidecar} must be a mapping")
     return data
+
+
+def saved_cabinet(results: dict):
+    """Return the cabinet saved for a document, from its results: the
+    cabinet given before classify (results.given.cabinet). Sidecars from
+    before results.given have none; for them, the cabinet confirmed at
+    review (results.review.cabinet), then the one chosen at classify
+    (results.classify.cabinet), stand in for it. None if there is none."""
+    for stage in (GIVEN, 'review', 'classify'):
+        record = results.get(stage)
+        cabinet = record.get('cabinet') if isinstance(record, dict) \
+            else None
+        if isinstance(cabinet, str) and cabinet.strip():
+            return cabinet.strip()
+    return None
 
 
 def stage_result(path: Path, stage: str):
@@ -179,6 +202,10 @@ class StageCommand(Filez4EvaCommand):
     # repeated --ingested flags
     ingested: list = None
 
+    # Cabinet given with --cabinet for every document in the run (stages
+    # after transcribe only)
+    cabinet: str = None
+
     @classmethod
     def selection_help(cls) -> str:
         """The part of `filez4eva COMMAND --help` on which documents a run
@@ -192,6 +219,15 @@ class StageCommand(Filez4EvaCommand):
             "--ingested NAME (repeatable), just those documents in the "
             "intake, in the order given."]
         if cls.stage != BATCH_STAGE:
+            paragraphs.append(
+                "Cabinet: each document's cabinet is chosen before it is "
+                "classified, and saved in its X.yml sidecar: the cabinet "
+                "already saved for it; otherwise --cabinet; otherwise the "
+                "only cabinet, if just one is configured; otherwise a "
+                "Cabinet prompt for that document (empty input skips it). "
+                "The model never picks the cabinet. A --cabinet that "
+                "differs from the one saved for a document fails that "
+                "document.")
             later = [c.name for c in cls.requires
                      if c.stage != BATCH_STAGE] + [cls.name]
             paragraphs.append(
@@ -219,6 +255,11 @@ class StageCommand(Filez4EvaCommand):
             help="work on this document already in the intake (its file "
             "name there, or a path to it) and no other (repeatable; taken "
             "in the order given; not with a path)")
+        if cls.stage != BATCH_STAGE:
+            parser.add_argument(
+                '--cabinet', '-c', metavar='NAME',
+                help="the cabinet of every document in the run that has "
+                "none saved yet, instead of a prompt for each one")
         parser.add_argument(
             'path', nargs='?',
             help="new files: a file, or a directory (top level only), "
@@ -231,6 +272,71 @@ class StageCommand(Filez4EvaCommand):
             raise Filez4EvaError(
                 "--ingested names documents already in the intake; it "
                 "can't be combined with a path (new files)")
+        if self.stage != BATCH_STAGE:
+            # Imported here: filez4eva.stow imports the transcribe command,
+            # which imports this module
+            from filez4eva.stow import load_cabinets
+            # Check the cabinets and the --cabinet name before any file is
+            # touched
+            self.cabinets = load_cabinets(self.app.config)
+            if self.provided('cabinet') and \
+                    self.cabinet not in self.cabinets:
+                raise Filez4EvaError(
+                    f"Unknown cabinet {self.cabinet}; known: "
+                    + ', '.join(sorted(self.cabinets)))
+
+    def check_cabinet(self, path: Path):
+        """Raise Filez4EvaError if the run gives a cabinet (--cabinet)
+        that differs from the one saved for the document"""
+        if not self.provided('cabinet'):
+            return
+        saved = saved_cabinet(load_sidecar(path)['results'])
+        if saved is not None and saved != self.cabinet:
+            raise Filez4EvaError(
+                f"Cabinet {self.cabinet} given, but {path.name} already has "
+                f"cabinet {saved}")
+
+    def ask_cabinet(self, path: Path, results: dict) -> str:
+        """Prompt for a document's cabinet, with tab completion of the
+        names, until a configured one is entered. Empty input skips the
+        document (NotDone)."""
+        ingest = results.get('ingest')
+        original = ingest.get('original-name') \
+            if isinstance(ingest, dict) else None
+        self.app.ui.send(f"{path.name} ({original})" if original
+                         else path.name)
+        names = sorted(self.cabinets)
+        while True:
+            name = (self.app.ui.get_text('Cabinet: ', names) or '').strip()
+            if not name:
+                self.app.ui.send('Skipped', Emphasis.INFO)
+                raise NotDone('Skipped')
+            if name in self.cabinets:
+                return name
+            self.app.ui.send('Cabinet must be one of: ' + ', '.join(names),
+                             Emphasis.PRINCIPAL)
+
+    def give_cabinet(self, path: Path, missing: list):
+        """Before a document is classified (by this command or an earlier
+        one in missing), make sure its cabinet is saved as
+        results.given: the cabinet already saved for it, otherwise
+        --cabinet, otherwise the only cabinet, otherwise a prompt (empty
+        input skips the document, writing nothing)"""
+        if CLASSIFY not in [command.stage for command in missing] + \
+                [self.stage]:
+            return
+        results = load_sidecar(path)['results']
+        if saved_cabinet(results) is not None:
+            return
+        if self.provided('cabinet'):
+            name = self.cabinet
+        elif len(self.cabinets) == 1:
+            name = next(iter(self.cabinets))
+        else:
+            name = self.ask_cabinet(path, results)
+        record_result(path, GIVEN, {
+            'at': ingest_command.now().isoformat(timespec='seconds'),
+            'cabinet': name})
 
     def act(self, path: Path) -> str:  # pragma: no cover
         """Run the stage on an ingested document that hasn't had it yet,
@@ -342,11 +448,14 @@ class StageCommand(Filez4EvaCommand):
     def cycle(self, work: list, earlier: list, lines: list):
         """The per-file cycle: take each document through the stages it
         still lacks, up to this one, before the next document starts (under
-        --only, skip it with a note instead). StopRun from act ends the
-        run."""
+        --only, skip it with a note instead). A --cabinet that differs from
+        the document's saved cabinet fails it (check_cabinet), and its
+        cabinet is saved before it is classified (give_cabinet). StopRun
+        from act ends the run."""
         for entry in work:
             document, current = entry
             try:
+                self.check_cabinet(current)
                 if stage_result(current, self.stage) is not None:
                     self.counts[self.already] += 1
                     continue
@@ -355,6 +464,7 @@ class StageCommand(Filez4EvaCommand):
                 if missing and self.only:
                     self.skip(document, missing[0].done.lower())
                     continue
+                self.give_cabinet(current, missing)
                 for command in missing:
                     command.act(current)
                     self.counts[command.done] += 1
@@ -385,7 +495,9 @@ class StageCommand(Filez4EvaCommand):
         if not todo:
             self.status = empty
             return ''
-        if not self.path:
+        # With --cabinet, every document is checked against it, even when
+        # there is nothing else to do
+        if not self.path and not self.provided('cabinet'):
             done = sum(has_stage(document, self.stage) for document in todo)
             if done == len(todo):
                 self.status = (f"Nothing to {self.name} ({files(done)} "

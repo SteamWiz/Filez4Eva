@@ -3,7 +3,6 @@ import re
 
 import yaml
 from kwark.ai import KwarkAIError, extract
-from wizlib.parser import WizParser
 
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command import ingest_command
@@ -11,8 +10,9 @@ from filez4eva.command.transcribe_command import (
     TranscribeCommand, recorded_transcript, transcript_body)
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import check_value, load_store, suggestions
-from filez4eva.stage import StageCommand, load_sidecar, record_result
-from filez4eva.stow import Cabinet, load_cabinets, valid_date
+from filez4eva.stage import (
+    StageCommand, load_sidecar, record_result, saved_cabinet)
+from filez4eva.stow import Cabinet, valid_date
 
 
 # Model used when `filez4eva: classify: model:` is not configured
@@ -37,10 +37,6 @@ CONTEXT_NOTE = ("Before the transcript you are given the document's "
                 "original file name and where it came from (its source). "
                 "Use them as hints, but go by the transcript when they "
                 "disagree.")
-
-CABINET_TASK = """\
-Choose the cabinet the document below should be filed in. Return:
-- cabinet: the name of one of the cabinets listed below"""
 
 # Fixed rules for the date, whatever its guidance says
 DATE_RULES = ("Give it as YYYYMMDD. If you can't determine the document's "
@@ -260,44 +256,6 @@ def classify_text(text: str, cabinet: Cabinet, doctypes: dict, model: str,
     return check_result(result, cabinet, doctypes)
 
 
-def build_cabinet_schema(cabinets: dict) -> dict:
-    """Return the JSON schema for choosing one of the cabinets"""
-    return {
-        'type': 'object',
-        'properties': {
-            'cabinet': {
-                'type': 'string', 'enum': list(cabinets),
-                'description': 'The cabinet to file the document in'}},
-        'required': ['cabinet'],
-        'additionalProperties': False,
-    }
-
-
-def build_cabinet_instructions(cabinets: dict) -> str:
-    """Return the instructions for choosing a cabinet: the names with their
-    descriptions"""
-    lines = ['Cabinets:']
-    for name, cabinet in cabinets.items():
-        description = (cabinet.description or '').strip()
-        lines.append(f'- {name}: {description}' if description
-                     else f'- {name}')
-    return '\n\n'.join([CABINET_TASK, CONTEXT_NOTE, '\n'.join(lines)])
-
-
-def pick_cabinet(text: str, cabinets: dict, model: str, api_key) -> Cabinet:
-    """Ask the model which of the configured cabinets a document belongs
-    in, from their names and descriptions. Raises Filez4EvaError if the call
-    fails or the answer isn't a configured cabinet."""
-    result = ask_model(text, build_cabinet_schema(cabinets),
-                       build_cabinet_instructions(cabinets), model, api_key)
-    name = result.get('cabinet') if isinstance(result, dict) else None
-    if not isinstance(name, str) or name.strip() not in cabinets:
-        raise Filez4EvaError(
-            f"Classification failed: unknown cabinet {name!r}; known: "
-            + ', '.join(sorted(cabinets)))
-    return cabinets[name.strip()]
-
-
 def document_text(transcript: str, ingest: dict) -> str:
     """Return the text given to the model for a document in the intake: its
     original file name and source (from results.ingest), then its
@@ -318,44 +276,35 @@ def document_text(transcript: str, ingest: dict) -> str:
 class ClassifyCommand(StageCommand):
     """Classify new files (ingesting them first), the documents already in
     the intake, or the ones named with --ingested, with Claude,
-    transcribing them first if needed. Records results.classify (cabinet,
-    doctype, summary and field values) in each document's X.yml. Never
-    prompts."""
+    transcribing them first if needed. Each document's cabinet is chosen
+    first (see StageCommand.give_cabinet) and saved as results.given; the
+    model never picks it. Records results.classify (doctype, summary and
+    field values for that cabinet) in each document's X.yml."""
 
     name = 'classify'
-    summary = 'have an AI model propose a cabinet and field values'
+    summary = 'have an AI model propose field values for each cabinet'
     description = """
-        Have an AI model propose a cabinet, a doctype, a summary and a value
-        for each of the cabinet's fields for each document, and record them
-        as results.classify in its X.yml sidecar. Never prompts, so it can
-        run unattended. With several cabinets and no --cabinet, the model
-        picks the cabinet. Prints each document's path.
+        Have an AI model propose a doctype, a summary and a value for each
+        of the cabinet's fields for each document, and record them as
+        results.classify in its X.yml sidecar. Prints each document's
+        path.
 
-        Main use: `filez4eva classify ~/Scans`, then `filez4eva stow`."""
+        The model never picks the cabinet (see Cabinet below). With
+        several cabinets and no --cabinet, classify prompts for each
+        document's cabinet before classifying it; give --cabinet to run
+        unattended.
+
+        Main use: `filez4eva classify -c NAME ~/Scans`, then
+        `filez4eva stow`."""
     stage = 'classify'
     done = 'Classified'
     requires = (TranscribeCommand,)
 
-    # Cabinet for every document in the run; None to use the only cabinet,
-    # or let the model pick one when there are several
-    cabinet: str = None
-
-    @classmethod
-    def add_args(cls, parser: WizParser):
-        super().add_args(parser)
-        parser.add_argument('--cabinet', '-c',
-                            help='classify every document for this cabinet')
-
     def handle_vals(self):
         super().handle_vals()
-        # Check all the configuration, including the --cabinet name, before
-        # any file is touched
+        # Check the doctypes too before any file is touched (the cabinets
+        # and --cabinet are checked by StageCommand)
         self.doctypes = load_doctypes(self.app.config)
-        self.cabinets = load_cabinets(self.app.config)
-        if self.provided('cabinet') and self.cabinet not in self.cabinets:
-            raise Filez4EvaError(
-                f"Unknown cabinet {self.cabinet}; known: "
-                + ', '.join(sorted(self.cabinets)))
 
     @property
     def model(self) -> str:
@@ -368,29 +317,32 @@ class ClassifyCommand(StageCommand):
         default"""
         return anthropic_key(self.app.config)
 
-    def choose_cabinet(self, text: str) -> Cabinet:
-        """The --cabinet cabinet, the only one, or the model's pick"""
-        if self.provided('cabinet'):
-            return self.cabinets[self.cabinet]
-        if len(self.cabinets) == 1:
-            return next(iter(self.cabinets.values()))
-        return pick_cabinet(text, self.cabinets, self.model, self.api_key)
+    def document_cabinet(self, path: Path, results: dict) -> Cabinet:
+        """The cabinet saved for the document (results.given). Raises
+        Filez4EvaError if there is none or it isn't configured."""
+        name = saved_cabinet(results)
+        if name is None:
+            raise Filez4EvaError(f"No cabinet given for {path.name}")
+        if name not in self.cabinets:
+            raise Filez4EvaError(
+                f"Unknown cabinet {name} for {path.name}; known: "
+                + ', '.join(sorted(self.cabinets)))
+        return self.cabinets[name]
 
     def act(self, path: Path) -> str:
-        """Classify an ingested, transcribed document from its transcript,
-        original name and source, record results.classify, and return the
-        document's path"""
+        """Classify an ingested, transcribed document for its saved cabinet
+        from its transcript, original name and source, record
+        results.classify, and return the document's path"""
         results = load_sidecar(path)['results']
+        cabinet = self.document_cabinet(path, results)
         transcript = recorded_transcript(path, results)
         text = document_text(read_transcript(transcript),
                              results.get('ingest'))
-        cabinet = self.choose_cabinet(text)
         values = classify_text(text, cabinet, self.doctypes, self.model,
                                self.api_key, context=True)
         record_result(path, self.stage, {
             'at': ingest_command.now().isoformat(timespec='seconds'),
             'model': self.model,
-            'cabinet': cabinet.name,
             'doctype': values['doctype'],
             'summary': values['summary'],
             'data': values['data'],
