@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import patch
 
@@ -15,7 +16,8 @@ from wizlib.test_case import WizLibTestCase
 
 from filez4eva import Filez4EvaApp
 from filez4eva.command.ingest_command import (
-    DEFAULT_INTAKE, IngestCommand, extensions, in_intake, ingest_file,
+    DEFAULT_INTAKE, IngestCommand, extensions, file_time, in_intake,
+    ingest_file, ingest_record,
     intake_dir, intake_lock, is_companion, is_ingested, now, parse_meta,
     read_sidecar, sidecar_path, stamp_name, write_sidecar)
 from filez4eva.error import Filez4EvaError
@@ -29,6 +31,36 @@ CLOCK = datetime(2026, 10, 25, 14, 3, 7, 42000,
                  tzinfo=timezone(timedelta(hours=-7)))
 STAMP = '20261025-140307-042'
 NEXT_STAMP = '20261025-140307-043'
+
+
+# File times for the original file: modified and created (birth)
+MTIME = 1759400000
+BIRTHTIME = 1759300000
+
+
+def local_time(timestamp):
+    """A timestamp as the sidecar records it: local ISO-8601 with offset"""
+    return datetime.fromtimestamp(timestamp).astimezone().isoformat(
+        timespec='seconds')
+
+
+def stat_of(path, birthtime=None):
+    """Patch os.stat so that, for path only, the result has st_birthtime
+    set to birthtime, or none at all when birthtime is None (as on most
+    Linux filesystems)"""
+    real_stat = os.stat
+    path = str(path)
+
+    def fake_stat(target, *args, **kwargs):
+        result = real_stat(target, *args, **kwargs)
+        if os.fspath(target) != path:
+            return result
+        fields = {name: getattr(result, name) for name in dir(result)
+                  if name.startswith('st_') and name != 'st_birthtime'}
+        if birthtime is not None:
+            fields['st_birthtime'] = birthtime
+        return SimpleNamespace(**fields)
+    return patch('os.stat', fake_stat)
 
 
 def ingest_worker(barrier, source, intake):
@@ -246,18 +278,70 @@ class TestIngestCommand(WizLibTestCase):
 
     def test_sidecar(self):
         source = self.make("it's: #1.PDF")
-        result, _, _ = self.run_command(source)
+        os.utime(source, (MTIME, MTIME))
+        with stat_of(source):
+            result, _, _ = self.run_command(source)
         text = sidecar_path(Path(result)).read_text()
         data = yaml.safe_load(text)
         self.assertEqual(data, {'results': {'ingest': {
             'at': '2026-10-25T14:03:07-07:00',
             'original-name': "it's: #1.PDF",
+            'modified': local_time(MTIME),
             'source': {}}}})
         self.assertEqual(list(data['results']['ingest']),
-                         ['at', 'original-name', 'source'])
+                         ['at', 'original-name', 'modified', 'source'])
         self.assertIsNotNone(
             datetime.fromisoformat(data['results']['ingest']['at']).tzinfo)
         self.assertEqual(read_sidecar(Path(result)), data)
+
+    def test_sidecar_with_creation_time(self):
+        source = self.make('photo.jpg')
+        os.utime(source, (MTIME, MTIME))
+        with stat_of(source, BIRTHTIME):
+            result, _, _ = self.run_command(source)
+        ingest = read_sidecar(Path(result))['results']['ingest']
+        self.assertEqual(list(ingest), ['at', 'original-name', 'created',
+                                        'modified', 'source'])
+        self.assertEqual(ingest['created'], local_time(BIRTHTIME))
+        self.assertEqual(ingest['modified'], local_time(MTIME))
+
+    def test_file_times_are_local_iso_to_the_second(self):
+        value = file_time(MTIME + 0.75)
+        parsed = datetime.fromisoformat(value)
+        self.assertIsNotNone(parsed.tzinfo)
+        self.assertEqual(parsed.timestamp(), MTIME)
+        self.assertRegex(
+            value, r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$')
+
+    def test_ingest_record_file_times(self):
+        without = ingest_record(CLOCK, 'a.pdf', {},
+                                SimpleNamespace(st_mtime=MTIME))
+        self.assertEqual(without['results']['ingest'], {
+            'at': '2026-10-25T14:03:07-07:00', 'original-name': 'a.pdf',
+            'modified': local_time(MTIME), 'source': {}})
+        with_birth = ingest_record(
+            CLOCK, 'a.pdf', {},
+            SimpleNamespace(st_mtime=MTIME, st_birthtime=BIRTHTIME))
+        self.assertEqual(with_birth['results']['ingest']['created'],
+                         local_time(BIRTHTIME))
+        self.assertNotIn('created', ingest_record(
+            CLOCK, 'a.pdf', {}, None)['results']['ingest'])
+        self.assertNotIn('modified', ingest_record(
+            CLOCK, 'a.pdf', {})['results']['ingest'])
+
+    def test_file_times_taken_before_the_move(self):
+        source = self.make('a.pdf')
+        os.utime(source, (MTIME, MTIME))
+        real_rename = os.rename
+
+        def touching_rename(src, dst):
+            os.utime(src, (MTIME + 86400, MTIME + 86400))
+            real_rename(src, dst)
+        with patch('os.rename', touching_rename):
+            result, _, _ = self.run_command(source)
+        self.assertEqual(
+            read_sidecar(Path(result))['results']['ingest']['modified'],
+            local_time(MTIME))
 
     def test_collision_uses_next_millisecond(self):
         self.intake.mkdir(parents=True)

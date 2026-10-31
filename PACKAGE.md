@@ -219,8 +219,9 @@ see [Progress output](#progress-output)). For example, at 14:03:07.042:
   left in the intake. It doesn't cover runs on different machines sharing a
   network intake.
 - `ingest` writes a [sidecar](#the-xyml-sidecar), `X.yml`, next to the
-  ingested file `X`, recording when it was ingested, its original name and
-  any source metadata.
+  ingested file `X`, recording when it was ingested, its original name,
+  the original file's creation time (where the operating system provides
+  one) and modified time, and any source metadata.
 
 Source metadata can be given with a repeatable `--meta KEY=VALUE` (or
 `-m KEY=VALUE`) and as a YAML mapping on stdin. Both go into
@@ -403,7 +404,11 @@ the model: the record is saved as reviewed (`results.review`, with
 
 The model is given the transcript (for a [text document](#text-documents),
 the file's own text), along with the file's original name and source
-(`results.ingest.original-name` and `results.ingest.source`). Only the first
+(`results.ingest.original-name` and `results.ingest.source`) and the
+original file's date: `File created: 2026-10-02` from
+`results.ingest.created`, or `File modified: 2026-10-02` from
+`results.ingest.modified` when there's no creation time (no line when
+neither was recorded). Only the first
 100,000 characters of the transcript or text are given, to protect the
 model's context from large logs or CSV files; when more are cut, the model
 is told (e.g. `Document text (cut: only the first 100,000 of 250,000
@@ -434,10 +439,13 @@ results:
 - `data` holds a value for each of the cabinet's [fields](#fields), in
   pattern order (here the pattern is `{account}/{date}-{title}`): the given
   values as they are, and the model's for the rest.
-- `date` is the document's own date, as YYYYMMDD. If the document has no
-  date of its own (or the model can't tell what it is), `date` is `null`
-  rather than a guess. Today's date and the file's modified time are never
-  used.
+- `date` is given as YYYYMMDD. A date field's configured `guidance` comes
+  first; after it, the model is told to prefer the document's own date. If
+  the document has none, the model may use the file date it was shown when
+  it judges that a reasonable stand-in (for example, for a photo).
+  Otherwise `date` is `null` rather than a guess. Today's date is never
+  used. The file date is never applied by Filez4Eva itself: it reaches the
+  record only through the model's answer (or what you type at review).
 - Every other field is normalized to hyphen-separated-lower (see
   [Given data](#given-data)).
 - `doctype` is one of the configured [doctypes](#classification-settings),
@@ -916,6 +924,8 @@ results:
   ingest:
     at: '2026-10-25T14:03:07-07:00'
     original-name: Report.DOCX.pdf
+    created: '2026-10-02T09:15:00-07:00'
+    modified: '2026-10-20T11:42:31-07:00'
     source:
       from: email
       via: scanner
@@ -925,6 +935,12 @@ results:
   offset, to the second. It is the same moment as the file's new name
   (unless the stamp had to move on a millisecond or more).
 - `original-name`: the file's name before it was ingested.
+- `created`: the original file's creation (birth) time, read before it was
+  moved, in ISO-8601 local time with its UTC offset, to the second. It is
+  recorded only where the operating system provides it (e.g. macOS, and
+  Windows); on most Linux filesystems it is absent.
+- `modified`: the original file's modified time, read before it was moved,
+  in the same form.
 - `source`: the metadata from `--meta` and stdin, as text. It is `{}` when
   there is none.
 

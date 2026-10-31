@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import os
 from pathlib import Path
@@ -13,7 +13,8 @@ from wizlib.test_case import WizLibTestCase
 from filez4eva import Filez4EvaApp
 from filez4eva.command.classify_command import (
     CONTEXT_NOTE, DEFAULT_MODEL, MAX_CLASSIFY_CHARS, ClassifyCommand,
-    build_schema, document_text, load_doctypes, transcript_body)
+    build_schema, document_text, file_date_line, load_doctypes,
+    transcript_body)
 from filez4eva.command.ingest_command import read_sidecar, write_sidecar
 from filez4eva.command.transcribe_command import format_transcript
 from filez4eva.error import Filez4EvaError
@@ -582,6 +583,47 @@ class TestClassifierInput(ClassifyTestCase):
         self.assertIn('Original file name: My Receipt.PDF', text)
         self.assertIn('Source: (none recorded)', text)
 
+    def test_file_created_date_passed(self):
+        document = self.make_document(transcript='Body text')
+        data = read_sidecar(document)
+        data['results']['ingest']['created'] = '2026-10-02T09:15:00-07:00'
+        data['results']['ingest']['modified'] = '2026-10-20T11:00:00-07:00'
+        write_sidecar(document, data)
+        _, _, _, e, _ = self.run_command()
+        text = e.call_args.args[0]
+        self.assertIn('  scanner: brother\nFile created: 2026-10-02\n\n'
+                      'Transcript:', text)
+        self.assertNotIn('File modified', text)
+        self.assertIn('creation or modified date',
+                      e.call_args.kwargs['instructions'])
+
+    def test_file_date_line(self):
+        cases = [
+            ({'created': '2026-10-02T09:15:00-07:00',
+              'modified': '2026-10-20T11:00:00-07:00'},
+             'File created: 2026-10-02'),
+            ({'modified': '2026-10-20T11:00:00-07:00'},
+             'File modified: 2026-10-20'),
+            ({'created': None, 'modified': '2026-10-20T11:00:00-07:00'},
+             'File modified: 2026-10-20'),
+            ({'created': 'garbage', 'modified': '2026-10-20'},
+             'File modified: 2026-10-20'),
+            ({'created': datetime(2026, 10, 2, 9, 15)},
+             'File created: 2026-10-02'),
+            ({'created': date(2026, 10, 2)}, 'File created: 2026-10-02'),
+            ({}, None),
+            ({'created': 12345, 'modified': ['x']}, None),
+            ({'modified': '2026-13-45T00:00:00'}, None),
+        ]
+        for ingest, line in cases:
+            with self.subTest(ingest=ingest):
+                self.assertEqual(file_date_line(ingest), line)
+                text = document_text('x', ingest)
+                if line:
+                    self.assertIn(f'\n{line}\n\nTranscript:', text)
+                else:
+                    self.assertNotIn('File ', text)
+
     def test_document_text_without_ingest(self):
         self.assertEqual(document_text('x', None),
                          'Original file name: (none)\n'
@@ -1111,8 +1153,12 @@ class TestClassifySchema(ClassifyTestCase):
         self.assertIn('one-line summary', text)
         self.assertIn('- date: The statement date, not the print date. '
                       'Give it as YYYYMMDD.', text)
-        self.assertIn('return an empty string', text)
-        self.assertIn("do not use today's date", text)
+        self.assertIn("Prefer the document's own date. If the document has "
+                      "none, you may use the file date given with it when "
+                      "that is a reasonable stand-in (for example, for a "
+                      "photo). Otherwise return an empty string. Never use "
+                      "today's date.", text)
+        self.assertNotIn('Do not guess', text)
         self.assertIn('- part: Use lowercase', text)
         # Common learned values, most-used first
         self.assertIn('reuse one when it fits', text)
