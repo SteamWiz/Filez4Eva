@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import os
 from pathlib import Path
@@ -1008,3 +1008,86 @@ class TestReviewGivenData(ReviewTestCase):
         self.assertIn('(c)onfirm', self.err)
         self.assertNotIn('input', self.results(document)['review'])
         self.assertEqual(command.status, 'Reviewed 1 file')
+
+
+class TestReviewLearnedValues(ReviewTestCase):
+    """#75: the values of the learned fields are recorded when the record
+    is accepted at review, so later documents in the same run can use
+    them once they've been used twice"""
+
+    def store(self, target=None):
+        return yaml.safe_load(values_path(target or self.target).read_text())
+
+    def test_value_offered_for_the_next_document_once_used_twice(self):
+        for name in ['a.pdf', 'b.pdf', 'c.pdf']:
+            self.make(name)
+        answers = ['20261002', 'Telus', 'statement']
+        _, command, gt, e, _ = self.run_command(
+            self.source, keys='uuu', answers=answers * 3)
+        # Classified one at a time, each after the one before was reviewed
+        self.assertEqual(e.call_count, 3)
+        instructions = [c.kwargs['instructions'] for c in e.call_args_list]
+        self.assertNotIn('telus', instructions[0])
+        self.assertNotIn('telus', instructions[1])
+        self.assertIn('telus', instructions[2])
+        accounts = [p for p in self.prompts(gt) if p[0] == 'Account: ']
+        self.assertEqual(accounts, [
+            ('Account: ', ['amazon'], 'amazon'),
+            ('Account: ', ['amazon'], 'amazon'),
+            ('Account: ', ['amazon', 'telus'], 'amazon')])
+        self.assertEqual(self.store()['account']['telus'],
+                         {'count': 3, 'last_used': date.today().isoformat()})
+        self.assertEqual(command.status, 'Ingested 3 files | Transcribed 3 '
+                         'files | Classified 3 files | Reviewed 3 files')
+
+    def test_confirm_records(self):
+        self.make_document()
+        self.run_command(keys='c')
+        self.assertEqual(self.store()['account']['amazon']['count'], 4)
+        # part isn't counted twice or more yet, but is remembered
+        self.assertEqual(self.store()['part']['receipt']['count'], 1)
+
+    def test_only_the_learned_fields_of_the_cabinet(self):
+        self.make_document(given='memories', classify=dict(
+            CLASSIFY, data=MEMORY_DATA))
+        self.run_command(keys='c', config=self.config(
+            filez4eva_cabinets={
+                'memories': {'target': str(self.memories),
+                             'pattern': '{date.year}/{event}/{date}-{part}',
+                             'fields': {'part': {'values': 'none'}}}}))
+        self.assertEqual(self.store(self.memories), {'event': {
+            'grandma-bday': {'count': 3,
+                             'last_used': date.today().isoformat()}}})
+
+    def test_skip_redo_and_delete_record_nothing(self):
+        before = values_path(self.target).read_text()
+        for keys in ['x', 'rx', 'dY']:
+            with self.subTest(keys=keys):
+                self.make_document()
+                self.run_command(keys=keys)
+                self.assertEqual(values_path(self.target).read_text(),
+                                 before)
+
+    def test_values_failure_keeps_the_review(self):
+        document = self.make_document()
+        path = values_path(self.target)
+        path.write_text('account: [unclosed\n')
+        out, command, _, _, _ = self.run_command(keys='c')
+        self.assertEqual(out, str(document))
+        self.assertIn(f'Could not record values in {path}', self.err)
+        self.assertEqual(self.results(document)['review'], {
+            'at': AT, 'cabinet': 'default', 'data': DATA})
+        self.assertEqual(path.read_text(), 'account: [unclosed\n')
+        self.assertEqual(command.status, 'Reviewed 1 file')
+
+    def test_complete_given_data_counts_once(self):
+        document = self.make_document(classify=None)
+        stdin = 'data:\n  date: 20261002\n  account: amazon\n  part: receipt\n'
+        self.run_command(stdin=stdin)
+        self.assertIn('input', self.results(document)['review'])
+        store = self.store()
+        self.assertEqual(store['account']['amazon']['count'], 4)
+        # A second run with the same data finds it already reviewed
+        _, command, _, _, _ = self.run_command(stdin=stdin)
+        self.assertIn('Already reviewed 1 file', command.status)
+        self.assertEqual(self.store(), store)

@@ -501,6 +501,13 @@ before the cabinet was saved separately (its sidecar has
 `results.classify.cabinet` and no `results.given`) is reviewed for that
 cabinet.
 
+When a record is saved as `results.review` (confirm, update, or complete
+given data), the values of the cabinet's fields with
+[learned values](#learned-values) are recorded straight away, so tab
+completion and classification of the next documents in the same run can
+use them once they've been used twice. If they can't be recorded, a
+warning is shown and the review is kept.
+
 The status on stderr counts the files, e.g.
 `Reviewed 2 files | Skipped 1 file | Deleted 1 file`, with `Quit` at the end
 if you quit.
@@ -591,8 +598,9 @@ Stowing a document:
    to it (`.../20261002-receipt.pdf` gets `.../20261002-receipt.pdf.md`),
    or in a parallel tree (see [Transcript location](#transcript-location)).
    Missing directories are created. If the transcript can't be moved, the
-   file is moved back. The values of fields with
-   [learned values](#learned-values) are then recorded.
+   file is moved back. Stowing records no
+   [learned values](#learned-values): they were recorded when the record
+   was reviewed.
 2. records `results.stow` in its sidecar `X.yml`: when it was stowed and
    where the file went (see [The X.yml sidecar](#the-xyml-sidecar)).
 3. moves `X.yml` to `<intake>/archive/`, for later reference.
@@ -681,8 +689,9 @@ How given data is used, for each document in the run:
 4. **Complete given data skips the model and the menu.** With the cabinet
    and every one of its fields given (by this run, or saved by an earlier
    one), there is no model call and no review menu: the record is saved as
-   `results.review`, with `input: true`, and counted as `Given` in the
-   status (e.g. `Ingested 3 files | Transcribed 3 files | Given 3 files |
+   `results.review`, with `input: true`, its
+   [learned values](#learned-values) are recorded (once per document), and
+   it is counted as `Given` in the status (e.g. `Ingested 3 files | Transcribed 3 files | Given 3 files |
    Stowed 3 files`). `stow` then stows the document without prompts and
    prints only its destination, so
    `dest=$(filez4eva stow -d 20240213 -f title=receipt file.pdf)` works in
@@ -1098,19 +1107,27 @@ account:
     last_used: '2026-10-15'
 ```
 
-- A value is recorded only when `stow` actually moves a file into the
-  cabinet, wherever the value came from (the model, a review, flags, stdin
-  or a prompt). `classify` and `review` record nothing, and existing files
-  aren't scanned, so the list starts empty.
+- The values are recorded when a document's record is accepted, that is
+  when `results.review` is saved: at [review](#reviewing-files) (in
+  `review`, or in `stow` for a document not reviewed yet) on confirm or
+  update, or from [complete given data](#given-data) (`input: true`).
+  Wherever a value came from (the model, flags, stdin or a prompt), each
+  document counts once. `classify` without complete given data records
+  nothing, and `stow` records nothing: a document's values stay counted
+  even if stowing it later fails or it is deleted after review. Existing
+  files aren't scanned, so the list starts empty.
 - Tab completion, and the AI model, are offered values used at least twice,
   most-used first, at most 100 per field. A value used once is remembered,
   but only offered once it is used again.
+- The file is read afresh for every document, so a value that reaches two
+  uses during a run (e.g. typed at update for two documents) is offered for
+  the next document in the same run, to the model and at the prompts.
 - You can seed or prune the list by editing the file. Values that aren't
   hyphen-separated-lower are never offered.
 - The file is written to a temporary file and renamed, so a synced target
-  never sees a half-written file. If it can't be read or written, the file
-  is still stowed, a warning is shown, and the existing file is left as it
-  was.
+  never sees a half-written file. If it can't be read or written, the
+  review is still saved, a warning is shown, and the existing file is left
+  as it was.
 
 ### Cabinets
 

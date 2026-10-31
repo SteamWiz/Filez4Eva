@@ -17,7 +17,7 @@ from filez4eva.fields import Field, normalize_value
 from filez4eva.stage import (
     CLASSIFY, GIVEN, NotDone, StageCommand, StopRun, given_values,
     load_sidecar, record_result, saved_cabinet)
-from filez4eva.stow import Stower, valid_date
+from filez4eva.stow import Stower, remember_values, valid_date
 
 
 def proposal(results: dict) -> dict:
@@ -59,7 +59,9 @@ class ReviewCommand(StageCommand):
         document again), skip, preview, delete or quit (which ends the
         run). A confirmed or updated record is saved as results.review in
         the document's X.yml sidecar, with the cabinet saved for the
-        document. Confirm refuses a record with a missing field value
+        document, and the values of the cabinet's learned fields are
+        recorded right away, so the next documents in the run can use
+        them. Confirm refuses a record with a missing field value
         (e.g. no date found); use update. A document not classified yet
         is classified first, after its cabinet is chosen (see Cabinet
         below). Values given for a document (see Given data below) are
@@ -222,10 +224,10 @@ class ReviewCommand(StageCommand):
 
     def act(self, path: Path) -> str:
         """Show a classified document's proposed record and act on the
-        operator's choice: confirm or update (record results.review and
-        return the document's path), redo (classify again, possibly for
-        another cabinet, and show the new proposal), skip, preview, delete
-        or quit"""
+        operator's choice: confirm or update (record results.review, then
+        the learned values, and return the document's path), redo
+        (classify again, possibly for another cabinet, and show the new
+        proposal), skip, preview, delete or quit"""
         results = load_sidecar(path)['results']
         proposed = proposal(results)
         self.show(path, results, proposed)
@@ -265,6 +267,9 @@ class ReviewCommand(StageCommand):
                 if review is None:
                     continue
             record_result(path, self.stage, review)
+            # Counted once, now: after the review is saved, so a failure to
+            # record the values can't lose it
+            remember_values(self.app, self.cabinet_of(review), review['data'])
             self.app.ui.send('Reviewed', Emphasis.INFO)
             return str(path)
 

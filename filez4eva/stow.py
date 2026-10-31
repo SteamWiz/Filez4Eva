@@ -236,6 +236,22 @@ def load_cabinets(config) -> dict:
     return cabinets
 
 
+def remember_values(app, cabinet: Cabinet, data: dict):
+    """Record one use of each value in data (field name -> value) of the
+    cabinet's learned fields in its learned values store, when a record is
+    accepted at review. A failure to read or write the store is reported
+    as a warning and never raised, so it can't lose the review."""
+    learned = {field.name: str(data[field.name]) for field in cabinet.fields
+               if field.learned and data.get(field.name)}
+    try:
+        record_values(cabinet.targetdir.absolute(), learned)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError,
+            ValueError) as error:
+        app.ui.send(
+            f"Could not record values in "
+            f"{values_path(cabinet.targetdir)}: {error}", Emphasis.ERROR)
+
+
 class Stower:
     """Stow one file into a cabinet with the right name. The cabinet, date
     and other fields come from the caller, --field flags, a record on stdin
@@ -536,23 +552,11 @@ class Stower:
             source_transcript = None
         return path, targetpath, source_transcript, target_transcript
 
-    def remember(self):
-        """Record the values of the cabinet's learned fields, after a
-        successful move. A failure is reported but doesn't undo the move."""
-        cabinet = self.resolve_cabinet()
-        learned = {f.name: self.values[f.name] for f in cabinet.fields
-                   if f.learned}
-        try:
-            record_values(cabinet.targetdir.absolute(), learned)
-        except (OSError, UnicodeDecodeError, yaml.YAMLError,
-                ValueError) as error:
-            self.app.ui.send(
-                f"Could not record values in "
-                f"{values_path(cabinet.targetdir)}: {error}", Emphasis.ERROR)
-
     def stow(self) -> Path:
         """Move the file (and its transcript, if any) to the chosen
-        cabinet, then record its learned values. Return the destination.
+        cabinet. Return the destination. Learned values are not recorded
+        here: they were recorded when the record was reviewed
+        (remember_values).
         Nothing is ever overwritten: if something already exists at a
         destination, Filez4EvaError is raised before anything moves. If the
         transcript can't be moved, the file is moved back. The cabinet, date
@@ -578,5 +582,4 @@ class Stower:
                 raise Filez4EvaError(
                     f"Could not move transcript {source_transcript}: "
                     f"{error}") from error
-        self.remember()
         return targetpath
