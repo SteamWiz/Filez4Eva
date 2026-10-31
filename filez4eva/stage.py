@@ -338,14 +338,9 @@ class StageCommand(Filez4EvaCommand):
             # Imported here: filez4eva.stow imports the transcribe command,
             # which imports this module
             from filez4eva.stow import load_cabinets
-            # Check the cabinets and the --cabinet name before any file is
-            # touched
+            # Check the cabinets before any file is touched (read_given
+            # checks the --cabinet name, also before)
             self.cabinets = load_cabinets(self.app.config)
-            if self.provided('cabinet') and \
-                    self.cabinet not in self.cabinets:
-                raise Filez4EvaError(
-                    f"Unknown cabinet {self.cabinet}; known: "
-                    + ', '.join(sorted(self.cabinets)))
 
     def read_given(self):
         """Read the given data for the run, before any file is touched:
@@ -534,7 +529,9 @@ class StageCommand(Filez4EvaCommand):
         before. With the cabinet and every field given, also save the
         record as results.review (with `input: true`), in the same write,
         and return True. Raises Filez4EvaError if a --field names a field
-        the cabinet doesn't have."""
+        the cabinet doesn't have, writing nothing: a cabinet chosen at the
+        prompt isn't saved then, so the next run asks again (a mistyped
+        choice is not kept)."""
         name = saved_cabinet(results)
         if name is None:
             if self.provided('cabinet'):
@@ -686,7 +683,9 @@ class StageCommand(Filez4EvaCommand):
         --only, skip it with a note instead). Given data that conflicts
         with the document fails it (check_given), and what is given is
         saved before it is classified (give). With complete given data, the
-        record stands in for classify and review (also under --only).
+        record stands in for classify and review (also under --only), and
+        for review alone on a document already classified with the same
+        values.
         StopRun from act ends the run."""
         for entry in work:
             document, current = entry
@@ -705,7 +704,12 @@ class StageCommand(Filez4EvaCommand):
                         and self.given_complete(results)):
                     self.skip(document, missing[0].done.lower())
                     continue
-                if CLASSIFY in stages and self.give(current, results):
+                # A classified document still needing review gets the
+                # record too when its given data is complete (check_given
+                # passed, so it equals the classified values)
+                gives = CLASSIFY in stages or (
+                    'review' in stages and self.given_complete(results))
+                if gives and self.give(current, results):
                     self.counts[GIVEN_DONE] += 1
                     missing = [command for command in missing
                                if command.stage not in GIVEN_STAGES]

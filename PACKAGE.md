@@ -689,7 +689,10 @@ How given data is used, for each document in the run:
    a script. `classify` and `review` record it the same way, print the
    document's path and don't prompt. A later `stow` (even `stow --only`)
    stows it. Under `--only`, complete given data stands in for classify and
-   review when the cabinet is known without asking.
+   review when the cabinet is known without asking. The same goes for a
+   document already classified but not reviewed, when every value given
+   equals its classified one (see Conflicts below): `review` and `stow`
+   record it as `results.review` with `input: true` and show no menu.
 
 Nothing is prompted for before the run: a missing value is what
 classification fills in, and review covers the rest. The cabinet is still
@@ -706,7 +709,9 @@ Checks:
 - **Per document:** with several cabinets and no `-c`, the cabinet is chosen
   per document, so a `--field` name that the chosen cabinet doesn't have
   fails that document only (`Unknown field account for cabinet memories;
-  known: event`); the run carries on with the others.
+  known: event`); the run carries on with the others. Nothing is saved for
+  that document, not even a cabinet chosen at the `Cabinet:` prompt, so the
+  next run asks for it again (and a wrong choice can be corrected).
 - **Conflicts fail that document only:** a given value that differs from
   the value already given for the document (e.g.
   `Date 20240213 given, but 20261025-140307-042.pdf already has date 20240101`),

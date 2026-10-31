@@ -976,3 +976,35 @@ class TestReviewGivenData(ReviewTestCase):
                       f'{first.name} already has part visa', self.err)
         self.assertNotIn('review', self.results(first))
         self.assertEqual(self.results(second)['review']['data'], DATA)
+
+    def test_complete_equal_data_on_a_classified_document_needs_no_menu(self):
+        """Behaviour 5 with behaviour 7: every value given, equal to the
+        classified ones, records the review without the menu"""
+        document = self.make_document()
+        fresh = self.results(document)
+        for only in [False, True]:
+            with self.subTest(only=only):
+                write_sidecar(document, {'results': fresh})
+                out, command, gt, e, _ = self.run_command(
+                    only=only, date='20261002',
+                    field=['account=amazon', 'part=receipt'])
+                gt.assert_not_called()
+                e.assert_not_called()
+                self.assertNotIn('(c)onfirm', self.err)
+                self.assertEqual(out, str(document))
+                results = self.results(document)
+                self.assertEqual(results['review'], {
+                    'at': AT, 'input': True, 'cabinet': 'default',
+                    'data': DATA})
+                self.assertEqual(results['given'], {
+                    'at': AT, 'cabinet': 'default', 'data': DATA})
+                self.assertEqual(results['classify'], CLASSIFY)
+                self.assertEqual(command.status, 'Given 1 file')
+
+    def test_partial_equal_data_on_a_classified_document_shows_menu(self):
+        document = self.make_document()
+        out, command, _, e, _ = self.run_command(keys='c', date='20261002')
+        e.assert_not_called()
+        self.assertIn('(c)onfirm', self.err)
+        self.assertNotIn('input', self.results(document)['review'])
+        self.assertEqual(command.status, 'Reviewed 1 file')

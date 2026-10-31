@@ -1,6 +1,7 @@
 """Tests for the stow command (Stower, the stow logic it uses, is in
 test_stow.py)"""
 
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -858,6 +859,36 @@ class TestStowInput(StowInputTestCase):
         self.assertEqual(out, str(self.stowed))
         self.assertEqual(self.archived()['review'], REVIEW)
         self.assertEqual(command.status, 'Stowed 1 file')
+
+    def test_equal_values_on_a_classified_document(self):
+        """Every value given, equal to the classified ones: no menu, the
+        record is saved as given (also under --only, and with no path)"""
+        for vals in [{'ingested': [f'{STAMP}.pdf']},
+                     {'ingested': [f'{STAMP}.pdf'], 'only': True},
+                     {'only': True}]:
+            with self.subTest(**vals):
+                document = self.make_document()
+                out, command, gt, e, _ = self.run_command(**vals, **FLAGS)
+                gt.assert_not_called()
+                e.assert_not_called()
+                self.assertNotIn('(c)onfirm', self.err)
+                self.assertEqual(out, str(self.stowed))
+                results = self.archived()
+                self.assertEqual(results['given'], GIVEN)
+                self.assertEqual(results['classify'], CLASSIFY)
+                self.assertEqual(results['review'], INPUT)
+                self.assertEqual(command.status,
+                                 'Given 1 file | Stowed 1 file')
+                self.assertFalse(document.exists())
+                shutil.rmtree(self.target / '2026')
+                shutil.rmtree(self.archive)
+
+    def test_scripted_stow_of_a_classified_document(self):
+        document = self.make_document()
+        out, _, _, _, _ = self.run_command(ingested=[document.name],
+                                           stdin=STDIN)
+        self.assertEqual(out, str(self.stowed))
+        self.assertEqual(self.archived()['review'], INPUT)
 
     def test_existing_file_in_cabinet_is_not_overwritten(self):
         source = self.make('Scan 1.PDF')
