@@ -74,7 +74,7 @@ class TestCommands(WizLibTestCase):
                 ('classify', 'With several cabinets and no --cabinet, '
                  'classify prompts for each document'),
                 ('review', 'Nothing is stowed'),
-                ('stow', 'Input data (--date, --field')]:
+                ('stow', 'Given data (--cabinet, --date, --field')]:
             with self.subTest(name=name):
                 out, _, code = start(name, '--help')
                 self.assertEqual(code, 0)
@@ -107,10 +107,19 @@ class TestCommands(WizLibTestCase):
                               'document in the run that has none saved yet',
                               out)
                 self.assertIn('The model never picks the cabinet.', out)
+                self.assertIn('--date, -d DATE given data: the date of every '
+                              'document in the run', out)
+                self.assertIn('--field, -f NAME=VALUE given data: the value '
+                              'of a field for every document in the run '
+                              '(repeatable)', out)
+                self.assertIn('Given data: --cabinet, --date, --field '
+                              'NAME=VALUE (repeatable) and a YAML record on '
+                              'stdin', out)
         for name in ['ingest', 'transcribe']:
             with self.subTest(name=name):
                 out, _, _ = start(name, '--help')
                 self.assertNotIn('--cabinet', out)
+                self.assertNotIn('--date', out)
 
     def test_order_help_names_the_remaining_stages(self):
         out, _, _ = start('stow', '--help')

@@ -11,7 +11,7 @@ from filez4eva.command.transcribe_command import (
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import check_value, load_store, suggestions
 from filez4eva.stage import (
-    StageCommand, load_sidecar, record_result, saved_cabinet)
+    StageCommand, given_values, load_sidecar, record_result, saved_cabinet)
 from filez4eva.stow import Cabinet, valid_date
 
 
@@ -90,12 +90,17 @@ def field_description(field) -> str:
     return rules
 
 
-def build_schema(cabinet: Cabinet, doctypes: list) -> dict:
-    """Return the JSON schema passed to extract. The cabinet's fields are
-    nested under `data`, so their names can't clash with doctype and
-    summary."""
+def asked_fields(cabinet: Cabinet, given=()) -> list:
+    """The cabinet's fields the model is asked for: those not given"""
+    return [field for field in cabinet.fields if field.name not in given]
+
+
+def build_schema(cabinet: Cabinet, doctypes: list, given=()) -> dict:
+    """Return the JSON schema passed to extract. The cabinet's fields that
+    aren't given are nested under `data`, so their names can't clash with
+    doctype and summary."""
     fields = {}
-    for field in cabinet.fields:
+    for field in asked_fields(cabinet, given):
         fields[field.name] = {'type': 'string',
                               'description': field_description(field)}
         if field.is_date:
@@ -122,11 +127,14 @@ def build_schema(cabinet: Cabinet, doctypes: list) -> dict:
 
 
 def build_instructions(cabinet: Cabinet, vocabulary: dict,
-                       doctypes: dict, context: bool = False) -> str:
+                       doctypes: dict, context: bool = False,
+                       given: dict = None) -> str:
     """Return the instructions passed to extract. vocabulary maps a field
     name to the existing values to offer for it. With context, the model is
     told that the document's original name and source come before its
-    transcript."""
+    transcript. given maps the fields already given for the document to
+    their values: the model is told them, and isn't asked for them."""
+    given = given or {}
     sections = [TASK]
     if context:
         sections.append(CONTEXT_NOTE)
@@ -135,8 +143,13 @@ def build_instructions(cabinet: Cabinet, vocabulary: dict,
     if cabinet.description:
         cabinet_text += f': {cabinet.description.strip()}'
     sections.append(cabinet_text)
+    if given:
+        sections.append('\n'.join(
+            ['Already given for this document (not asked for):']
+            + [f'- {field.name}: {given[field.name]}'
+               for field in cabinet.fields if field.name in given]))
     lines = ['Fields:']
-    for field in cabinet.fields:
+    for field in asked_fields(cabinet, given):
         lines.append(f'- {field.name}: {field_description(field)}')
         values = vocabulary.get(field.name)
         if values:
@@ -152,9 +165,10 @@ def build_instructions(cabinet: Cabinet, vocabulary: dict,
     return '\n\n'.join(sections)
 
 
-def check_result(result, cabinet: Cabinet, doctypes) -> dict:
+def check_result(result, cabinet: Cabinet, doctypes, given=()) -> dict:
     """Return the model's classification as a dict with data (the
-    cabinet's fields, in pattern order), doctype and summary, validated and
+    cabinet's fields not given, in pattern order), doctype and summary,
+    validated and
     cleaned up. The date is None if the model gave none, or gave anything
     that isn't a valid YYYYMMDD date (a document may have no date of its
     own). Other fields are normalized to hyphen-separated-lower. Raises
@@ -165,7 +179,7 @@ def check_result(result, cabinet: Cabinet, doctypes) -> dict:
     if not isinstance(data, dict):
         raise Filez4EvaError("Classification failed: no data in result")
     values = {}
-    for field in cabinet.fields:
+    for field in asked_fields(cabinet, given):
         value = data.get(field.name)
         if field.is_date:
             value = value.strip() if isinstance(value, str) else None
@@ -244,16 +258,23 @@ def ask_model(text: str, schema: dict, instructions: str, model: str,
 
 
 def classify_text(text: str, cabinet: Cabinet, doctypes: dict, model: str,
-                  api_key, context: bool = False) -> dict:
-    """Ask the model for a cabinet's field values, the doctype and a
-    summary of a document, offering the cabinet's existing values. Return
-    the checked result (see check_result). Raises Filez4EvaError if the
-    call fails or the answer can't be used."""
-    schema = build_schema(cabinet, doctypes)
+                  api_key, context: bool = False, given: dict = None) -> dict:
+    """Ask the model for the values of a cabinet's fields that aren't
+    given, the doctype and a summary of a document, offering the cabinet's
+    existing values. Return the checked result (see check_result), with
+    data holding every field of the cabinet in pattern order: the given
+    values and the model's. Raises Filez4EvaError if the call fails or the
+    answer can't be used."""
+    given = given or {}
+    schema = build_schema(cabinet, doctypes, given)
     instructions = build_instructions(cabinet, cabinet_vocabulary(cabinet),
-                                      doctypes, context)
+                                      doctypes, context, given)
     result = ask_model(text, schema, instructions, model, api_key)
-    return check_result(result, cabinet, doctypes)
+    checked = check_result(result, cabinet, doctypes, given)
+    checked['data'] = {
+        field.name: given[field.name] if field.name in given
+        else checked['data'][field.name] for field in cabinet.fields}
+    return checked
 
 
 def document_text(transcript: str, ingest: dict) -> str:
@@ -276,10 +297,13 @@ def document_text(transcript: str, ingest: dict) -> str:
 class ClassifyCommand(StageCommand):
     """Classify new files (ingesting them first), the documents already in
     the intake, or the ones named with --ingested, with Claude,
-    transcribing them first if needed. Each document's cabinet is chosen
-    first (see StageCommand.give_cabinet) and saved as results.given; the
-    model never picks it. Records results.classify (doctype, summary and
-    field values for that cabinet) in each document's X.yml."""
+    transcribing them first if needed. Each document's cabinet, and any
+    given field values, are saved first as results.given (see
+    StageCommand.give); the model never picks the cabinet and is asked only
+    for the fields not given. Records results.classify (doctype, summary and
+    field values for that cabinet) in each document's X.yml. With the
+    cabinet and every field given, the record is saved as results.review
+    instead, with no model call."""
 
     name = 'classify'
     summary = 'have an AI model propose field values for each cabinet'
@@ -292,7 +316,10 @@ class ClassifyCommand(StageCommand):
         The model never picks the cabinet (see Cabinet below). With
         several cabinets and no --cabinet, classify prompts for each
         document's cabinet before classifying it; give --cabinet to run
-        unattended.
+        unattended. Given data (--date, --field or stdin) applies to every
+        document, and the model fills in only the other fields; with every
+        field given, the record is saved as reviewed with no model call
+        (see Given data below).
 
         Main use: `filez4eva classify -c NAME ~/Scans`, then
         `filez4eva stow`."""
@@ -331,15 +358,19 @@ class ClassifyCommand(StageCommand):
 
     def act(self, path: Path) -> str:
         """Classify an ingested, transcribed document for its saved cabinet
-        from its transcript, original name and source, record
-        results.classify, and return the document's path"""
+        from its transcript, original name and source, asking the model only
+        for the fields not given for it (results.given.data), record
+        results.classify (data: the given values and the model's), and
+        return the document's path"""
         results = load_sidecar(path)['results']
         cabinet = self.document_cabinet(path, results)
         transcript = recorded_transcript(path, results)
         text = document_text(read_transcript(transcript),
                              results.get('ingest'))
+        given = {name: value for name, value in given_values(results).items()
+                 if cabinet.field(name) is not None}
         values = classify_text(text, cabinet, self.doctypes, self.model,
-                               self.api_key, context=True)
+                               self.api_key, context=True, given=given)
         record_result(path, self.stage, {
             'at': ingest_command.now().isoformat(timespec='seconds'),
             'model': self.model,
