@@ -131,11 +131,14 @@ class ReviewTestCase(WizLibTestCase):
                          'pattern': '{date.year}/{event}/{date}-{part}'}})
 
     def run_command(self, path=None, keys='', answers=(), config=None,
-                    result=RESULT, extract=None, transcribe=None, **vals):
+                    result=RESULT, extract=None, transcribe=None, stdin='',
+                    **vals):
         """Run command_class (review) directly with fake config, menu keys
-        (one character each) and answers to the text prompts. Return
-        (output, command, get_text mock, extract mock, transcribe mock);
-        stderr is kept in self.err, also when the command raises."""
+        (one character each), answers to the text prompts and stdin text
+        (none by default, so a record piped to the test run is never
+        read). Return (output, command, get_text mock, extract mock,
+        transcribe mock); stderr is kept in self.err, also when the command
+        raises."""
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(**(config or self.config()))
         command = self.command_class(
@@ -149,6 +152,7 @@ class ReviewTestCase(WizLibTestCase):
         with patch(EXTRACT, **effect) as e, \
                 patch(TRANSCRIBE, **teffect) as t, \
                 patch(TTYIN, side_effect=list(keys)), \
+                self.patch_stream(stdin), \
                 patch.object(app.ui, 'get_text',
                              side_effect=lambda *a: next(answers)) as gt, \
                 self.patchout(), self.patcherr() as err:
@@ -880,3 +884,127 @@ class TestReviewActions(ReviewTestCase):
         self.assertEqual(results['given']['cabinet'], 'memories')
         self.assertNotIn('classify', results)
         self.assertNotIn('review', results)
+
+
+class TestReviewGivenData(ReviewTestCase):
+    """#74 behaviour 4: given values are shown marked (given); confirm
+    accepts them, update can change them, redo keeps those the new cabinet
+    has"""
+
+    def given_document(self, data, given='default', **kwargs):
+        """A classified document with values given for it"""
+        document = self.make_document(given=given, **kwargs)
+        results = self.results(document)
+        results['given']['data'] = data
+        write_sidecar(document, {'results': results})
+        return document
+
+    def test_classify_with_given_date_then_review_shows_given(self):
+        source = self.make('Scan 1.PDF')
+        out, command, gt, e, _ = self.run_command(
+            source, keys='c', date='20240213', cabinet='default',
+            result={'data': {'account': 'amazon', 'part': 'receipt'},
+                    'doctype': 'receipt', 'summary': 'A receipt'})
+        gt.assert_not_called()
+        schema = e.call_args.args[1]['properties']['data']
+        self.assertNotIn('date', schema['properties'])
+        self.assertIn('Date: 20240213 (given)', self.err)
+        self.assertIn('Account: amazon', self.err)
+        self.assertNotIn('Account: amazon (given)', self.err)
+        document = self.intake / f'{STAMP}.pdf'
+        self.assertEqual(self.results(document)['review'], {
+            'at': AT, 'cabinet': 'default',
+            'data': dict(DATA, date='20240213')})
+        self.assertEqual(command.status, 'Ingested 1 file | Transcribed 1 '
+                         'file | Classified 1 file | Reviewed 1 file')
+
+    def test_given_value_shown_over_a_classified_one(self):
+        document = self.given_document({'part': 'visa'})
+        self.run_command(keys='c')
+        self.assertIn('Part: visa (given)', self.err)
+        self.assertEqual(self.results(document)['review']['data'],
+                         dict(DATA, part='visa'))
+
+    def test_update_can_change_a_given_value(self):
+        document = self.given_document({'date': '20261002'})
+        _, _, gt, _, _ = self.run_command(
+            keys='u', answers=['20240213', 'amazon', 'receipt'])
+        # Pre-filled like any other value
+        self.assertEqual(self.prompts(gt)[0], ('Date: ', [], '20261002'))
+        results = self.results(document)
+        self.assertEqual(results['review']['data'],
+                         dict(DATA, date='20240213'))
+        # What was given stays on record
+        self.assertEqual(results['given']['data'], {'date': '20261002'})
+
+    def test_redo_keeps_the_given_values_the_new_cabinet_has(self):
+        document = self.given_document(
+            {'date': '20261002', 'account': 'amazon'}, given='accounts')
+        _, _, _, e, _ = self.run_command(
+            keys='rc', answers=['memories'], config=self.two_cabinets(),
+            result={'data': {'event': 'party', 'part': 'cake'},
+                    'doctype': 'other', 'summary': 'Cake'})
+        schema = e.call_args.args[1]['properties']['data']
+        self.assertEqual(list(schema['properties']), ['event', 'part'])
+        results = self.results(document)
+        self.assertEqual(results['given'], {
+            'at': AT, 'cabinet': 'memories', 'data': {'date': '20261002'}})
+        self.assertEqual(results['review']['data'], {
+            'date': '20261002', 'event': 'party', 'part': 'cake'})
+        self.assertIn('Date: 20261002 (given)', self.err)
+
+    def test_complete_data_needs_no_menu(self):
+        document = self.make_document(classify=None)
+        out, command, gt, e, _ = self.run_command(
+            stdin='data:\n  date: 20261002\n  account: amazon\n'
+            '  part: receipt\n')
+        gt.assert_not_called()
+        e.assert_not_called()
+        self.assertNotIn('(c)onfirm', self.err)
+        self.assertEqual(out, str(document))
+        self.assertEqual(self.results(document)['review'], {
+            'at': AT, 'input': True, 'cabinet': 'default', 'data': DATA})
+        self.assertEqual(command.status, 'Given 1 file')
+
+    def test_conflict_fails_only_that_document(self):
+        first = self.given_document({'part': 'visa'})
+        second = self.make_document(f'{SECOND}.pdf', classify=None)
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    '1 of 2 files failed to review'):
+            self.run_command(keys='c', field=['part=receipt'])
+        self.assertIn(f'Failed to review {first}: Part receipt given, but '
+                      f'{first.name} already has part visa', self.err)
+        self.assertNotIn('review', self.results(first))
+        self.assertEqual(self.results(second)['review']['data'], DATA)
+
+    def test_complete_equal_data_on_a_classified_document_needs_no_menu(self):
+        """Behaviour 5 with behaviour 7: every value given, equal to the
+        classified ones, records the review without the menu"""
+        document = self.make_document()
+        fresh = self.results(document)
+        for only in [False, True]:
+            with self.subTest(only=only):
+                write_sidecar(document, {'results': fresh})
+                out, command, gt, e, _ = self.run_command(
+                    only=only, date='20261002',
+                    field=['account=amazon', 'part=receipt'])
+                gt.assert_not_called()
+                e.assert_not_called()
+                self.assertNotIn('(c)onfirm', self.err)
+                self.assertEqual(out, str(document))
+                results = self.results(document)
+                self.assertEqual(results['review'], {
+                    'at': AT, 'input': True, 'cabinet': 'default',
+                    'data': DATA})
+                self.assertEqual(results['given'], {
+                    'at': AT, 'cabinet': 'default', 'data': DATA})
+                self.assertEqual(results['classify'], CLASSIFY)
+                self.assertEqual(command.status, 'Given 1 file')
+
+    def test_partial_equal_data_on_a_classified_document_shows_menu(self):
+        document = self.make_document()
+        out, command, _, e, _ = self.run_command(keys='c', date='20261002')
+        e.assert_not_called()
+        self.assertIn('(c)onfirm', self.err)
+        self.assertNotIn('input', self.results(document)['review'])
+        self.assertEqual(command.status, 'Reviewed 1 file')

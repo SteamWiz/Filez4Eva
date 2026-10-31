@@ -136,11 +136,13 @@ class ClassifyTestCase(WizLibTestCase):
                          'description': 'Family photos'}}, **extra)
 
     def run_command(self, path=None, config=None, result=RESULT,
-                    markdown='# Hi', extract=None, answers=None, **vals):
+                    markdown='# Hi', extract=None, answers=None, stdin='',
+                    **vals):
         """Run the command directly with fake config; return (output,
         command, stderr, extract mock, transcribe mock). answers are the
         answers to text prompts (or a function standing in for get_text);
-        without them, any prompt fails the test."""
+        without them, any prompt fails the test. stdin is the text piped
+        in (none by default)."""
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(**(config or self.config()))
         command = ClassifyCommand(
@@ -158,6 +160,7 @@ class ClassifyTestCase(WizLibTestCase):
                 return next(answers)
         with patch(EXTRACT, **effect) as e, \
                 patch(TRANSCRIBE, return_value=markdown) as t, \
+                self.patch_stream(stdin), \
                 patch.object(app.ui, 'get_text', side_effect=ask), \
                 self.patchout(), self.patcherr() as err:
             try:
@@ -1158,3 +1161,187 @@ class TestClassifySettings(ClassifyTestCase):
     def test_empty_doctypes(self):
         self.assertEqual(list(load_doctypes(
             ConfigHandler.fake(filez4eva_doctypes=''))), ['other'])
+
+
+class TestClassifyGivenData(ClassifyTestCase):
+    """#74: given data (--cabinet, --date, --field, stdin) applies to every
+    document in the run, and the model fills in only the rest"""
+
+    def test_cabinet_and_date_for_a_directory(self):
+        for name in ['a.pdf', 'b.pdf', 'c.pdf']:
+            self.make(name)
+        out, command, _, e, _ = self.run_command(
+            self.source, config=self.two_cabinets(), cabinet='accounts',
+            date='20240213',
+            result={'data': {'account': 'amazon', 'part': 'receipt'},
+                    'doctype': 'receipt', 'summary': 'A receipt'})
+        self.assertEqual(e.call_count, 3)
+        for call in e.call_args_list:
+            schema = call.args[1]['properties']['data']
+            self.assertEqual(list(schema['properties']),
+                             ['account', 'part'])
+            self.assertEqual(schema['required'], ['account', 'part'])
+            text = call.kwargs['instructions']
+            self.assertIn('Already given for this document (not asked '
+                          'for):\n- date: 20240213', text)
+            self.assertNotIn('- date: Give it as YYYYMMDD', text)
+        documents = sorted(p for p in self.intake.iterdir()
+                           if p.suffix == '.pdf')
+        self.assertEqual(len(documents), 3)
+        self.assertEqual(out.splitlines(), [str(d) for d in documents])
+        for document in documents:
+            results = read_sidecar(document)['results']
+            self.assertEqual(results['given'], {
+                'at': AT, 'cabinet': 'accounts',
+                'data': {'date': '20240213'}})
+            self.assertEqual(results['classify']['data'], {
+                'date': '20240213', 'account': 'amazon', 'part': 'receipt'})
+        self.assertEqual(command.status, 'Ingested 3 files | Transcribed 3 '
+                         'files | Classified 3 files')
+
+    def test_given_value_wins_over_the_model(self):
+        document = self.make_document()
+        self.run_command(field=['part=Visa Statement'])
+        results = read_sidecar(document)['results']
+        self.assertEqual(results['given']['data'],
+                         {'part': 'visa-statement'})
+        self.assertEqual(results['classify']['data'],
+                         dict(DATA, part='visa-statement'))
+
+    def test_stdin_record_for_the_intake(self):
+        first = self.make_document()
+        second = self.make_document('20261025-140307-099.pdf')
+        _, _, _, e, _ = self.run_command(
+            stdin='data:\n  date: 2024-02-13\n  colour: red\n')
+        self.assertEqual(e.call_count, 2)
+        for document in [first, second]:
+            self.assertEqual(
+                read_sidecar(document)['results']['given']['data'],
+                {'date': '20240213'})
+
+    def test_complete_data_needs_no_model(self):
+        source = self.make('a.pdf')
+        out, command, _, e, t = self.run_command(
+            source, date='20240213', field=['account=amazon', 'part=receipt'])
+        t.assert_called_once()
+        e.assert_not_called()
+        document = self.intake / f'{STAMP}.pdf'
+        self.assertEqual(out, str(document))
+        results = read_sidecar(document)['results']
+        data = {'date': '20240213', 'account': 'amazon', 'part': 'receipt'}
+        self.assertNotIn('classify', results)
+        self.assertEqual(results['given'],
+                         {'at': AT, 'cabinet': 'default', 'data': data})
+        self.assertEqual(results['review'], {
+            'at': AT, 'input': True, 'cabinet': 'default', 'data': data})
+        self.assertEqual(command.status, 'Ingested 1 file | Transcribed 1 '
+                         'file | Given 1 file')
+        # A later run counts it as classified
+        _, command, _, e, _ = self.run_command()
+        e.assert_not_called()
+        self.assertEqual(command.status,
+                         'Nothing to classify (1 file already classified)')
+
+    def test_data_given_over_two_runs(self):
+        """Values saved with a document by an earlier run (here, one whose
+        classification failed) count with this run's"""
+        document = self.make_document()
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file failed'):
+            self.run_command(date='20240213',
+                             extract=APIError('down'))
+        self.assertEqual(read_sidecar(document)['results']['given']['data'],
+                         {'date': '20240213'})
+        _, command, _, e, _ = self.run_command(
+            field=['account=amazon', 'part=receipt'])
+        e.assert_not_called()
+        self.assertEqual(read_sidecar(document)['results']['review']['data'],
+                         {'date': '20240213', 'account': 'amazon',
+                          'part': 'receipt'})
+        self.assertEqual(command.status, 'Given 1 file')
+
+    def test_invalid_date_fails_before_anything_moves(self):
+        source = self.make('a.pdf')
+        document = self.make_document()
+        before = Path(f'{document}.yml').read_text()
+        for path in [source, None]:
+            with self.subTest(path=path):
+                with self.assertRaisesRegex(Filez4EvaError,
+                                            'Date must match format '
+                                            "YYYYMMDD: '20240231'"):
+                    self.run_command(path, date='20240231')
+                self.assertTrue(source.is_file())
+                self.assertEqual(Path(f'{document}.yml').read_text(), before)
+
+    def test_unknown_field_with_a_run_cabinet_fails_before_anything_moves(
+            self):
+        source = self.make('a.pdf')
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    'Unknown field account for cabinet '
+                                    'memories; known: event'):
+            self.run_command(source, config=self.two_cabinets(),
+                             cabinet='memories', field=['account=amazon'])
+        self.assertTrue(source.is_file())
+
+    def test_unknown_field_fails_only_that_document(self):
+        self.make('a.pdf')
+        self.make('b.pdf')
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    '1 of 2 files failed to classify'):
+            self.run_command(self.source, config=self.two_cabinets(),
+                             answers=['memories', 'accounts'],
+                             field=['account=amazon'])
+        first = self.intake / f'{STAMP}.pdf'
+        second = self.intake / '20261025-140307-043.pdf'
+        self.assertIn(f'Failed to classify {self.source / "a.pdf"} (now '
+                      f'{first}): Unknown field account for cabinet '
+                      'memories; known: event', self.err)
+        self.assertNotIn('given', read_sidecar(first)['results'])
+        results = read_sidecar(second)['results']
+        self.assertEqual(results['given']['data'], {'account': 'amazon'})
+        self.assertIn('classify', results)
+
+    def test_stdin_field_unknown_to_the_cabinet_is_ignored(self):
+        document = self.make_document()
+        self.run_command(config=self.two_cabinets(), cabinet='memories',
+                         stdin='data:\n  account: amazon\n  event: party\n',
+                         result=MEMORY)
+        self.assertEqual(read_sidecar(document)['results']['given']['data'],
+                         {'event': 'party'})
+
+    def test_conflicting_value_fails_only_that_document(self):
+        first = self.make_document()
+        second = self.make_document('20261025-140307-099.pdf')
+        third = self.make_document('20261025-140307-100.pdf')
+        for document, date in [(first, '20240101'), (second, '20240213')]:
+            results = read_sidecar(document)['results']
+            results['given'] = {'at': AT, 'cabinet': 'default',
+                                'data': {'date': date}}
+            write_sidecar(document, {'results': results})
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    '1 of 3 files failed to classify'):
+            self.run_command(date='20240213')
+        self.assertIn(f'Failed to classify {first}: Date 20240213 given, '
+                      f'but {first.name} already has date 20240101', self.err)
+        self.assertNotIn('classify', read_sidecar(first)['results'])
+        # An equal value is fine
+        self.assertIn('classify', read_sidecar(second)['results'])
+        self.assertIn('classify', read_sidecar(third)['results'])
+
+    def test_value_for_an_already_classified_document(self):
+        document = self.make_document()
+        self.run_command()
+        _, command, _, e, _ = self.run_command(date='20261002')
+        e.assert_not_called()
+        self.assertEqual(command.status, 'Already classified 1 file')
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file failed'):
+            self.run_command(date='20240213')
+        self.assertIn(f'Date 20240213 given, but {document.name} is already '
+                      'classified with date 20261002', self.err)
+        result_without_date = result(date='DROP')
+        other = self.make_document('20261025-140307-099.pdf')
+        self.run_command(ingested=[other.name], result=result_without_date)
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file failed'):
+            self.run_command(ingested=[other.name], date='20240213')
+        self.assertIn(f'Date 20240213 given, but {other.name} is already '
+                      'classified', self.err)
+        self.assertNotIn('classified with', self.err)

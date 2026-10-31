@@ -15,16 +15,17 @@ from filez4eva.command.transcribe_command import (
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import Field, normalize_value
 from filez4eva.stage import (
-    CLASSIFY, GIVEN, NotDone, StageCommand, StopRun, load_sidecar,
-    record_result, saved_cabinet)
+    CLASSIFY, GIVEN, NotDone, StageCommand, StopRun, given_values,
+    load_sidecar, record_result, saved_cabinet)
 from filez4eva.stow import Stower, valid_date
 
 
 def proposal(results: dict) -> dict:
     """Return results.classify from a document's results, checked, with
     the document's saved cabinet (see saved_cabinet; for sidecars from
-    before results.given, the cabinet in results.classify). Raises
-    Filez4EvaError if it can't be used."""
+    before results.given, the cabinet in results.classify) and the values
+    given for it (`given`, from results.given.data, which win over the
+    classified ones). Raises Filez4EvaError if it can't be used."""
     classify = results.get('classify')
     if not isinstance(classify, dict):
         raise Filez4EvaError("results.classify must be a mapping")
@@ -36,7 +37,9 @@ def proposal(results: dict) -> dict:
         data = {}
     if not isinstance(data, dict):
         raise Filez4EvaError("results.classify data must be a mapping")
-    return dict(classify, cabinet=cabinet, data=data)
+    given = given_values(results)
+    data = dict(data, **given)
+    return dict(classify, cabinet=cabinet, data=data, given=given)
 
 
 class ReviewCommand(StageCommand):
@@ -59,8 +62,10 @@ class ReviewCommand(StageCommand):
         document. Confirm refuses a record with a missing field value
         (e.g. no date found); use update. A document not classified yet
         is classified first, after its cabinet is chosen (see Cabinet
-        below). Nothing is stowed. Prints each reviewed document's
-        path."""
+        below). Values given for a document (see Given data below) are
+        shown marked (given): confirm accepts them, update can change them,
+        and redo keeps those the new cabinet has. Nothing is stowed. Prints
+        each reviewed document's path."""
     stage = 'review'
     done = 'Reviewed'
     requires = (TranscribeCommand, ClassifyCommand)
@@ -80,7 +85,8 @@ class ReviewCommand(StageCommand):
     _classifier = None
 
     def show(self, path: Path, results: dict, proposed: dict):
-        """Show the document's name and its proposed record"""
+        """Show the document's name and its proposed record, with the
+        given values marked (given)"""
         ingest = results.get('ingest')
         original = ingest.get('original-name') \
             if isinstance(ingest, dict) else None
@@ -90,10 +96,12 @@ class ReviewCommand(StageCommand):
             if proposed.get(key):
                 self.app.ui.send(f"{key.capitalize()}: {proposed[key]}")
         self.app.ui.send(f"Cabinet: {proposed['cabinet']}")
+        given = proposed.get('given') or {}
         for name, value in proposed['data'].items():
             label = Field(str(name)).label
+            mark = ' (given)' if str(name) in given else ''
             self.app.ui.send(
-                f"{label}: {'(none)' if value is None else value}")
+                f"{label}: {'(none)' if value is None else value}{mark}")
 
     def preview(self, path: Path):
         """Open the document with the preview command"""
@@ -186,9 +194,10 @@ class ReviewCommand(StageCommand):
     def redo(self, path: Path, proposed: dict) -> bool:
         """Change the document's cabinet and classify it again: with
         several cabinets, prompt for it (pre-filled with the current one);
-        with one, use it. Save it as results.given, drop the old
-        results.classify (in one write) and classify the document right
-        away. Return False, changing nothing, on empty input."""
+        with one, use it. Save it as results.given, keeping the given
+        values of fields the cabinet has, drop the old results.classify (in
+        one write) and classify the document right away. Return False,
+        changing nothing, on empty input."""
         if len(self.cabinets) == 1:
             name = next(iter(self.cabinets))
         else:
@@ -196,9 +205,15 @@ class ReviewCommand(StageCommand):
             if name is None:
                 return False
         data = load_sidecar(path)
+        cabinet = self.cabinets[name]
+        given = {field.name: proposed['given'][field.name]
+                 for field in cabinet.fields
+                 if field.name in proposed.get('given', {})}
         data['results'][GIVEN] = {
             'at': ingest_command.now().isoformat(timespec='seconds'),
             'cabinet': name}
+        if given:
+            data['results'][GIVEN]['data'] = given
         data['results'].pop(CLASSIFY, None)
         write_sidecar(path, data)
         self.app.ui.send('Classifying...', Emphasis.INFO)
