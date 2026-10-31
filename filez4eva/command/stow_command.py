@@ -60,7 +60,8 @@ class StowCommand(StageCommand):
         named by the cabinet's pattern, then record results.stow and move
         its X.yml sidecar to <intake>/archive/. A document not reviewed yet
         is classified and reviewed first where needed, and stowed as soon
-        as it's confirmed. Prints each destination.
+        as it's confirmed. Learned values are recorded when a record is
+        reviewed, not when it is stowed. Prints each destination.
 
         Main use: `filez4eva classify -c NAME ~/Scans`, then
         `filez4eva stow`.

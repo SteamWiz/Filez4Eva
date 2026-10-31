@@ -17,7 +17,7 @@ from filez4eva.error import Filez4EvaError
 from filez4eva.fields import (
     MAX_SUGGESTIONS, Field, load_store, normalize_value, record_values,
     suggestions, values_path)
-from filez4eva.stow import Cabinet, Stower
+from filez4eva.stow import Cabinet, Stower, remember_values
 
 from wizlib.command import CommandCancellation
 from wizlib.config_handler import ConfigHandler
@@ -921,45 +921,53 @@ class TestStowValues(WizLibTestCase):
             e.seek(0)
             return r, e.read()
 
+    def remember(self, app=None, **data):
+        """Record a reviewed record's values (as review does); return what
+        was sent to stderr"""
+        app = app or self.app()
+        cabinet = Stower(app).resolve_cabinet()
+        with self.patchout(), self.patcherr() as e:
+            remember_values(app, cabinet, dict(data, date='20240213'))
+            e.seek(0)
+            return e.read()
+
     def store(self):
         return yaml.safe_load(values_path(self.target).read_text())
 
-    def test_recorded_on_stow(self):
-        self.stow(account='amazon', title='receipt')
+    def test_recorded(self):
+        self.remember(account='amazon', title='receipt')
         self.assertEqual(self.store(), {'account': {'amazon': {
             'count': 1, 'last_used': date.today().isoformat()}}})
 
     def test_count_increments(self):
-        self.stow(name='a.txt', account='amazon', title='one')
-        self.stow(name='b.txt', account='amazon', title='two')
-        self.stow(name='c.txt', account='bank', title='three')
+        self.remember(account='amazon', title='one')
+        self.remember(account='amazon', title='two')
+        self.remember(account='bank', title='three')
         store = self.store()
         self.assertEqual(store['account']['amazon']['count'], 2)
         self.assertEqual(store['account']['bank']['count'], 1)
         self.assertNotIn('title', store)
 
-    def test_normalized_value_recorded(self):
-        self.stow(account='Royal Bank', title='x')
-        self.assertIn('royal-bank', self.store()['account'])
-
     def test_title_learned_when_configured(self):
         app = self.app(filez4eva_target=str(self.target),
                        filez4eva_fields={'title': {'values': 'learned'}})
-        self.stow(app, title='receipt')
+        self.remember(app, title='receipt')
         self.assertEqual(list(self.store()), ['title'])
 
     def test_nothing_recorded_without_learned_fields(self):
         app = self.app(filez4eva_target=str(self.target))
-        self.stow(app, title='receipt')
+        self.remember(app, title='receipt')
         self.assertFalse(values_path(self.target).exists())
 
-    def test_not_recorded_when_stow_fails(self):
-        existing = self.target / 'amazon/20240213-x.txt'
-        existing.parent.mkdir(parents=True)
-        existing.write_text('-')
-        with self.assertRaises(Filez4EvaError):
-            self.stow(account='amazon', title='x')
+    def test_not_recorded_by_stow(self):
+        r, _ = self.stow(account='amazon', title='x')
+        self.assertTrue(Path(r).is_file())
         self.assertFalse(values_path(self.target).exists())
+
+    def test_stow_leaves_counts_alone(self):
+        write_store(self.target, {'account': {'amazon': {'count': 4}}})
+        self.stow(account='amazon', title='x')
+        self.assertEqual(self.store(), {'account': {'amazon': {'count': 4}}})
 
     def test_not_recorded_by_plan(self):
         n = self.source / 'b.txt'
@@ -974,8 +982,8 @@ class TestStowValues(WizLibTestCase):
                                    'note': 'kept'},
                         'odd': {'count': 'x'}},
             'other': 'junk'})
-        self.stow(account='amazon', title='x')
-        self.stow(name='c.txt', account='odd', title='y')
+        self.remember(account='amazon', title='x')
+        self.remember(account='odd', title='y')
         store = self.store()
         self.assertEqual(store['account']['amazon'],
                          {'count': 5, 'last_used': date.today().isoformat(),
@@ -985,7 +993,7 @@ class TestStowValues(WizLibTestCase):
 
     def test_junk_field_entry_replaced(self):
         write_store(self.target, {'account': 'junk'})
-        self.stow(account='amazon', title='x')
+        self.remember(account='amazon', title='x')
         self.assertEqual(self.store()['account']['amazon']['count'], 1)
 
     def test_hand_edited_non_string_keys(self):
@@ -993,28 +1001,25 @@ class TestStowValues(WizLibTestCase):
         path.parent.mkdir(parents=True)
         path.write_text('account:\n  0123:\n    count: 5\n  yes:\n'
                         '    count: 3\n')
-        self.stow(account='amazon', title='x')
+        self.remember(account='amazon', title='x')
         self.assertIn('amazon', self.store()['account'])
 
     def test_malformed_store_reported_and_kept(self):
         path = values_path(self.target)
         path.parent.mkdir(parents=True)
         path.write_text('account: [unclosed\n')
-        r, err = self.stow(account='amazon', title='x')
-        self.assertTrue(Path(r).is_file())
+        err = self.remember(account='amazon', title='x')
         self.assertIn(f'Could not record values in {path}', err)
         self.assertEqual(path.read_text(), 'account: [unclosed\n')
 
     def test_non_mapping_store_reported(self):
         write_store(self.target, ['a'])
-        r, err = self.stow(account='amazon', title='x')
-        self.assertTrue(Path(r).is_file())
+        err = self.remember(account='amazon', title='x')
         self.assertIn('must be a mapping', err)
 
     def test_write_failure_cleans_up(self):
         with patch('os.replace', side_effect=OSError('disk full')):
-            r, err = self.stow(account='amazon', title='x')
-        self.assertTrue(Path(r).is_file())
+            err = self.remember(account='amazon', title='x')
         self.assertIn('disk full', err)
         self.assertEqual(list(values_path(self.target).parent.iterdir()),
                          [])
@@ -1095,7 +1100,8 @@ class TestStowValues(WizLibTestCase):
             ('Account: ', ['trip']),
             ('Title: ', [])])
         self.assertTrue((b / 'trip/20240213-photo.txt').is_file())
-        self.assertEqual(self.store_at(b)['account']['trip']['count'], 3)
+        # Stowing records nothing (values are recorded at review)
+        self.assertEqual(self.store_at(b)['account']['trip']['count'], 2)
 
     @staticmethod
     def store_at(target):

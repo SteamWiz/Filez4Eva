@@ -17,7 +17,7 @@ from filez4eva.command.classify_command import (
 from filez4eva.command.ingest_command import read_sidecar, write_sidecar
 from filez4eva.command.transcribe_command import format_transcript
 from filez4eva.error import Filez4EvaError
-from filez4eva.fields import values_path
+from filez4eva.fields import load_store, values_path
 from filez4eva.stow import Cabinet
 
 
@@ -1236,11 +1236,26 @@ class TestClassifyGivenData(ClassifyTestCase):
             'at': AT, 'input': True, 'cabinet': 'default', 'data': data})
         self.assertEqual(command.status, 'Ingested 1 file | Transcribed 1 '
                          'file | Given 1 file')
-        # A later run counts it as classified
-        _, command, _, e, _ = self.run_command()
-        e.assert_not_called()
-        self.assertEqual(command.status,
-                         'Nothing to classify (1 file already classified)')
+        # #75: the record is accepted, so its learned values count once
+        store = load_store(self.target)
+        self.assertEqual(store['account']['amazon']['count'], 4)
+        self.assertEqual(store['part']['receipt']['count'], 3)
+        # A later run counts it as classified, and counts nothing again
+        for vals in [{}, {'date': '20240213',
+                          'field': ['account=amazon', 'part=receipt']}]:
+            _, command, _, e, _ = self.run_command(**vals)
+            e.assert_not_called()
+            self.assertRegex(command.status,
+                             '(?i)already classified 1 file|1 file already')
+            self.assertEqual(load_store(self.target), store)
+
+    def test_classify_records_no_values(self):
+        self.make_document()
+        self.run_command(field=['account=royal-bank'])
+        store = load_store(self.target)
+        self.assertEqual(store['account'], {
+            'amazon': {'count': 3}, 'bank': {'count': 2},
+            'once': {'count': 1}})
 
     def test_data_given_over_two_runs(self):
         """Values saved with a document by an earlier run (here, one whose

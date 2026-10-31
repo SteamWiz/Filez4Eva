@@ -528,10 +528,11 @@ class StageCommand(Filez4EvaCommand):
         run's given values for that cabinet's fields, merged with any given
         before. With the cabinet and every field given, also save the
         record as results.review (with `input: true`), in the same write,
-        and return True. Raises Filez4EvaError if a --field names a field
-        the cabinet doesn't have, writing nothing: a cabinet chosen at the
-        prompt isn't saved then, so the next run asks again (a mistyped
-        choice is not kept)."""
+        then record the values of the cabinet's learned fields (if the
+        document had no review yet), and return True. Raises Filez4EvaError
+        if a --field names a field the cabinet doesn't have, writing
+        nothing: a cabinet chosen at the prompt isn't saved then, so the
+        next run asks again (a mistyped choice is not kept)."""
         name = saved_cabinet(results)
         if name is None:
             if self.provided('cabinet'):
@@ -562,12 +563,20 @@ class StageCommand(Filez4EvaCommand):
             sidecar['results'][GIVEN] = record
             changed = True
         full = self.complete(name, data)
+        # Learned values count once per document: only when this write
+        # creates the review
+        new_review = full and sidecar['results'].get('review') is None
         if full:
             sidecar['results']['review'] = {
                 'at': now, 'input': True, 'cabinet': name, 'data': data}
             changed = True
         if changed:
             write_sidecar(path, sidecar)
+        if new_review:
+            # Imported here: filez4eva.stow imports the transcribe command,
+            # which imports this module
+            from filez4eva.stow import remember_values
+            remember_values(self.app, cabinet, data)
         return full
 
     def act(self, path: Path) -> str:  # pragma: no cover

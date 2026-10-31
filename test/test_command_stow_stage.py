@@ -313,11 +313,43 @@ class TestStowing(StowTestCase):
         t.assert_not_called()
         self.assertEqual(command.status, 'Skipped 1 file (not transcribed)')
 
-    def test_records_learned_values(self):
+    def test_stowing_a_reviewed_document_leaves_counts_alone(self):
+        # #75: values are counted when the record is reviewed, not here
         self.make_document(review=dict(REVIEW, data=dict(
             DATA, account='royal-bank')))
-        self.run_command()
-        self.assertIn('royal-bank', load_store(self.target)['account'])
+        before = load_store(self.target)
+        _, command, _, _, _ = self.run_command()
+        self.assertEqual(command.status, 'Stowed 1 file')
+        self.assertTrue(self.stowed.parent.parent.joinpath(
+            'royal-bank', '20261002-receipt.pdf').is_file())
+        self.assertEqual(load_store(self.target), before)
+
+    def test_confirmed_then_stowed_counts_once(self):
+        self.make_document()
+        _, command, _, _, _ = self.run_command(keys='c')
+        self.assertEqual(command.status, 'Reviewed 1 file | Stowed 1 file')
+        self.assertEqual(load_store(self.target)['account']['amazon']['count'],
+                         4)
+
+    def test_complete_given_data_counts_once(self):
+        source = self.make('Scan 1.PDF')
+        out, command, _, e, _ = self.run_command(
+            source, date='20261002', field=['account=amazon', 'part=receipt'])
+        e.assert_not_called()
+        self.assertEqual(out, str(self.stowed))
+        store = load_store(self.target)
+        self.assertEqual(store['account']['amazon']['count'], 4)
+        self.assertEqual(store['part']['receipt']['count'], 1)
+
+    def test_values_stay_counted_when_stow_fails(self):
+        self.stowed.parent.mkdir(parents=True)
+        self.stowed.write_text('already here')
+        document = self.make_document()
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            self.run_command(keys='c')
+        self.assertIn('review', self.results(document))
+        self.assertEqual(load_store(self.target)['account']['amazon']['count'],
+                         4)
 
     def test_uses_reviewed_cabinet_not_classified_one(self):
         # A sidecar from before results.given, whose cabinet was changed
