@@ -300,7 +300,8 @@ class IngestCommand(Filez4EvaCommand):
         directory, into the intake under a time-stamped name, and write an
         X.yml sidecar next to each one recording when it was ingested, its
         original name and any source metadata (--meta flags and a YAML
-        mapping on stdin). Prints each new path. The intake is set with the
+        mapping on stdin). Prints each new path, with an Ingesting FILE
+        line on stderr before each file is moved. The intake is set with the
         `intake:` configuration key (default ~/.filez4eva/intake)."""
 
     # KEY=VALUE strings from repeated --meta flags
@@ -350,6 +351,7 @@ class IngestCommand(Filez4EvaCommand):
                     (is_ingested(path) or is_companion(path)):
                 self.status = 'Already ingested'
                 return None
+            self.app.ui.send(f"Ingesting {path}", Emphasis.INFO)
             target = ingest_file(path, intake, self.source)
             self.status = 'Ingested'
             return str(target)
@@ -357,6 +359,7 @@ class IngestCommand(Filez4EvaCommand):
         done = []
         failed = 0
         for file in todo:
+            self.app.ui.send(f"Ingesting {file}", Emphasis.INFO)
             try:
                 done.append(str(ingest_file(file, intake, self.source)))
             except (Filez4EvaError, OSError) as error:

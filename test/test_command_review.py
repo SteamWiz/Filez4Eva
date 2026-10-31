@@ -267,7 +267,7 @@ class TestReviewConfirm(ReviewTestCase):
     def test_shows_proposed_record(self):
         self.make_document()
         self.run_command(keys='c')
-        for line in [f'{STAMP}.pdf (Scan 1.PDF)',
+        for line in [f'Reviewing {STAMP}.pdf (Scan 1.PDF)',
                      'Summary: Amazon.ca order receipt for a USB hub',
                      'Doctype: receipt', 'Cabinet: default',
                      'Date: 20261002', 'Account: amazon', 'Part: receipt',

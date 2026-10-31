@@ -19,6 +19,7 @@ from filez4eva.command.transcribe_command import format_transcript
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import load_store, values_path
 from filez4eva.stow import Cabinet
+from test import plain
 
 
 EXTRACT = 'filez4eva.command.classify_command.extract'
@@ -759,8 +760,14 @@ class TestClassifyUseCase(ClassifyTestCase):
                              ['ingest', 'transcribe', 'given', 'classify'])
             self.assertEqual(results['given']['cabinet'], 'memories')
         self.assertEqual(self.intake_names(), sorted(names))
-        self.assertEqual(err, 'Ingested 3 files | Transcribed 3 files | '
-                         'Classified 3 files\n')
+        originals = ['Scan 1.pdf', 'Scan 2.PDF', 'photo.jpg']
+        self.assertEqual(plain(err).splitlines(), [
+            *[f'Ingesting {self.source / name}' for name in originals],
+            *[f'Transcribing {d.name} ({name})'
+              for d, name in zip(documents, originals)],
+            *[f'Classifying {d.name} ({name})'
+              for d, name in zip(documents, originals)],
+            'Ingested 3 files | Transcribed 3 files | Classified 3 files'])
 
 
 class TestClassifyCabinets(ClassifyTestCase):
@@ -1022,7 +1029,8 @@ class TestClassifyCabinets(ClassifyTestCase):
                   f"      pattern: '{{event}}/{{date}}'\n")
         out, err, code, _ = self.run_app(
             config, '-c', 'accounts', result=dict(RESULT, doctype='other'))
-        self.assertEqual(err, 'Classified 1 file\n')
+        self.assertEqual(plain(err), f'Classifying {document.name} '
+                         '(Scan 1.PDF)\nClassified 1 file\n')
         self.assertEqual(code, 0)
         self.assertEqual(read_sidecar(document)['results']['given'],
                          {'at': AT, 'cabinet': 'accounts'})
@@ -1035,9 +1043,13 @@ class TestClassifyOutput(ClassifyTestCase):
         source = self.make('scan.pdf')
         out, err, code, _ = self.run_app(self.config_text(), source)
         self.assertEqual(code, 0)
-        self.assertEqual(out.strip(), str(self.intake / f'{STAMP}.pdf'))
-        self.assertEqual(err, 'Ingested 1 file | Transcribed 1 file | '
-                         'Classified 1 file\n')
+        # stdout has only the result path; progress goes to stderr
+        self.assertEqual(out, str(self.intake / f'{STAMP}.pdf'))
+        self.assertEqual(plain(err).splitlines(), [
+            f'Ingesting {source}',
+            f'Transcribing {STAMP}.pdf (scan.pdf)',
+            f'Classifying {STAMP}.pdf (scan.pdf)',
+            'Ingested 1 file | Transcribed 1 file | Classified 1 file'])
         self.assertNotIn('summary', out)
         out, err, code, e = self.run_app(self.config_text())
         e.assert_not_called()

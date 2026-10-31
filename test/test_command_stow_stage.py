@@ -13,10 +13,13 @@ from filez4eva.command.review_command import ReviewCommand
 from filez4eva.command.stow_command import StowCommand
 from filez4eva.command.transcribe_command import TranscribeCommand
 from filez4eva.error import Filez4EvaError
+from filez4eva.command.ingest_command import read_sidecar, write_sidecar
 from filez4eva.fields import load_store
+from filez4eva.stage import stage_line
 
 from kwark.ai import APIError
 
+from test import plain
 from test.test_command_review import (
     ANSWERS, AT, CLASSIFY, DATA, EXTRACT, PATTERN, SECOND, STAMP,
     TRANSCRIBE, ReviewTestCase)
@@ -1305,3 +1308,114 @@ class TestStowCabinet(StowTestCase):
                       ': Unknown field account for cabinet memories', self.err)
         self.assertNotIn('given', self.results(first))
         self.assertTrue(self.stowed.with_suffix('.jpg').is_file())
+
+
+# The start of each progress line on stderr
+PROGRESS = ('Ingesting ', 'Transcribing ', 'Classifying ', 'Reviewing ',
+            'Stowing ', 'Stowed to ')
+
+
+class TestStowProgress(StowTestCase):
+    """#44: a line on stderr before each stage starts on a document, naming
+    the stage and the document (its name in the intake and its original
+    name), and the stowed path after stowing; stdout has only the result
+    paths"""
+
+    def progress(self):
+        return [line for line in plain(self.err).splitlines()
+                if line.startswith(PROGRESS)]
+
+    def test_every_stage_names_the_document(self):
+        source = self.make('Scan 1.PDF')
+        out, _, _, _, _ = self.run_command(source, keys='c', answers=ANSWERS)
+        name = f'{STAMP}.pdf'
+        self.assertEqual(self.progress(), [
+            f'Ingesting {source}',
+            f'Transcribing {name} (Scan 1.PDF)',
+            f'Classifying {name} (Scan 1.PDF)',
+            f'Reviewing {name} (Scan 1.PDF)',
+            f'Stowing {name} (Scan 1.PDF)',
+            f'Stowed to {self.stowed}'])
+        self.assertEqual(out, str(self.stowed))
+
+    def test_each_document_in_turn(self):
+        self.make('a.pdf')
+        self.make('b.pdf')
+        out, _, _, _, _ = self.run_command(
+            self.source, keys='uu',
+            answers=ANSWERS + ['20261003', 'amazon', 'receipt'])
+        first, second = f'{STAMP}.pdf', f'{SECOND}.pdf'
+        self.assertEqual(self.progress()[:4], [
+            f'Ingesting {self.source / "a.pdf"}',
+            f'Ingesting {self.source / "b.pdf"}',
+            f'Transcribing {first} (a.pdf)',
+            f'Transcribing {second} (b.pdf)'])
+        self.assertEqual(self.progress()[4:8], [
+            f'Classifying {first} (a.pdf)', f'Reviewing {first} (a.pdf)',
+            f'Stowing {first} (a.pdf)', f'Stowed to {self.stowed}'])
+        self.assertEqual(self.progress()[8:11], [
+            f'Classifying {second} (b.pdf)', f'Reviewing {second} (b.pdf)',
+            f'Stowing {second} (b.pdf)'])
+        stowed = self.stowed.with_name('20261003-receipt.pdf')
+        self.assertEqual(self.progress()[11:], [f'Stowed to {stowed}'])
+        self.assertTrue(stowed.is_absolute())
+        self.assertTrue(stowed.is_file())
+        # stdout: just the two destinations
+        self.assertEqual(out.splitlines(), [str(self.stowed), str(stowed)])
+
+    def test_reviewed_document_is_just_stowed(self):
+        self.make_document(review=REVIEW)
+        out, _, _, _, _ = self.run_command()
+        self.assertEqual(self.progress(), [
+            f'Stowing {STAMP}.pdf (Scan 1.PDF)', f'Stowed to {self.stowed}'])
+        self.assertEqual(out, str(self.stowed))
+
+    def test_complete_given_data_has_no_classify_or_review_line(self):
+        source = self.make('Scan 1.PDF')
+        out, _, _, _, _ = self.run_command(
+            source, date='20261002', field=['account=amazon', 'part=receipt'])
+        name = f'{STAMP}.pdf'
+        self.assertEqual(self.progress(), [
+            f'Ingesting {source}', f'Transcribing {name} (Scan 1.PDF)',
+            f'Stowing {name} (Scan 1.PDF)', f'Stowed to {self.stowed}'])
+        self.assertEqual(out, str(self.stowed))
+
+    def test_no_original_name(self):
+        document = self.make_document(review=REVIEW)
+        data = read_sidecar(document)
+        del data['results']['ingest']['original-name']
+        write_sidecar(document, data)
+        self.run_command()
+        self.assertEqual(self.progress()[0], f'Stowing {STAMP}.pdf')
+
+    def test_cabinet_prompt_comes_after_the_classify_line(self):
+        self.make_document(classify=None)
+        self.run_command(config=self.memories_cabinets(), keys='c',
+                         answers=['accounts', *ANSWERS])
+        err = plain(self.err)
+        line = f'Classifying {STAMP}.pdf (Scan 1.PDF)\n'
+        self.assertEqual(err.count(line), 1)
+        self.assertLess(err.index(line), err.index('Cabinet: '))
+        self.assertNotIn(f'\n{STAMP}.pdf (Scan 1.PDF)', err)
+
+    def test_redo_names_the_document(self):
+        self.command_class = ReviewCommand
+        self.make_document()
+        self.run_command(keys='rc')
+        name = f'{STAMP}.pdf (Scan 1.PDF)'
+        self.assertEqual(self.progress(), [
+            f'Reviewing {name}', f'Classifying {name}', f'Reviewing {name}'])
+
+    def test_failed_document_is_named_before_the_error(self):
+        document = self.make_document(classify=None, transcript=None)
+        with self.assertRaises(Filez4EvaError):
+            self.run_command(transcribe=APIError('nope'))
+        lines = plain(self.err).splitlines()
+        self.assertEqual(lines[0], f'Transcribing {STAMP}.pdf (Scan 1.PDF)')
+        self.assertTrue(lines[1].startswith(f'Failed to stow {document}'))
+
+    def test_unreadable_sidecar_gives_just_the_name(self):
+        document = self.make_document()
+        Path(f'{document}.yml').write_text('- a list')
+        self.assertEqual(stage_line('Stowing', document),
+                         f'Stowing {STAMP}.pdf')
