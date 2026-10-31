@@ -241,22 +241,64 @@ class TestClassifySelection(ClassifyTestCase):
                                 (self.intake / 'archive').iterdir()),
                          ['old.pdf'])
 
-    def test_document_in_intake_given_as_file(self):
+    def test_document_in_intake_given_as_file_is_an_error(self):
         document = self.make_document()
-        out, command, _, _, _ = self.run_command(document)
-        self.assertEqual(out, str(document))
+        out, err, code, e = self.run_app(self.config_text(), document)
+        self.assertEqual(code, 1)
+        self.assertIn('is in the intake', err)
+        self.assertIn('--ingested', err)
+        e.assert_not_called()
+        self.assertIsNone(self.classified(document))
 
     def test_intake_subdirectory_is_refused(self):
         old = self.make('old.pdf', where=self.intake / 'archive')
         with patch(TRANSCRIBE) as t, \
-                self.assertRaisesRegex(Filez4EvaError, 'subdirectory'):
+                self.assertRaisesRegex(Filez4EvaError, 'in the intake'):
             self.run_command(old.parent)
         t.assert_not_called()
 
     def test_companion_given_as_file_is_error(self):
         document = self.make_document()
-        with self.assertRaisesRegex(Filez4EvaError, 'not a document'):
+        with self.assertRaisesRegex(Filez4EvaError, 'in the intake'):
             self.run_command(Path(f'{document}.md'))
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    'not a document ingested'):
+            self.run_command(ingested=[f'{document.name}.md'])
+
+    def test_ingested_two_documents(self):
+        first = self.make_document()
+        second = self.make_document('20261025-140307-043.pdf',
+                                    transcript=None)
+        other = self.make_document('20261025-140307-044.pdf',
+                                   transcript=None)
+        out, command, _, e, t = self.run_command(
+            ingested=[second.name, first.name])
+        self.assertEqual(out.splitlines(), [str(second), str(first)])
+        t.assert_called_once()
+        self.assertEqual(t.call_args.args[0], second)
+        self.assertEqual(e.call_count, 2)
+        self.assertEqual(command.status,
+                         'Transcribed 1 file | Classified 2 files')
+        self.assertEqual(list(read_sidecar(other)['results']), ['ingest'])
+
+    def test_ingested_with_path_is_an_error(self):
+        document = self.make_document()
+        source = self.make('a.pdf')
+        with self.assertRaisesRegex(Filez4EvaError, "can't be combined"):
+            self.run_command(source, ingested=[document.name])
+        self.assertTrue(source.exists())
+        self.assertIsNone(self.classified(document))
+
+    def test_path_run_leaves_intake_documents_alone(self):
+        document = self.make_document(transcript=None)
+        self.make('a.pdf')
+        out, command, _, e, t = self.run_command(self.source)
+        new = self.intake / '20261025-140307-043.pdf'
+        self.assertEqual(out, str(new))
+        t.assert_called_once()
+        self.assertEqual(t.call_args.args[0], new)
+        e.assert_called_once()
+        self.assertEqual(list(read_sidecar(document)['results']), ['ingest'])
 
     def test_missing_path(self):
         with self.assertRaisesRegex(Filez4EvaError, 'must exist'):
@@ -265,7 +307,8 @@ class TestClassifySelection(ClassifyTestCase):
     def test_empty_directory(self):
         out, command, _, _, _ = self.run_command(self.source)
         self.assertEqual(out, '')
-        self.assertEqual(command.status, 'No files to classify')
+        self.assertEqual(command.status,
+                         f'Nothing to classify: no files in {self.source}')
 
 
 class TestClassifyPrerequisites(ClassifyTestCase):
@@ -547,7 +590,8 @@ class TestClassifyAlreadyDone(ClassifyTestCase):
         e.assert_not_called()
         t.assert_not_called()
         self.assertEqual(out, '')
-        self.assertEqual(command.status, 'Already classified 1 file')
+        self.assertEqual(command.status,
+                         'Nothing to classify (1 file already classified)')
         self.assertEqual(Path(f'{document}.yml').read_text(), before)
 
     def test_already_classified_counted_with_others(self):
@@ -605,7 +649,7 @@ class TestClassifyOnly(ClassifyTestCase):
         self.assertTrue(stray.exists())
         self.assertEqual(command.status,
                          'Classified 1 file | Skipped 1 file (not '
-                         'transcribed) | Skipped 1 file (not ingested)')
+                         'transcribed)')
 
     def test_only_from_app(self):
         self.make_document(transcript=None)
@@ -857,7 +901,8 @@ class TestClassifyOutput(ClassifyTestCase):
         out, err, code, e = self.run_app(self.config_text())
         e.assert_not_called()
         self.assertEqual(out, '')
-        self.assertEqual(err, 'Already classified 1 file\n')
+        self.assertEqual(
+            err, 'Nothing to classify (1 file already classified)\n')
 
 
 class TestClassifySchema(ClassifyTestCase):

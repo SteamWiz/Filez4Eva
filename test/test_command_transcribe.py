@@ -18,7 +18,7 @@ from filez4eva.command.transcribe_command import (
     DEFAULT_MODEL, TranscribeCommand, format_transcript, read_front_matter,
     transcribe_file, transcript_body, write_atomically)
 from filez4eva.error import Filez4EvaError
-from filez4eva.stage import documents, resolve_path
+from filez4eva.stage import find_ingested, new_files, resolve_path
 
 
 TRANSCRIBE = 'filez4eva.command.transcribe_command.transcribe'
@@ -312,11 +312,21 @@ class TestTranscribeCommand(TranscribeTestCase):
         self.assertEqual(results['ingest']['original-name'], 'orig.pdf')
         self.assertEqual(results['transcribe']['length'], 4)
 
-    def test_intake_directory_given_as_path(self):
+    def test_path_in_intake_is_an_error(self):
         document = self.make_document(f'{STAMP}.pdf')
-        with patch(TRANSCRIBE, return_value='x'):
-            result, _, _ = self.run_command(self.intake)
-        self.assertEqual(result, f'{document}.md')
+        stray = self.make('stray.pdf', where=self.intake)
+        sub = self.intake / 'sub'
+        inner = self.make('inner.pdf', where=sub)
+        for path in [self.intake, document, stray, sub, inner,
+                     Path(f'{document}.yml')]:
+            with self.subTest(path=path.name), patch(TRANSCRIBE) as t, \
+                    self.assertRaisesRegex(Filez4EvaError,
+                                           'is in the intake .*--ingested'):
+                self.run_command(path)
+            t.assert_not_called()
+        self.assertEqual(self.intake_names(), [
+            f'{STAMP}.pdf', f'{STAMP}.pdf.yml', 'stray.pdf', 'sub'])
+        self.assertEqual(list(read_sidecar(document)['results']), ['ingest'])
 
     def test_companions_in_intake_are_not_documents(self):
         document = self.make_document(f'{STAMP}.txt')
@@ -330,34 +340,114 @@ class TestTranscribeCommand(TranscribeTestCase):
         self.assertEqual(self.intake_names(), [
             '.hidden', f'{STAMP}.txt', f'{STAMP}.txt.md', f'{STAMP}.txt.yml'])
 
-    def test_file_dropped_in_intake_is_ingested_first(self):
+    def test_no_path_ingests_nothing(self):
+        document = self.make_document(f'{STAMP}.pdf')
         stray = self.make('Dropped.PDF', where=self.intake)
         with patch(TRANSCRIBE, return_value='x') as t:
-            _, command, _ = self.run_command()
-        document = self.intake / f'{STAMP}.pdf'
+            _, command, err = self.run_command()
         t.assert_called_once_with(document, model=DEFAULT_MODEL,
                                   api_key=None)
-        self.assertFalse(stray.exists())
-        self.assertEqual(command.status,
-                         'Ingested 1 file | Transcribed 1 file')
-
-    def test_document_in_intake_given_as_file(self):
-        document = self.make_document(f'{STAMP}.pdf')
-        with patch(TRANSCRIBE, return_value='x'):
-            result, command, _ = self.run_command(document)
-        self.assertEqual(result, f'{document}.md')
+        self.assertTrue(stray.exists())
+        self.assertFalse(Path(f'{stray}.yml').exists())
+        self.assertIn(f'Not ingested: {stray}', err)
         self.assertEqual(command.status, 'Transcribed 1 file')
 
-    def test_companion_given_as_file_is_error(self):
-        document = self.make_document(f'{STAMP}.pdf')
+    def test_no_path_with_only_strays(self):
+        stray = self.make('Dropped.PDF', where=self.intake)
         with patch(TRANSCRIBE) as t:
-            for path in [Path(f'{document}.yml'),
-                         self.make(f'{STAMP}.pdf.md', 'x', self.intake)]:
-                with self.subTest(path=path.name), \
-                        self.assertRaisesRegex(Filez4EvaError,
-                                               'not a document'):
-                    self.run_command(path)
+            out, err, code = self.run_app()
         t.assert_not_called()
+        self.assertEqual(code, 0)
+        self.assertEqual(out, '')
+        self.assertIn(f'Not ingested: {stray}', err)
+        self.assertIn('Nothing to transcribe: no documents ingested in the '
+                      'intake', err)
+        self.assertTrue(stray.exists())
+
+    def test_empty_intake(self):
+        with patch(TRANSCRIBE) as t:
+            out, err, code = self.run_app()
+        t.assert_not_called()
+        self.assertEqual(code, 0)
+        self.assertEqual(out, '')
+        self.assertEqual(err, 'Nothing to transcribe: the intake is empty\n')
+
+    def test_ingested_documents(self):
+        first = self.make_document(f'{STAMP}.pdf')
+        second = self.make_document('20261025-140307-043.pdf')
+        third = self.make_document('20261025-140307-044.pdf')
+        with patch(TRANSCRIBE, return_value='x') as t:
+            result, command, _ = self.run_command(
+                ingested=[third.name, str(first)])
+        self.assertEqual([c.args[0] for c in t.call_args_list],
+                         [third, first])
+        self.assertEqual(result.splitlines(), [f'{third}.md', f'{first}.md'])
+        self.assertEqual(command.status, 'Transcribed 2 files')
+        self.assertNotIn('transcribe', read_sidecar(second)['results'])
+
+    def test_ingested_given_twice_is_done_once(self):
+        document = self.make_document(f'{STAMP}.pdf')
+        with patch(TRANSCRIBE, return_value='x') as t:
+            _, command, _ = self.run_command(
+                ingested=[document.name, document.name])
+        t.assert_called_once()
+        self.assertEqual(command.status, 'Transcribed 1 file')
+
+    def test_ingested_from_app(self):
+        document = self.make_document(f'{STAMP}.pdf')
+        self.make_document('20261025-140307-043.pdf')
+        with patch(TRANSCRIBE, return_value='x') as t:
+            out, err, code = self.run_app('--ingested', document.name)
+        self.assertEqual(code, 0)
+        t.assert_called_once_with(document, model=DEFAULT_MODEL,
+                                  api_key=None)
+        self.assertEqual(out.strip(), f'{document}.md')
+        self.assertEqual(err, 'Transcribed 1 file\n')
+
+    def test_ingested_that_is_not_a_document_is_an_error(self):
+        document = self.make_document(f'{STAMP}.pdf')
+        good = document.name
+        stray = self.make('stray.pdf', where=self.intake)
+        transcript = self.make(f'{STAMP}.pdf.md', 'x', self.intake)
+        outside = self.make('outside.pdf', where=self.source)
+        Path(f'{outside}.yml').write_text('results: {}')
+        archive = self.intake / 'archive'
+        old = self.make('old.pdf', where=archive)
+        self.make('old.pdf.yml', 'x', archive)
+        hidden = self.make('.hidden.pdf', where=self.intake)
+        self.make('.hidden.pdf.yml', 'x', self.intake)
+        for name in ['missing.pdf', stray.name, str(stray),
+                     f'{good}.yml', transcript.name, str(outside),
+                     str(old), 'archive', hidden.name, '..']:
+            with self.subTest(name=name), patch(TRANSCRIBE) as t, \
+                    self.assertRaisesRegex(Filez4EvaError,
+                                           'not a document ingested'):
+                self.run_command(ingested=[good, name])
+            t.assert_not_called()
+        self.assertNotIn('transcribe', read_sidecar(document)['results'])
+
+    def test_ingested_with_path_is_an_error(self):
+        document = self.make_document(f'{STAMP}.pdf')
+        source = self.make('a.pdf')
+        with patch(TRANSCRIBE) as t:
+            out, err, code = self.run_app('--ingested', document.name, source)
+        t.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertIn("can't be combined with a path", err)
+        self.assertTrue(source.exists())
+        self.assertNotIn('transcribe', read_sidecar(document)['results'])
+
+    def test_path_run_leaves_intake_documents_alone(self):
+        document = self.make_document(f'{STAMP}.pdf')
+        self.make('a.pdf')
+        with patch(TRANSCRIBE, return_value='x') as t:
+            _, command, _ = self.run_command(self.source)
+        new = self.intake / '20261025-140307-043.pdf'
+        t.assert_called_once_with(new, model=DEFAULT_MODEL, api_key=None)
+        self.assertEqual(command.status,
+                         'Ingested 1 file | Transcribed 1 file')
+        self.assertEqual(list(read_sidecar(document)['results']), ['ingest'])
+        self.assertFalse(Path(f'{document}.md').exists())
 
     def test_already_transcribed_is_skipped(self):
         document = self.make_document(f'{STAMP}.pdf', {
@@ -367,7 +457,8 @@ class TestTranscribeCommand(TranscribeTestCase):
             result, command, _ = self.run_command()
         t.assert_not_called()
         self.assertEqual(result, '')
-        self.assertEqual(command.status, 'Already transcribed 1 file')
+        self.assertEqual(command.status,
+                         'Nothing to transcribe (1 file already transcribed)')
         self.assertEqual(Path(f'{document}.yml').read_text(), before)
         self.assertEqual(self.intake_names(),
                          [f'{STAMP}.pdf', f'{STAMP}.pdf.yml'])
@@ -415,10 +506,8 @@ class TestTranscribeCommand(TranscribeTestCase):
         t.assert_called_once_with(document, model=DEFAULT_MODEL,
                                   api_key=None)
         self.assertTrue(stray.exists())
-        self.assertIn(f'Skipped {stray}: not ingested yet', err)
-        self.assertEqual(
-            command.status,
-            'Transcribed 1 file | Skipped 1 file (not ingested)')
+        self.assertIn(f'Not ingested: {stray}', err)
+        self.assertEqual(command.status, 'Transcribed 1 file')
 
     def test_only_from_app(self):
         self.make('a.pdf')
@@ -524,7 +613,8 @@ class TestTranscribeCommand(TranscribeTestCase):
     def test_empty_directory(self):
         result, command, _ = self.run_command(self.source)
         self.assertEqual(result, '')
-        self.assertEqual(command.status, 'No files to transcribe')
+        self.assertEqual(command.status,
+                         f'Nothing to transcribe: no files in {self.source}')
 
     def test_missing_path(self):
         with patch(TRANSCRIBE) as t, \
@@ -543,7 +633,7 @@ class TestTranscribeCommand(TranscribeTestCase):
         old = self.make('old.pdf', where=archive)
         for path in [archive, old]:
             with self.subTest(path=path.name), patch(TRANSCRIBE) as t, \
-                    self.assertRaisesRegex(Filez4EvaError, 'subdirectory'):
+                    self.assertRaisesRegex(Filez4EvaError, 'in the intake'):
                 self.run_command(path)
             t.assert_not_called()
         self.assertEqual(sorted(p.name for p in archive.iterdir()),
@@ -556,7 +646,7 @@ class TestTranscribeCommand(TranscribeTestCase):
         link = self.source / 'link'
         link.symlink_to(archive, target_is_directory=True)
         with patch(TRANSCRIBE) as t, \
-                self.assertRaisesRegex(Filez4EvaError, 'subdirectory'):
+                self.assertRaisesRegex(Filez4EvaError, 'in the intake'):
             self.run_command(link)
         t.assert_not_called()
         self.assertEqual(sorted(p.name for p in archive.iterdir()),
@@ -565,13 +655,23 @@ class TestTranscribeCommand(TranscribeTestCase):
                          ['archive'])
         self.assertTrue(old.is_file())
 
-    def test_intake_through_dot_dot_is_the_intake(self):
+    def test_intake_through_dot_dot_is_an_error(self):
         document = self.make_document(f'{STAMP}.pdf')
         (self.intake / 'archive').mkdir()
-        with patch(TRANSCRIBE, return_value='x') as t:
+        with patch(TRANSCRIBE) as t, \
+                self.assertRaisesRegex(Filez4EvaError, 'in the intake'):
             self.run_command(self.intake / 'archive' / '..')
-        t.assert_called_once()
-        self.assertTrue(Path(f'{document}.md').is_file())
+        t.assert_not_called()
+        self.assertFalse(Path(f'{document}.md').exists())
+
+    def test_symlink_to_intake_document_is_an_error(self):
+        document = self.make_document(f'{STAMP}.pdf')
+        link = self.source / 'link.pdf'
+        link.symlink_to(document)
+        with patch(TRANSCRIBE) as t, \
+                self.assertRaisesRegex(Filez4EvaError, 'in the intake'):
+            self.run_command(link)
+        t.assert_not_called()
 
     def test_force_is_not_an_option(self):
         source = self.make('a.pdf')
@@ -593,7 +693,8 @@ class TestTranscribeCommand(TranscribeTestCase):
             out, err, code = self.run_app()
         t.assert_not_called()
         self.assertEqual(out, '')
-        self.assertEqual(err, 'Already transcribed 1 file\n')
+        self.assertEqual(
+            err, 'Nothing to transcribe (1 file already transcribed)\n')
 
 
 class TestTranscribeThroughSymlink(TranscribeTestCase):
@@ -636,10 +737,17 @@ class TestTranscribeThroughSymlink(TranscribeTestCase):
         t.assert_not_called()
         self.assertIn(f'Skipped {source}: not ingested yet', err)
 
-    def test_intake_given_as_path_through_link(self):
+    def test_intake_given_as_path_through_link_is_an_error(self):
+        self.make_document(f'{STAMP}.pdf')
+        with patch(TRANSCRIBE) as t, \
+                self.assertRaisesRegex(Filez4EvaError, 'in the intake'):
+            self.run_command(self.intake)
+        t.assert_not_called()
+
+    def test_ingested_names_document_as_given(self):
         document = self.make_document(f'{STAMP}.pdf')
         with patch(TRANSCRIBE, return_value='x'):
-            result, _, _ = self.run_command(self.intake)
+            result, _, _ = self.run_command(ingested=[str(document)])
         self.assertEqual(result, f'{document}.md')
 
     def test_resolve_path_keeps_the_path_given(self):
@@ -648,28 +756,35 @@ class TestTranscribeThroughSymlink(TranscribeTestCase):
         self.assertEqual(resolve_path(str(self.source), self.intake),
                          self.source)
         self.assertEqual(resolve_path(str(source), self.intake), source)
-        self.assertEqual(resolve_path(str(self.intake), self.intake),
-                         self.intake)
 
 
 class TestStageHelpers(TranscribeTestCase):
 
     def test_resolve_path(self):
         self.intake.mkdir()
-        self.assertEqual(resolve_path(None, self.intake), self.intake)
-        self.assertEqual(resolve_path('', self.intake), self.intake)
         source = self.make('a.pdf')
         self.assertEqual(resolve_path(str(source), self.intake), source)
         stray = self.make('b.pdf', where=self.intake)
-        self.assertEqual(resolve_path(str(stray), self.intake), stray)
+        for path in [stray, self.intake]:
+            with self.subTest(path=path), \
+                    self.assertRaisesRegex(Filez4EvaError, 'in the intake'):
+                resolve_path(str(path), self.intake)
 
-    def test_documents(self):
+    def test_new_files(self):
         self.intake.mkdir()
         a = self.make('a.pdf')
         self.make('a.pdf.yml')
-        self.assertEqual(documents(self.source, self.intake),
+        self.assertEqual(new_files(self.source, self.intake),
                          [a, self.source / 'a.pdf.yml'])
-        self.assertEqual(documents(a, self.intake), [a])
+        self.assertEqual(new_files(a, self.intake), [a])
+
+    def test_find_ingested(self):
+        document = self.make_document(f'{STAMP}.pdf')
+        self.assertEqual(find_ingested(document.name, self.intake), document)
+        self.assertEqual(find_ingested(str(document), self.intake), document)
+        with self.assertRaisesRegex(Filez4EvaError,
+                                    'not a document ingested'):
+            find_ingested('nope.pdf', self.intake)
 
 
 class TestTranscribeSettings(TranscribeTestCase):

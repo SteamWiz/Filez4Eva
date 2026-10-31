@@ -38,19 +38,20 @@ def proposal(results: dict) -> dict:
 
 
 class ReviewCommand(StageCommand):
-    """Show the proposed record of a file, the files in a directory, or the
-    documents in the intake, to confirm or edit, ingesting, transcribing
-    and classifying them first if needed. Records results.review (cabinet
-    and data) in each document's X.yml. Never stows."""
+    """Show the proposed record of new files (ingesting them first), the
+    documents already in the intake, or the ones named with --ingested, to
+    confirm or edit, transcribing and classifying them first if needed.
+    Records results.review (cabinet and data) in each document's X.yml.
+    Never stows."""
 
     name = 'review'
     summary = 'confirm or edit the proposed records'
     description = """
         Show each classified document's proposed record, then confirm (or
-        edit), skip, preview, delete or quit. A confirmed record is saved as
-        results.review in the document's X.yml sidecar. Nothing is stowed.
-        Files are ingested, transcribed and classified first where needed.
-        Prints each reviewed document's path."""
+        edit), skip, preview, delete or quit (which ends the run). A
+        confirmed record is saved as results.review in the document's X.yml
+        sidecar. Nothing is stowed. Prints each reviewed document's
+        path."""
     stage = 'review'
     done = 'Reviewed'
     requires = (TranscribeCommand, ClassifyCommand)

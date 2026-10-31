@@ -11,7 +11,7 @@ from filez4eva.command.review_command import ReviewCommand
 from filez4eva.command.transcribe_command import TranscribeCommand
 from filez4eva.error import Filez4EvaError
 from filez4eva.stage import (
-    StageCommand, documents, load_sidecar, record_result, resolve_path)
+    StageCommand, find_ingested, load_sidecar, record_result, resolve_path)
 from filez4eva.stow import Stower, load_cabinets, stdin_null
 
 
@@ -44,17 +44,18 @@ def text(value):
 
 
 class StowCommand(StageCommand):
-    """Stow a file, the files in a directory, or the documents in the
-    intake into their cabinets, ingesting, transcribing, classifying and
-    reviewing them first if needed. Each document is stowed as soon as it
-    is confirmed: the file and its transcript move to the cabinet chosen at
-    review, results.stow is recorded, and X.yml moves to
-    <intake>/archive/.
+    """Stow new files (ingesting them first), the documents already in the
+    intake, or the ones named with --ingested, into their cabinets,
+    transcribing, classifying and reviewing them first if needed. Each
+    document is stowed as soon as it is confirmed: the file and its
+    transcript move to the cabinet chosen at review, results.stow is
+    recorded, and X.yml moves to <intake>/archive/.
 
     With input data (--cabinet, --date, --field NAME=VALUE, or a record on
-    stdin) for a single file, classify and review are skipped: missing
-    values are prompted for, the record is saved as results.review with
-    `input: true`, and the file is stowed with it."""
+    stdin) for a single document (one new file, or one --ingested NAME),
+    classify and review are skipped: missing values are prompted for, the
+    record is saved as results.review with `input: true`, and the file is
+    stowed with it."""
 
     name = 'stow'
     summary = 'move confirmed documents into their cabinets'
@@ -62,16 +63,15 @@ class StowCommand(StageCommand):
         Move each reviewed document, with its transcript, into its cabinet,
         named by the cabinet's pattern, then record results.stow and move
         its X.yml sidecar to <intake>/archive/. A document not reviewed yet
-        is reviewed first (and ingested, transcribed and classified where
-        needed), and stowed as soon as it's confirmed. Prints each
-        destination.
+        is classified and reviewed first where needed, and stowed as soon
+        as it's confirmed. Prints each destination.
 
         Main use: `filez4eva classify ~/Scans`, then `filez4eva stow`.
 
         Input data (--cabinet, --date, --field, or a YAML record on stdin
-        with `cabinet` and the fields under `data`) stows a single file with
-        that record instead of classifying and reviewing it. Anything
-        missing is prompted for."""
+        with `cabinet` and the fields under `data`) stows a single document
+        (one new file, or one --ingested NAME) with that record instead of
+        classifying and reviewing it. Anything missing is prompted for."""
     stage = 'stow'
     done = 'Stowed'
     requires = (TranscribeCommand, ClassifyCommand, ReviewCommand)
@@ -118,22 +118,28 @@ class StowCommand(StageCommand):
                     and stdin_null(record.get('data')))
 
     def read_input(self) -> dict:
-        """Check the path, then read the input data with a Stower (flags
-        win over stdin; missing values are prompted for), all before any
-        file is touched. Return the cabinet name and data (every field
+        """Check the document, then read the input data with a Stower
+        (flags win over stdin; missing values are prompted for), all before
+        any file is touched. Return the cabinet name and data (every field
         of the cabinet, date included, in pattern order). Raises
-        Filez4EvaError if the path isn't a single file or a value is
+        Filez4EvaError unless the run is on a single document (one new file
+        given as the path, or one --ingested document), or if a value is
         invalid."""
         rule = ("Input data (--cabinet, --date, --field or a record on "
-                "stdin) needs a single file")
-        if not self.path:
-            raise Filez4EvaError(f"{rule}, not the intake")
+                "stdin) needs a single document: one new file, or one "
+                "--ingested NAME")
         intake = intake_dir(self.app.config)
-        path = resolve_path(self.path, intake)
-        if path.is_dir():
-            raise Filez4EvaError(f"{rule}, not a directory: {path}")
-        # Fails on the sidecar or transcript of a document in the intake
-        documents(path, intake)
+        if self.ingested:
+            names = {find_ingested(name, intake) for name in self.ingested}
+            if len(names) > 1:
+                raise Filez4EvaError(f"{rule}, not several")
+            path = names.pop()
+        elif not self.path:
+            raise Filez4EvaError(f"{rule}, not every document in the intake")
+        else:
+            path = resolve_path(self.path, intake)
+            if path.is_dir():
+                raise Filez4EvaError(f"{rule}, not a directory: {path}")
         stower = Stower(self.app, use_stdin=True, file=str(path),
                         cabinet=self.cabinet, date=self.date,
                         field=self.field)

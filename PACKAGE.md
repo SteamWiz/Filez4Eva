@@ -42,12 +42,16 @@ How the stages fit together:
 - **The intake** is the holding area where documents wait between stages: a
   directory, `~/.filez4eva/intake` unless you set the `intake:` key in the
   [configuration](#intake). `ingest` moves files into it and renames them.
-- **A path** can be a file, a directory (its top level only) or, except for
-  `ingest`, left out for every document in the intake. A file outside the
-  intake is ingested first.
+- **A path means new files.** For `transcribe`, `classify`, `review` and
+  `stow` (the stage commands), a path (a file, or a directory, top level
+  only) names new files, which are ingested first. With no path, they work
+  on the documents already in the intake, and `--ingested NAME` picks some
+  of those. See [Which documents, in what order](#which-documents-in-what-order).
 - **Earlier stages run as needed.** Each command runs any earlier stage a
   document hasn't had yet, so `filez4eva stow ~/Scans` alone ingests,
   transcribes, classifies, reviews and stows every file in `~/Scans`.
+  Transcription is done for every document first, in one batch; the later
+  stages then go one document at a time.
 - **The `X.yml` sidecar** next to each document `X` in the intake records
   the result of each stage under `results.<stage>` (see
   [The X.yml sidecar](#the-xyml-sidecar)). A stage that's already recorded
@@ -56,8 +60,70 @@ How the stages fit together:
 - **`--only`** makes `transcribe`, `classify`, `review` or `stow` act only on
   documents that have had every earlier stage, and skip the rest with a note
   on stderr, instead of running the missing stages. For example,
-  `filez4eva review` followed by `filez4eva stow --only` stows the reviewed
-  documents without any prompts.
+  `filez4eva review --ingested X` followed by `filez4eva stow --only` stows
+  just the reviewed documents without any prompts, leaving the others as
+  they are.
+
+### Which documents, in what order
+
+This applies to the stage commands, `transcribe`, `classify`, `review` and
+`stow`. (`ingest` always takes a path; see [Ingesting Files](#ingesting-files).)
+
+Which documents a run works on:
+
+- **A path (a file, or a directory):** those files only, which are new
+  files. In a directory, the new files are the non-hidden regular files at
+  its top level, in name order; subdirectories, hidden files (names
+  starting with `.`) and symbolic links are left alone. They are all
+  ingested, then all transcribed, then each one goes through the later
+  stages (see below). No document already in the intake is touched.
+- **A path in the intake** (the intake itself, a file in it, or anything
+  under it, such as `archive/`, also through a symbolic link or `..`) is an
+  error before anything moves. The message points to `--ingested`.
+- **No path:** the documents already in the intake, that is, the files
+  there with an `X.yml` [sidecar](#the-xyml-sidecar) (`X.yml` and the
+  transcript `X.md` belong to `X` and are not documents themselves).
+  Nothing is ingested: a file in the intake with no sidecar (one dropped in
+  by hand) is left alone, with a note on stderr
+  (`Not ingested: FILE (left alone; filez4eva ingest INTAKE ingests it)`).
+  Subdirectories of the intake, such as `archive/`, are never touched.
+- **`--ingested NAME`** (repeatable): just those documents, where NAME is
+  the document's file name in the intake (e.g. `20261025-140307-042.pdf`)
+  or a path to it. They are taken in the order given; a name given twice
+  counts once. Other documents in the intake aren't touched, not even for
+  transcription. A NAME that isn't a document ingested in the intake, or
+  `--ingested` together with a path, is an error before anything moves.
+
+The order of work:
+
+1. **Ingest** (path runs only): every new file is moved into the intake.
+2. **Transcribe, in one batch:** every selected document that still needs
+   a transcript is transcribed before any later stage starts on any
+   document. For `transcribe`, that's the whole run.
+3. **One document at a time:** for `classify`, `review` and `stow`, each
+   document then goes through its remaining stages, from classify up to the
+   command's stage, before the next document starts. With `stow`, file 1
+   is classified, reviewed and stowed, then file 2 is classified, reviewed
+   and stowed, and so on.
+
+With no path, the most advanced documents come first in step 3: those
+already reviewed, then those classified, then those only transcribed, in
+name order within each group. So `filez4eva stow` first stows the documents
+already reviewed, then reviews and stows the classified ones, then
+classifies, reviews and stows the rest. With a path, the order is name
+order; with `--ingested`, the order given.
+
+If there is nothing to do (no documents, or every one already has the
+command's stage), the command says so on stderr and exits 0, e.g.
+`Nothing to classify (2 files already classified)`,
+`Nothing to stow: the intake is empty` or
+`Nothing to review: no files in /home/me/Scans`.
+
+A document that fails at any stage is reported on stderr and drops out of
+the run, which carries on with the others; quitting at review ends the run.
+Under `--only`, nothing is ingested, and `classify`, `review` and `stow`
+transcribe nothing: a file or document that lacks an earlier stage is
+skipped with a note.
 
 `filez4eva --help` lists the commands, and `filez4eva COMMAND --help`
 describes one. Running `filez4eva` with no command is an error. The older
@@ -157,9 +223,9 @@ To transcribe a file to Markdown using an AI model:
 filez4eva transcribe ~/Desktop/scan.pdf
 ```
 
-`transcribe` works on documents in the [intake](#intake). A file that isn't
-there yet is [ingested](#ingesting-files) first (moved into the intake and
-renamed), then transcribed. The transcript `X.md` (the full name plus `.md`)
+`transcribe` works on documents in the [intake](#intake). A file given as
+the path is new: it is [ingested](#ingesting-files) first (moved into the
+intake and renamed), then transcribed. The transcript `X.md` (the full name plus `.md`)
 is written in the intake next to the document `X`, its path is printed on
 stdout, and the result is recorded under `results.transcribe` in the
 document's [sidecar](#the-xyml-sidecar). The status on stderr counts the
@@ -181,36 +247,33 @@ transcribed: '2026-10-25T21:03:12+00:00'
 The path can be a file, a directory, or left out:
 
 ```bash
-filez4eva transcribe ~/Desktop/scans   # every file in the directory
+filez4eva transcribe ~/Desktop/scans   # every new file in the directory
 filez4eva transcribe                   # every document in the intake
+filez4eva transcribe --ingested 20261025-140307-042.pdf
+                                       # just that document in the intake
 ```
 
-`transcribe` works out whether the path is a file or a directory. Which
-files are documents:
-
-- Outside the intake, every non-hidden regular file at the top level of the
-  directory is a new document, and is ingested first. Subdirectories, hidden
-  files (names starting with `.`) and symbolic links are left alone.
-- In the intake, a document is a file `X` with `X.yml` next to it. `X.yml`
-  and `X.md` belong to `X` and are not documents themselves. A file in the
-  intake with no sidecar (one dropped in by hand) is ingested first, as
-  `ingest` would. Subdirectories of the intake, such as `archive/`, are
-  never touched: giving one, or a file in one, as the path is an error.
-- Files are handled one at a time, in name order, from a list taken before
-  anything moves.
+`transcribe` works out whether the path is a file or a directory. See
+[Which documents, in what order](#which-documents-in-what-order): a path
+means new files only, and a path in the intake is an error; with no path,
+nothing is ingested and a file in the intake without a sidecar is left
+alone. Files are handled in name order (or the `--ingested` order), from a
+list taken before anything moves.
 
 Other rules:
 
 - A document that already has `results.transcribe` isn't transcribed again
-  (status `Already transcribed 1 file`, nothing on stdout). There is no
-  option to transcribe it again.
+  (counted in the status as `Already transcribed 1 file`, nothing on
+  stdout). If every document has it, the status is
+  `Nothing to transcribe (1 file already transcribed)`. There is no option
+  to transcribe it again.
 - If `X.md` already exists and its `sha256` matches the file, nothing is
   sent to the model: the existing transcript is used and recorded in
   `results.transcribe`.
-- `--only` transcribes only documents that are already ingested. Any other
-  file is left where it is, with a note on stderr
-  (`Skipped FILE: not ingested yet`), and counted in the status as
-  `Skipped 1 file (not ingested)`.
+- `--only` transcribes only documents that are already ingested, so with a
+  path (new files) it transcribes nothing: each file is left where it is,
+  with a note on stderr (`Skipped FILE: not ingested yet`), and counted in
+  the status as `Skipped 1 file (not ingested)`.
 - Supported file types are PDF, PNG, JPEG, GIF, WebP, plain text, Markdown
   and CSV.
 - If a file fails (e.g. an unsupported file type, an API error, or a sidecar
@@ -233,13 +296,15 @@ To have an AI model classify documents so they can be filed:
 filez4eva classify ~/Scans
 ```
 
-`classify` works on documents in the [intake](#intake), and selects them
-the same way as [`transcribe`](#transcribing-files): the path can be a file,
-a directory (top level only), or left out for every document in the intake.
-A file that hasn't been [ingested](#ingesting-files) or
-[transcribed](#transcribing-files) yet goes through those stages first, so
-after `filez4eva classify ~/Scans` every file that was in `~/Scans` is in the
-intake with its transcript `X.md` and its sidecar `X.yml`. `classify` never
+`classify` works on documents in the [intake](#intake), selected as in
+[Which documents, in what order](#which-documents-in-what-order): the new
+files given as the path, the documents already in the intake (no path), or
+the ones named with `--ingested`. New files are
+[ingested](#ingesting-files), and every document that needs it is
+[transcribed](#transcribing-files), all before the first one is classified.
+So after `filez4eva classify ~/Scans` every file that was in `~/Scans` is in
+the intake with its transcript `X.md` and its sidecar `X.yml`, and the
+documents already in the intake are left as they were. `classify` never
 prompts, so you can start it and walk away.
 
 The model is given the transcript, along with the file's original name and
@@ -299,12 +364,14 @@ the intake on stdout. The status on stderr counts the files, e.g.
 Other rules:
 
 - A document that already has `results.classify` isn't classified again
-  (status `Already classified 1 file`). There is no option to classify it
-  again.
+  (counted as `Already classified 1 file`; if every document has it, the
+  status is `Nothing to classify (1 file already classified)`). There is no
+  option to classify it again.
 - `--only` classifies only documents that are already ingested and
-  transcribed. Any other file is left as it is, with a note on stderr
-  (`Skipped FILE: not ingested yet` or `Skipped FILE: not transcribed yet`),
-  and counted in the status, e.g. `Skipped 1 file (not transcribed)`.
+  transcribed; nothing is ingested or transcribed. Any other file is left
+  as it is, with a note on stderr (`Skipped FILE: not ingested yet` or
+  `Skipped FILE: not transcribed yet`), and counted in the status, e.g.
+  `Skipped 1 file (not transcribed)`.
 - If a document fails (transcription or classification fails, the model's
   answer is missing a field, has a field value with no letters or digits,
   or has an unknown doctype or cabinet, or the sidecar can't be read), the
@@ -326,13 +393,17 @@ To confirm or edit the proposed records of classified documents:
 filez4eva review
 ```
 
-`review` works on documents in the [intake](#intake), and selects them the
-same way as [`transcribe`](#transcribing-files): the path can be a file, a
-directory (top level only), or left out for every document in the intake.
-A file that hasn't been [ingested](#ingesting-files),
-[transcribed](#transcribing-files) or [classified](#classifying-files) yet
-goes through those stages first. So the usual flow is
-`filez4eva classify ~/Scans` (unattended), then `filez4eva review`.
+`review` works on documents in the [intake](#intake), selected as in
+[Which documents, in what order](#which-documents-in-what-order): the new
+files given as the path, the documents already in the intake (no path), or
+the ones named with `--ingested`. Every document that needs it is
+[transcribed](#transcribing-files) first, in one batch (new files are
+[ingested](#ingesting-files) before that). Then the documents come one at a
+time: each is [classified](#classifying-files) if it hasn't been, then
+reviewed, before the next one. With no path, the documents already
+classified come first. So the usual flow is `filez4eva classify ~/Scans`
+(unattended), then `filez4eva review`; to review just one document, give
+`filez4eva review --ingested NAME`.
 
 For each document, `review` shows its name (and original name), then the
 proposed record from `results.classify`: the summary, doctype, cabinet and
@@ -371,10 +442,12 @@ if you quit.
 
 Other rules:
 
-- A document that already has `results.review` isn't offered again (status
-  `Already reviewed 1 file`).
+- A document that already has `results.review` isn't offered again
+  (counted as `Already reviewed 1 file`; if every document has it, the
+  status is `Nothing to review (1 file already reviewed)`).
 - `--only` reviews only documents that are already ingested, transcribed
-  and classified. Any other file is left as it is, with a note on stderr
+  and classified; nothing is ingested, transcribed or classified. Any other
+  file is left as it is, with a note on stderr
   (e.g. `Skipped FILE: not classified yet`), and counted in the status, e.g.
   `Skipped 1 file (not classified)`.
 - If a document fails (an earlier stage fails, its `results.classify` can't
@@ -395,12 +468,18 @@ To review and stow every document in the intake:
 filez4eva stow
 ```
 
-`stow` selects documents the same way as [`transcribe`](#transcribing-files):
-the path can be a file, a directory (top level only), or left out for every
-document in the [intake](#intake). A file that hasn't been
-[ingested](#ingesting-files), [transcribed](#transcribing-files),
-[classified](#classifying-files) or [reviewed](#reviewing-files) yet goes
-through those stages first. So the main use case is:
+`stow` selects documents as in
+[Which documents, in what order](#which-documents-in-what-order): the new
+files given as the path, the documents already in the [intake](#intake) (no
+path), or the ones named with `--ingested`. New files are
+[ingested](#ingesting-files), and every document that needs it is
+[transcribed](#transcribing-files), all up front. Then the documents come
+one at a time: each is [classified](#classifying-files) and
+[reviewed](#reviewing-files) if it hasn't been, then stowed, before the next
+one starts. With no path, the most advanced come first: `filez4eva stow`
+stows the documents already reviewed (without asking), then reviews and
+stows the classified ones, then classifies, reviews and stows the rest. So
+the main use case is:
 
 ```bash
 filez4eva classify ~/Scans   # unattended: ingest, transcribe, classify
@@ -408,7 +487,9 @@ filez4eva stow               # interactive: confirm or edit, then stow
 ```
 
 To review and stow every file in a directory in one interactive pass, give
-the directory: `filez4eva stow ~/Scans`.
+the directory: `filez4eva stow ~/Scans`. That leaves the documents already
+in the intake alone. To stow some of those, name them:
+`filez4eva stow --ingested 20261025-140307-042.pdf`.
 
 For each document that hasn't been reviewed, `stow` shows the proposed
 record and offers the same choices as [`review`](#reviewing-files): confirm
@@ -443,8 +524,10 @@ capture it, e.g.
 - `--only` stows only documents already ingested, transcribed, classified
   and reviewed. Any other file is left as it is, with a note on stderr
   (e.g. `Skipped FILE: not reviewed yet`), and counted in the status, e.g.
-  `Skipped 1 file (not reviewed)`. So `filez4eva review` followed by
-  `filez4eva stow --only` stows without any prompts.
+  `Skipped 1 file (not reviewed)`. Nothing is ingested, transcribed,
+  classified or reviewed. So `filez4eva review --ingested NAME` followed by
+  `filez4eva stow --only` stows just the reviewed documents, without any
+  prompts and without dealing with the others.
 - If a document fails, the error is reported on stderr and the run carries
   on with the next file. At the end, the documents that were stowed are
   printed and `stow` exits non-zero. If the file was stowed but its sidecar
@@ -476,11 +559,14 @@ printf 'cabinet: accounts\ndata:\n  date: 2024-02-13\n  account: royal-bank\n  p
 Input data is supplied when any of the flags is given, or stdin has a
 `cabinet` or `data`. With input data:
 
-- The path must be a single file. A directory, or no path (the intake), is
-  an error before anything moves: `Input data (--cabinet, --date, --field or
-  a record on stdin) needs a single file, ...`.
-- The file is [ingested](#ingesting-files) and
-  [transcribed](#transcribing-files) first if it hasn't been, as usual.
+- The run must be on a single document: one new file given as the path, or
+  one document already in the intake given with `--ingested NAME`. A
+  directory, no path (every document in the intake), or several
+  `--ingested` documents is an error before anything moves:
+  `Input data (--cabinet, --date, --field or a record on stdin) needs a
+  single document: one new file, or one --ingested NAME, ...`.
+- A new file is [ingested](#ingesting-files), and the document is
+  [transcribed](#transcribing-files) if it hasn't been, as usual.
   `classify` and `review` are skipped: no model is asked for a record and no
   review menu is shown.
 - Anything missing is prompted for, before any file is touched: the cabinet
@@ -496,7 +582,8 @@ Input data is supplied when any of the flags is given, or stdin has a
 - The record is saved as `results.review`, with `input: true` (see
   [The X.yml sidecar](#the-xyml-sidecar)), and the file is stowed with it
   exactly as above. `results.classify` isn't written. A document already in
-  the intake with a `results.review` gets the supplied record instead.
+  the intake (given with `--ingested`) with a `results.review` gets the
+  supplied record instead.
   The record is saved only once the file has moved: if the stow fails (for
   example, a file with that name is already in the cabinet), the sidecar
   keeps what it had, so the document stays transcribed (or keeps its
@@ -544,20 +631,25 @@ ingest command:
 - `--meta, -m KEY=VALUE`: Record source metadata (repeatable)
 - `path`: Path to the file, or directory of files, to ingest
 
+The stage commands (`transcribe`, `classify`, `review` and `stow`) all take
+(see [Which documents, in what order](#which-documents-in-what-order)):
+- `path`: Optional new files: a file, or a directory (top level only),
+  outside the intake. Without it, the documents already in the intake.
+- `--ingested NAME`: Work on this document already in the intake (its file
+  name there, or a path to it) and no other; repeatable, taken in the order
+  given; not with a path
+
 transcribe command:
 - `--only`: Transcribe only documents already ingested; skip other files
-- `path`: Optional file or directory to transcribe (defaults to the intake)
 
 classify command:
 - `--cabinet, -c NAME`: Classify every document for this cabinet
 - `--only`: Classify only documents already ingested and transcribed; skip
   other files
-- `path`: Optional file or directory to classify (defaults to the intake)
 
 review command:
 - `--only`: Review only documents already ingested, transcribed and
   classified; skip other files
-- `path`: Optional file or directory to review (defaults to the intake)
 
 stow command:
 - `--only`: Stow only documents already ingested, transcribed, classified
@@ -565,9 +657,9 @@ stow command:
 - `--cabinet, -c NAME`: Input data: the cabinet to stow into
 - `--date, -d DATE`: Input data: the date, in YYYYMMDD format
 - `--field, -f NAME=VALUE`: Input data: the value of a field (repeatable)
-- `path`: Optional file or directory to stow (defaults to the intake); a
-  single file with input data (flags or a record on stdin; see
-  [Stowing a file with input data](#stowing-a-file-with-input-data))
+- With input data (flags or a record on stdin; see
+  [Stowing a file with input data](#stowing-a-file-with-input-data)), a
+  single new file as the path, or a single `--ingested NAME`
 
 ## Configuration
 
@@ -589,7 +681,9 @@ date and a title, keeping their extension:
 
 The intake is the directory where documents wait between stages. `ingest`
 (or any other command, given a file outside the intake) moves files into
-it. It is set with the optional `intake` key:
+it. Given no path, the stage commands work on the documents already in it
+(or, with `--ingested NAME`, on the ones named). It is set with the
+optional `intake` key:
 
 ```yaml
 filez4eva:
