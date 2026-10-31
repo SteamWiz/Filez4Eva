@@ -27,14 +27,14 @@ Filez4Eva works in stages, one command for each:
 | [`ingest`](#ingesting-files) | Moves files into the intake under a time-stamped name, each with an `X.yml` sidecar | No |
 | [`transcribe`](#transcribing-files) | Transcribes each document to Markdown, `X.md`, with an AI model | No |
 | [`classify`](#classifying-files) | Has an AI model propose a value for each field of the document's cabinet, for each document | Only for a document's cabinet, with several cabinets and no `-c` |
-| [`review`](#reviewing-files) | Shows each proposed record, to confirm or edit | Yes |
+| [`review`](#reviewing-files) | Shows each proposed record, to confirm, update or redo with another cabinet | Yes |
 | [`stow`](#stowing-files) | Moves each confirmed document and its transcript into its cabinet, named by the cabinet's pattern | For documents not yet reviewed |
 
 The main use case is two commands:
 
 ```bash
 filez4eva classify -c NAME ~/Scans   # unattended: ingest, transcribe and classify every file for cabinet NAME
-filez4eva stow                       # interactive: confirm or edit each record, then stow it
+filez4eva stow                       # interactive: confirm or update each record, then stow it
 ```
 
 **The cabinet comes first, and you choose it.** A document's
@@ -407,7 +407,7 @@ Nothing is stowed: the document stays in the intake.
 
 ### Reviewing Files
 
-To confirm or edit the proposed records of classified documents:
+To confirm, update or redo the proposed records of classified documents:
 
 ```bash
 filez4eva review
@@ -428,17 +428,45 @@ the usual flow is `filez4eva classify -c NAME ~/Scans` (unattended), then
 `filez4eva review --ingested NAME`.
 
 For each document, `review` shows its name (and original name), then the
-proposed record from `results.classify`: the summary, doctype and the value
-of each field of the document's saved cabinet (`(none)` for a document without a date). Then
-choose:
+proposed record from `results.classify`: the summary, doctype, the
+document's saved cabinet and the value of each of that cabinet's fields
+(`(none)` for a field without a value, e.g. a document without a date).
+Then it asks:
 
-- Confirm (c): prompts for each field are pre-filled with the proposed
-  values. Press Enter to accept a value, or type a new one; tab completion
-  offers the [learned values](#learned-values) of the field. There is no
-  `Cabinet:` prompt: the cabinet is the one saved for the document before
-  it was classified. The confirmed record (that cabinet and the field
-  values) is saved as `results.review` and the document's path is printed
-  on stdout.
+```
+(c)onfirm (u)pdate (r)edo (x)skip (p)review (d)elete (q)uit
+```
+
+- Confirm (c): the classification is right; save it as it is. The proposed
+  record (the cabinet and every field value) is saved as `results.review`,
+  without any prompts, and the document's path is printed on stdout. If a
+  field has no value (e.g. no date was found), confirm refuses with a
+  message naming the missing fields, e.g. `Missing: date. Use (u)pdate.`,
+  and asks again; a value that can't be used (e.g. a date that isn't
+  YYYYMMDD in a hand-edited sidecar) is refused the same way, e.g.
+  `Invalid: date. Use (u)pdate.`
+- Update (u): edit the field values. There is a prompt for each of the
+  cabinet's fields, in pattern order, pre-filled with the proposed value
+  (empty if there is none). Press Enter to accept a value, or type a new
+  one; tab completion offers the [learned values](#learned-values) of the
+  field. An invalid value is rejected and the prompt asks again. Empty
+  input goes back to the menu without saving anything. There is no
+  `Cabinet:` prompt; to change the cabinet, use redo. Once every field has
+  a value, the record is saved as `results.review` and the document's path
+  is printed on stdout.
+- Redo (r): change the cabinet and classify the document again. With
+  several cabinets, it prompts `Cabinet:`, pre-filled with the current
+  cabinet, with tab completion of the names (an unknown name is rejected
+  and the prompt asks again; empty input goes back to the menu with nothing
+  changed). With one cabinet, there is no prompt. The chosen cabinet is
+  saved as the document's cabinet (`results.given`), the old
+  `results.classify` is dropped, and the document is classified again
+  straight away for that cabinet's fields. The new proposal is shown and
+  the menu asked again, so you can redo as often as you like. Redo is
+  useful with one cabinet too, e.g. after a value was learned from an
+  earlier file. If classifying fails, the document fails (see below) and is
+  left with the new cabinet and no `results.classify`; the next run
+  classifies it again.
 - Skip (x): the document is left in the intake as it is, and a later run
   offers it again.
 - Preview (p): opens the document with the `preview` command, then asks
@@ -447,14 +475,10 @@ choose:
   its transcript `X.md` and its sidecar `X.yml`.
 - Quit (q): ends the run. This document and the rest are left as they are.
 
-An invalid value is rejected and the prompt asks again. Empty input at any
-prompt goes back to the choice for the same document, without saving
-anything.
-
-Review doesn't change the cabinet, and `results.classify` is never
-changed. A document classified before the cabinet was saved separately
-(its sidecar has `results.classify.cabinet` and no `results.given`) is
-reviewed for that cabinet.
+Only redo changes the cabinet or `results.classify`. A document classified
+before the cabinet was saved separately (its sidecar has
+`results.classify.cabinet` and no `results.given`) is reviewed for that
+cabinet.
 
 The status on stderr counts the files, e.g.
 `Reviewed 2 files | Skipped 1 file | Deleted 1 file`, with `Quit` at the end
@@ -471,8 +495,10 @@ Other rules:
   (e.g. `Skipped FILE: not classified yet`), and counted in the status, e.g.
   `Skipped 1 file (not classified)`.
 - If a document fails (an earlier stage fails, its `results.classify` can't
-  be used, its saved cabinet isn't configured, a `--cabinet` differs from
-  the cabinet saved for it, or its sidecar can't be read), the error is
+  be used, its saved cabinet isn't configured when you confirm or update
+  (redo can choose a configured one), a `--cabinet` differs from the
+  cabinet saved for it, classifying it again at redo fails, or its
+  sidecar can't be read), the error is
   reported on stderr
   and the run carries on with the next file. At the end, the documents that
   were reviewed are printed and `review` exits non-zero.
@@ -505,7 +531,7 @@ the main use case is:
 
 ```bash
 filez4eva classify -c NAME ~/Scans   # unattended: ingest, transcribe, classify
-filez4eva stow                       # interactive: confirm or edit, then stow
+filez4eva stow                       # interactive: confirm or update, then stow
 ```
 
 As for `classify`, a document's cabinet is chosen before it is classified:
@@ -522,8 +548,9 @@ in the intake alone. To stow some of those, name them:
 `filez4eva stow --ingested 20261025-140307-042.pdf`.
 
 For each document that hasn't been reviewed, `stow` shows the proposed
-record and offers the same choices as [`review`](#reviewing-files): confirm
-(or edit), skip, preview, delete or quit. A confirmed document is stowed
+record and offers the same menu as [`review`](#reviewing-files): confirm,
+update, redo, skip, preview, delete or quit. A confirmed or updated
+document is stowed
 straight away, before the next one is shown. A document that was already
 reviewed is stowed without asking. A skipped document stays in the intake
 with its results, and the next `stow` offers it again.
@@ -833,7 +860,7 @@ the cabinet in `results.classify.cabinet` instead. They keep working: that cabin
 `results.review.cabinet`) is taken as the saved cabinet. They aren't
 rewritten.
 
-`review` adds, when you confirm the record:
+`review` adds, when you confirm or update the record:
 
 ```yaml
 results:
@@ -849,10 +876,10 @@ results:
       title: usb-hub-receipt
 ```
 
-- `at`: when the record was confirmed, in ISO-8601 local time with its UTC
+- `at`: when the record was confirmed or updated, in ISO-8601 local time with its UTC
   offset, to the second.
-- `cabinet`: the document's cabinet, from `results.given` (review doesn't
-  change it).
+- `cabinet`: the document's cabinet, from `results.given` (only redo at
+  review changes it).
 - `data`: the confirmed value of each of that cabinet's fields, in pattern
   order, with `date` as YYYYMMDD.
 
@@ -1072,8 +1099,8 @@ first of these that applies wins:
    asks again.
 
 The cabinet is saved as `results.given` before the model is asked, so later
-commands use it without asking: `review` and `stow` never prompt for the
-cabinet of a classified document. So with several cabinets and no `-c`,
+commands use it without asking: `review` and `stow` don't prompt for the
+cabinet of a classified document (unless you choose redo at review). So with several cabinets and no `-c`,
 `classify` prompts for each document; to run it unattended, give
 `filez4eva classify -c NAME ~/Scans`.
 
@@ -1090,7 +1117,9 @@ cabinet of a classified document. So with several cabinets and no `-c`,
   cabinet saved for an `--ingested` document. If none of them gives one and
   there is more than one cabinet, it prompts for one, with tab completion of
   the names. An unknown name from stdin is an error.
-- Review doesn't change the cabinet.
+- At review, redo (r) changes the cabinet: it saves the chosen one as
+  `results.given` and classifies the document again (see
+  [Reviewing Files](#reviewing-files)).
 
 Prompts, tab completion and learned values use the chosen cabinet's fields
 and target.
@@ -1218,9 +1247,9 @@ error too. Use the [five commands](#the-five-commands) instead:
 | Instead of | Use |
 |------------|-----|
 | `filez4eva stow-file FILE` with `--date`, `--field NAME=VALUE` or a record on stdin (and possibly `--cabinet`) | `filez4eva stow FILE` with the same flags or stdin record. See [Stowing a file with input data](#stowing-a-file-with-input-data). |
-| `filez4eva stow-file FILE`, typing every value at the prompts | `filez4eva stow -c CABINET FILE` to have the model propose the values for that cabinet, which you confirm or edit; or give one value as input data, e.g. `filez4eva stow -c CABINET -d DATE FILE`, and type the rest yourself. `stow -c CABINET FILE` on its own is no longer input data. |
-| `filez4eva scan-dir DIR`, or `filez4eva` on its own with `source:` configured | `filez4eva classify -c NAME DIR` (unattended), then `filez4eva stow`; or `filez4eva stow DIR` for one interactive pass. The menu offers confirm, skip, preview, delete and quit. |
-| `filez4eva process FILE` | `filez4eva stow FILE`: it asks for the cabinet if there are several, transcribes and classifies the file, asks you to confirm or edit the record, then stows it. |
+| `filez4eva stow-file FILE`, typing every value at the prompts | `filez4eva stow -c CABINET FILE` to have the model propose the values for that cabinet, which you confirm or update; or give one value as input data, e.g. `filez4eva stow -c CABINET -d DATE FILE`, and type the rest yourself. `stow -c CABINET FILE` on its own is no longer input data. |
+| `filez4eva scan-dir DIR`, or `filez4eva` on its own with `source:` configured | `filez4eva classify -c NAME DIR` (unattended), then `filez4eva stow`; or `filez4eva stow DIR` for one interactive pass. The menu offers confirm, update, redo, skip, preview, delete and quit. |
+| `filez4eva process FILE` | `filez4eva stow FILE`: it asks for the cabinet if there are several, transcribes and classifies the file, asks you to confirm or update the record, then stows it. |
 | `filez4eva process --cabinet NAME FILE` | `filez4eva stow --cabinet NAME FILE`, or `filez4eva classify --cabinet NAME FILE`, then `filez4eva stow`. |
 | `filez4eva process --dry-run FILE` | `filez4eva review FILE`, which saves the confirmed record without moving the file into a cabinet; then `filez4eva stow`. |
 
@@ -1232,8 +1261,10 @@ Differences to be aware of:
   classifying it. The unattended main use is now
   `filez4eva classify -c NAME ~/Scans`. See
   [How a document's cabinet is chosen](#how-a-documents-cabinet-is-chosen).
-- `review` no longer has a `Cabinet:` prompt: the cabinet saved before
-  classify is used.
+- `review` no longer has a `Cabinet:` prompt when you accept a record:
+  the cabinet saved before classify is used. Confirm (c) now saves the
+  proposed record as it is, without prompts; update (u) edits the values,
+  and redo (r) changes the cabinet and classifies again.
 - `stow -c CABINET` is no longer input data on its own: it gives the
   cabinet for classify, and the file is classified and reviewed as usual.
   Input data is `--date`, `--field` or a record on stdin.

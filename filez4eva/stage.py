@@ -305,12 +305,24 @@ class StageCommand(Filez4EvaCommand):
             if isinstance(ingest, dict) else None
         self.app.ui.send(f"{path.name} ({original})" if original
                          else path.name)
+        name = self.prompt_cabinet()
+        if name is None:
+            self.app.ui.send('Skipped', Emphasis.INFO)
+            raise NotDone('Skipped')
+        return name
+
+    def prompt_cabinet(self, default: str = None):
+        """Prompt `Cabinet: ` with tab completion of the names (pre-filled
+        with default, if given) until a configured one is entered, and
+        return it. Empty input returns None."""
         names = sorted(self.cabinets)
+        # Only pass a default when there is one
+        extra = (default,) if default else ()
         while True:
-            name = (self.app.ui.get_text('Cabinet: ', names) or '').strip()
+            name = (self.app.ui.get_text('Cabinet: ', names, *extra)
+                    or '').strip()
             if not name:
-                self.app.ui.send('Skipped', Emphasis.INFO)
-                raise NotDone('Skipped')
+                return None
             if name in self.cabinets:
                 return name
             self.app.ui.send('Cabinet must be one of: ' + ', '.join(names),

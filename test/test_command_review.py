@@ -257,23 +257,28 @@ class TestReviewSelection(ReviewTestCase):
 
 
 class TestReviewConfirm(ReviewTestCase):
-    """AC 2, 3 and 5: show the proposed record, confirm or edit it, save
+    """AC 2, 3 and 5: show the proposed record, confirm or update it, save
     results.review, don't stow"""
 
     def test_shows_proposed_record(self):
         self.make_document()
-        self.run_command(keys='c', answers=ANSWERS)
+        self.run_command(keys='c')
         for line in [f'{STAMP}.pdf (Scan 1.PDF)',
                      'Summary: Amazon.ca order receipt for a USB hub',
-                     'Doctype: receipt', 'Date: 20261002',
-                     'Account: amazon', 'Part: receipt',
-                     '(c)onfirm', '(x)skip', '(p)review', '(d)elete',
-                     '(q)uit', 'Reviewed']:
+                     'Doctype: receipt', 'Cabinet: default',
+                     'Date: 20261002', 'Account: amazon', 'Part: receipt',
+                     '(c)onfirm (u)pdate (r)edo (x)skip (p)review '
+                     '(d)elete (q)uit', 'Reviewed']:
             self.assertIn(line, self.err)
 
-    def test_confirm_as_is(self):
+    def test_menu_prompt(self):
+        self.assertEqual(
+            ReviewCommand.ACTION_CHOOSER.prompt_string,
+            '(c)onfirm (u)pdate (r)edo (x)skip (p)review (d)elete (q)uit: ')
+
+    def test_update_prefilled(self):
         document = self.make_document()
-        _, _, gt, _, _ = self.run_command(keys='c', answers=ANSWERS)
+        _, _, gt, _, _ = self.run_command(keys='u', answers=ANSWERS)
         # One cabinet: no cabinet prompt; fields pre-filled
         self.assertEqual(self.prompts(gt), [
             ('Date: ', [], '20261002'),
@@ -286,9 +291,9 @@ class TestReviewConfirm(ReviewTestCase):
                          ['date', 'account', 'part'])
         self.assertEqual(results['classify'], CLASSIFY)
 
-    def test_confirm_edited(self):
+    def test_update_edited(self):
         document = self.make_document()
-        self.run_command(keys='c', answers=['20261003', 'Royal Bank',
+        self.run_command(keys='u', answers=['20261003', 'Royal Bank',
                                             'statement'])
         self.assertEqual(self.results(document)['review']['data'], {
             'date': '20261003', 'account': 'royal-bank',
@@ -298,7 +303,7 @@ class TestReviewConfirm(ReviewTestCase):
     def test_no_date_prompt_starts_empty(self):
         document = self.make_document(
             classify=dict(CLASSIFY, data=dict(DATA, date=None)))
-        _, _, gt, _, _ = self.run_command(keys='c', answers=ANSWERS)
+        _, _, gt, _, _ = self.run_command(keys='u', answers=ANSWERS)
         self.assertEqual(self.prompts(gt)[0], ('Date: ', []))
         self.assertIn('Date: (none)', self.err)
         self.assertEqual(self.results(document)['review']['data'], DATA)
@@ -307,12 +312,12 @@ class TestReviewConfirm(ReviewTestCase):
         # An unquoted date in a hand-edited X.yml loads as a number
         self.make_document(classify=dict(CLASSIFY,
                                          data=dict(DATA, date=20261002)))
-        _, _, gt, _, _ = self.run_command(keys='c', answers=ANSWERS)
+        _, _, gt, _, _ = self.run_command(keys='u', answers=ANSWERS)
         self.assertEqual(self.prompts(gt)[0], ('Date: ', [], '20261002'))
 
     def test_invalid_value_asks_again(self):
         document = self.make_document()
-        self.run_command(keys='c', answers=['2026-13-01', '20261002', '//',
+        self.run_command(keys='u', answers=['2026-13-01', '20261002', '//',
                                             'amazon', 'receipt'])
         self.assertIn('Date must match format YYYYMMDD', self.err)
         self.assertIn('Account must contain letters or digits', self.err)
@@ -321,7 +326,7 @@ class TestReviewConfirm(ReviewTestCase):
     def test_empty_answer_returns_to_menu(self):
         document = self.make_document()
         _, command, _, _, _ = self.run_command(
-            keys='cx', answers=['20261002', ''])
+            keys='ux', answers=['20261002', ''])
         self.assertIn('Account required', self.err)
         self.assertNotIn('review', self.results(document))
         self.assertEqual(command.status, 'Skipped 1 file')
@@ -520,7 +525,7 @@ class TestReviewFailures(ReviewTestCase):
     def test_classify_without_data_prompts_empty(self):
         document = self.make_document(
             classify={'data': None})
-        _, _, gt, _, _ = self.run_command(keys='c', answers=ANSWERS)
+        _, _, gt, _, _ = self.run_command(keys='u', answers=ANSWERS)
         self.assertEqual(self.prompts(gt), [
             ('Date: ', []), ('Account: ', ['amazon']), ('Part: ', [])])
         self.assertEqual(self.results(document)['review']['data'], DATA)
@@ -554,7 +559,7 @@ class TestReviewCabinet(ReviewTestCase):
 
     def test_saved_cabinet_no_prompt(self):
         document = self.make_document(given='accounts')
-        _, _, gt, _, _ = self.run_command(keys='c', answers=ANSWERS,
+        _, _, gt, _, _ = self.run_command(keys='u', answers=ANSWERS,
                                           config=self.two_cabinets())
         self.assertEqual(self.prompts(gt), [
             ('Date: ', [], '20261002'),
@@ -568,7 +573,7 @@ class TestReviewCabinet(ReviewTestCase):
         classify = dict(CLASSIFY, cabinet='memories')
         document = self.make_document(classify=classify, given=None)
         _, _, gt, _, _ = self.run_command(
-            keys='c', answers=['20261002', 'grandma-bday', 'receipt'],
+            keys='u', answers=['20261002', 'grandma-bday', 'receipt'],
             config=self.two_cabinets())
         self.assertEqual(self.prompts(gt), [
             ('Date: ', [], '20261002'),
@@ -638,7 +643,7 @@ class TestReviewCabinet(ReviewTestCase):
         second = self.make_document(f'{SECOND}.pdf', given='memories')
         with self.assertRaisesRegex(Filez4EvaError,
                                     '1 of 2 files failed to review'):
-            self.run_command(keys='c', config=self.two_cabinets(),
+            self.run_command(keys='u', config=self.two_cabinets(),
                              answers=['20261002', 'grandma-bday', 'x'],
                              cabinet='memories')
         self.assertIn(f'Failed to review {first}: Cabinet memories given, '
@@ -660,3 +665,218 @@ class TestReviewCabinet(ReviewTestCase):
                                  cabinet='nope')
         self.assertTrue(source.is_file())
         self.assertEqual(Path(f'{document}.yml').read_text(), before)
+
+
+# What the model proposes for the memories cabinet
+MEMORY = {'data': {'date': '20261002', 'event': 'Grandma Bday',
+                   'part': 'cake'},
+          'doctype': 'other', 'summary': 'Photo of a birthday cake'}
+
+MEMORY_DATA = {'date': '20261002', 'event': 'grandma-bday', 'part': 'cake'}
+
+
+class TestReviewActions(ReviewTestCase):
+    """#73: (c)onfirm saves as is, (u)pdate edits, (r)edo changes the
+    cabinet and classifies again"""
+
+    def test_confirm_saves_without_prompting(self):
+        document = self.make_document()
+        out, command, gt, e, _ = self.run_command(keys='c')
+        gt.assert_not_called()
+        e.assert_not_called()
+        self.assertEqual(out, str(document))
+        results = self.results(document)
+        self.assertEqual(results['review'], {
+            'at': AT, 'cabinet': 'default', 'data': DATA})
+        self.assertEqual(list(results['review']['data']),
+                         ['date', 'account', 'part'])
+        self.assertEqual(results['classify'], CLASSIFY)
+        self.assertEqual(command.status, 'Reviewed 1 file')
+
+    def test_confirm_with_saved_cabinet(self):
+        document = self.make_document(given='accounts')
+        _, _, gt, _, _ = self.run_command(keys='c',
+                                          config=self.two_cabinets())
+        gt.assert_not_called()
+        self.assertEqual(self.results(document)['review'], {
+            'at': AT, 'cabinet': 'accounts', 'data': DATA})
+
+    def test_confirm_hand_edited_values_as_text(self):
+        # An unquoted date in a hand-edited X.yml loads as a number; other
+        # values are normalized
+        document = self.make_document(classify=dict(
+            CLASSIFY, data=dict(DATA, date=20261002, account='Amazon CA')))
+        _, _, gt, _, _ = self.run_command(keys='c')
+        gt.assert_not_called()
+        self.assertEqual(self.results(document)['review']['data'],
+                         dict(DATA, account='amazon-ca'))
+
+    def test_confirm_with_missing_date_refuses_and_asks_again(self):
+        document = self.make_document(
+            classify=dict(CLASSIFY, data=dict(DATA, date=None)))
+        _, command, gt, _, _ = self.run_command(keys='cx')
+        gt.assert_not_called()
+        self.assertIn('Missing: date. Use (u)pdate.', self.err)
+        self.assertEqual(self.err.count('(c)onfirm'), 2)
+        self.assertNotIn('review', self.results(document))
+        self.assertEqual(command.status, 'Skipped 1 file')
+
+    def test_confirm_refused_then_update(self):
+        document = self.make_document(
+            classify=dict(CLASSIFY, data={'date': '', 'account': 'amazon'}))
+        _, command, gt, _, _ = self.run_command(
+            keys='cu', answers=['20261002', 'amazon', 'receipt'])
+        self.assertIn('Missing: date, part. Use (u)pdate.', self.err)
+        self.assertEqual(self.prompts(gt), [
+            ('Date: ', []), ('Account: ', ['amazon'], 'amazon'),
+            ('Part: ', [])])
+        self.assertEqual(self.results(document)['review']['data'], DATA)
+        self.assertEqual(command.status, 'Reviewed 1 file')
+
+    def test_confirm_with_invalid_values_refuses(self):
+        document = self.make_document(classify=dict(
+            CLASSIFY, data=dict(DATA, date='2026-13-01', account='//')))
+        self.run_command(keys='cx')
+        self.assertIn('Invalid: date, account. Use (u)pdate.', self.err)
+        self.assertNotIn('review', self.results(document))
+
+    def test_confirm_unknown_saved_cabinet_fails(self):
+        document = self.make_document(given='old')
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            self.run_command(keys='c', config=self.two_cabinets())
+        self.assertIn('Unknown cabinet old', self.err)
+        self.assertNotIn('review', self.results(document))
+
+    def test_update_prefills_and_saves_edited_values(self):
+        document = self.make_document()
+        _, command, gt, e, _ = self.run_command(
+            keys='u', answers=['20261003', 'Royal Bank', 'statement'])
+        e.assert_not_called()
+        self.assertEqual(self.prompts(gt), [
+            ('Date: ', [], '20261002'),
+            ('Account: ', ['amazon'], 'amazon'),
+            ('Part: ', [], 'receipt')])
+        self.assertEqual(self.results(document)['review'], {
+            'at': AT, 'cabinet': 'default',
+            'data': {'date': '20261003', 'account': 'royal-bank',
+                     'part': 'statement'}})
+        self.assertEqual(command.status, 'Reviewed 1 file')
+
+    def test_update_with_empty_input_saves_nothing(self):
+        document = self.make_document()
+        before = Path(f'{document}.yml').read_text()
+        _, command, gt, _, _ = self.run_command(keys='ux', answers=[''])
+        self.assertEqual(len(gt.call_args_list), 1)
+        self.assertEqual(self.err.count('(c)onfirm'), 2)
+        self.assertEqual(Path(f'{document}.yml').read_text(), before)
+        self.assertEqual(command.status, 'Skipped 1 file')
+
+    def test_redo_with_several_cabinets_changes_cabinet(self):
+        document = self.make_document(given='accounts')
+        _, command, gt, e, _ = self.run_command(
+            keys='rc', answers=['memories'], config=self.two_cabinets(),
+            result=MEMORY)
+        # Pre-filled with the current cabinet, completing the names
+        self.assertEqual(self.prompts(gt), [
+            ('Cabinet: ', ['accounts', 'memories'], 'accounts')])
+        # Classified again, for the new cabinet's fields
+        e.assert_called_once()
+        schema = e.call_args.args[1]
+        self.assertEqual(list(schema['properties']['data']['properties']),
+                         ['date', 'event', 'part'])
+        self.assertIn('"memories"', e.call_args.kwargs['instructions'])
+        results = self.results(document)
+        self.assertEqual(results['given'], {'at': AT, 'cabinet': 'memories'})
+        self.assertEqual(results['classify']['data'], MEMORY_DATA)
+        self.assertNotIn('cabinet', results['classify'])
+        # The new proposal is shown and the menu asked again
+        self.assertIn('Cabinet: memories', self.err)
+        self.assertIn('Event: grandma-bday', self.err)
+        self.assertEqual(self.err.count('(c)onfirm'), 2)
+        self.assertEqual(results['review'], {
+            'at': AT, 'cabinet': 'memories', 'data': MEMORY_DATA})
+        self.assertEqual(command.status, 'Reviewed 1 file')
+
+    def test_redo_again(self):
+        document = self.make_document(given='accounts')
+        _, _, gt, e, _ = self.run_command(
+            keys='rrc', answers=['memories', 'accounts'],
+            config=self.two_cabinets(),
+            extract=[MEMORY, RESULT])
+        self.assertEqual(self.prompts(gt), [
+            ('Cabinet: ', ['accounts', 'memories'], 'accounts'),
+            ('Cabinet: ', ['accounts', 'memories'], 'memories')])
+        self.assertEqual(e.call_count, 2)
+        self.assertEqual(self.results(document)['review'], {
+            'at': AT, 'cabinet': 'accounts', 'data': DATA})
+
+    def test_redo_with_one_cabinet_reclassifies_without_prompt(self):
+        document = self.make_document()
+        result = dict(RESULT, data=dict(DATA, part='invoice'))
+        _, command, gt, e, _ = self.run_command(keys='rc', result=result)
+        gt.assert_not_called()
+        e.assert_called_once()
+        results = self.results(document)
+        self.assertEqual(results['given'], {'at': AT, 'cabinet': 'default'})
+        self.assertEqual(results['classify']['data']['part'], 'invoice')
+        self.assertIn('Part: invoice', self.err)
+        self.assertEqual(results['review']['data'],
+                         dict(DATA, part='invoice'))
+        self.assertEqual(command.status, 'Reviewed 1 file')
+
+    def test_redo_with_empty_input_changes_nothing(self):
+        document = self.make_document(given='accounts')
+        before = Path(f'{document}.yml').read_text()
+        _, command, gt, e, _ = self.run_command(
+            keys='rx', answers=[''], config=self.two_cabinets())
+        self.assertEqual(len(gt.call_args_list), 1)
+        e.assert_not_called()
+        self.assertEqual(self.err.count('(c)onfirm'), 2)
+        self.assertEqual(Path(f'{document}.yml').read_text(), before)
+        self.assertEqual(command.status, 'Skipped 1 file')
+
+    def test_redo_unknown_cabinet_asks_again(self):
+        document = self.make_document(given='accounts')
+        _, _, gt, e, _ = self.run_command(
+            keys='rc', answers=['nope', 'memories'],
+            config=self.two_cabinets(), result=MEMORY)
+        self.assertEqual(len(gt.call_args_list), 2)
+        self.assertIn('Cabinet must be one of: accounts, memories',
+                      self.err)
+        e.assert_called_once()
+        self.assertEqual(self.results(document)['review']['cabinet'],
+                         'memories')
+
+    def test_redo_replaces_unconfigured_saved_cabinet(self):
+        document = self.make_document(given='old')
+        _, _, gt, _, _ = self.run_command(
+            keys='rc', answers=['memories'], config=self.two_cabinets(),
+            result=MEMORY)
+        self.assertEqual(self.prompts(gt), [
+            ('Cabinet: ', ['accounts', 'memories'], 'old')])
+        self.assertEqual(self.results(document)['review']['cabinet'],
+                         'memories')
+
+    def test_redo_old_shape_sidecar(self):
+        # Written before results.given: the old results.classify held the
+        # cabinet; redo saves results.given and replaces results.classify
+        document = self.make_document(
+            classify=dict(CLASSIFY, cabinet='accounts'), given=None)
+        self.run_command(keys='rc', answers=['memories'],
+                         config=self.two_cabinets(), result=MEMORY)
+        results = self.results(document)
+        self.assertEqual(results['given'], {'at': AT, 'cabinet': 'memories'})
+        self.assertNotIn('cabinet', results['classify'])
+        self.assertEqual(results['review']['cabinet'], 'memories')
+
+    def test_redo_failure_fails_the_document(self):
+        document = self.make_document(given='accounts')
+        with self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            self.run_command(keys='r', answers=['memories'],
+                             config=self.two_cabinets(),
+                             extract=APIError('nope'))
+        self.assertIn('Classification failed: nope', self.err)
+        results = self.results(document)
+        self.assertEqual(results['given']['cabinet'], 'memories')
+        self.assertNotIn('classify', results)
+        self.assertNotIn('review', results)
