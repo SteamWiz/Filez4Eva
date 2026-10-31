@@ -142,3 +142,18 @@ class TestCommands(WizLibTestCase):
         self.assertEqual(out, '')
         self.assertEqual(code, 1)
         self.assertIn('ingest needs a path', err)
+
+    def test_help_on_text_documents(self):
+        expected = {
+            'transcribe': 'is a text document: it is its own transcript, '
+            'so there is no model call and no X.md',
+            'classify': "or a text document's own text (it has no "
+            'transcript)',
+            'stow': 'a text document has none: it is its own transcript'}
+        for name, text in expected.items():
+            with self.subTest(name=name):
+                out, _, _ = start(name, '--help')
+                self.assertIn(text, ' '.join(out.split()))
+        out, _, _ = start('classify', '--help')
+        self.assertIn('Only the first 100,000 characters',
+                      ' '.join(out.split()))

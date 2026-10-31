@@ -1419,3 +1419,61 @@ class TestStowProgress(StowTestCase):
         Path(f'{document}.yml').write_text('- a list')
         self.assertEqual(stage_line('Stowing', document),
                          f'Stowing {STAMP}.pdf')
+
+
+class TestStowTextDocuments(StowTestCase):
+    """A text document goes through every stage with no transcription call
+    and no X.md, is classified from its own text, and reaches the cabinet
+    alone"""
+
+    def cabinet_files(self):
+        return sorted(p for p in self.target.rglob('*') if p.is_file())
+
+    def test_text_files_end_to_end(self):
+        cases = [('notes.txt', 'Amazon order\nUSB hub\n'),
+                 ('readme.md', '# Amazon\n\nUSB hub receipt\n'),
+                 ('order.json', '{"vendor": "amazon"}\n'),
+                 ('RECEIPT', 'Amazon receipt, no extension\n')]
+        before = self.cabinet_files()
+        for name, content in cases:
+            with self.subTest(name=name):
+                source = self.make(name, content)
+                suffix = ''.join(Path(name).suffixes)
+                out, command, _, e, t = self.run_command(
+                    source, keys='c', answers=ANSWERS)
+                t.assert_not_called()
+                e.assert_called_once()
+                self.assertTrue(e.call_args.args[0].endswith(
+                    '\n\nDocument text:\n\n' + content))
+                stowed = self.target / '2026' / 'amazon' / \
+                    f'20261002-receipt{suffix}'
+                self.assertEqual(out, str(stowed))
+                self.assertEqual(stowed.read_text(), content)
+                self.assertEqual(self.cabinet_files(),
+                                 sorted(before + [stowed]))
+                before = self.cabinet_files()
+                self.assertEqual(self.intake_names(), ['archive'])
+                results = self.archived(STAMP + suffix)
+                self.assertEqual(list(results), [
+                    'ingest', 'transcribe', 'given', 'classify', 'review',
+                    'stow'])
+                self.assertEqual(results['transcribe'], {
+                    'at': AT, 'raw': True, 'length': len(content)})
+                self.assertEqual(
+                    command.status, 'Ingested 1 file | Not transcribed 1 '
+                    'file (text) | Classified 1 file | Reviewed 1 file | '
+                    'Stowed 1 file')
+
+    def test_stale_transcript_stays_behind(self):
+        document = self.make(f'{STAMP}.txt', 'text', self.intake)
+        stale = Path(f'{document}.md')
+        stale.write_text('stale')
+        write_sidecar(document, {'results': {
+            'ingest': {'at': AT, 'original-name': 'a.txt', 'source': {}},
+            'transcribe': {'at': AT, 'raw': True, 'length': 4},
+            'review': REVIEW}})
+        out, _, _, _, _ = self.run_command()
+        stowed = self.target / '2026' / 'amazon' / '20261002-receipt.txt'
+        self.assertEqual(out, str(stowed))
+        self.assertFalse(Path(f'{stowed}.md').exists())
+        self.assertEqual(stale.read_text(), 'stale')

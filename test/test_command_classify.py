@@ -12,8 +12,8 @@ from wizlib.test_case import WizLibTestCase
 
 from filez4eva import Filez4EvaApp
 from filez4eva.command.classify_command import (
-    CONTEXT_NOTE, DEFAULT_MODEL, ClassifyCommand, build_schema,
-    document_text, load_doctypes, transcript_body)
+    CONTEXT_NOTE, DEFAULT_MODEL, MAX_CLASSIFY_CHARS, ClassifyCommand,
+    build_schema, document_text, load_doctypes, transcript_body)
 from filez4eva.command.ingest_command import read_sidecar, write_sidecar
 from filez4eva.command.transcribe_command import format_transcript
 from filez4eva.error import Filez4EvaError
@@ -1372,3 +1372,92 @@ class TestClassifyGivenData(ClassifyTestCase):
         self.assertIn(f'Date 20240213 given, but {other.name} is already '
                       'classified', self.err)
         self.assertNotIn('classified with', self.err)
+
+
+class TestClassifyTextDocuments(ClassifyTestCase):
+    """A text document (results.transcribe with raw: true) is classified
+    from its own text, and what the model is given is capped"""
+
+    def make_text(self, name=f'{STAMP}.txt', content='Invoice 42\n'):
+        """A text document in the intake, transcribed as raw"""
+        path = self.make(name, content, self.intake)
+        write_sidecar(path, {'results': {
+            'ingest': {'at': AT, 'original-name': 'notes.txt',
+                       'source': {}},
+            'transcribe': {'at': AT, 'raw': True, 'length': len(content)}}})
+        return path
+
+    def test_new_text_file_is_classified_from_its_text(self):
+        content = '---\ntitle: kept\n---\n# Order\n\nUSB hub\n'
+        source = self.make('order.md', content)
+        _, command, _, e, t = self.run_command(source)
+        document = self.intake / f'{STAMP}.md'
+        t.assert_not_called()
+        self.assertTrue(e.call_args.args[0].endswith(
+            '\n\nDocument text:\n\n' + content))
+        self.assertEqual(self.intake_names(),
+                         [f'{STAMP}.md', f'{STAMP}.md.yml'])
+        self.assertIn('classify', read_sidecar(document)['results'])
+        self.assertEqual(command.status,
+                         'Ingested 1 file | Not transcribed 1 file (text) '
+                         '| Classified 1 file')
+
+    def test_stale_transcript_is_ignored(self):
+        document = self.make_text(content='The real text')
+        Path(f'{document}.md').write_text('Stale transcript')
+        _, _, _, e, _ = self.run_command()
+        self.assertIn('The real text', e.call_args.args[0])
+        self.assertNotIn('Stale', e.call_args.args[0])
+
+    def test_empty_text_document_is_a_failure(self):
+        self.make_text(content=' \n')
+        with patch(EXTRACT) as e, \
+                self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            app = Filez4EvaApp()
+            app.config = ConfigHandler.fake(**self.config())
+            with self.patchout(), self.patcherr() as err:
+                try:
+                    ClassifyCommand(app).execute()
+                finally:
+                    err.seek(0)
+                    self.assertIn('is empty', err.read())
+        e.assert_not_called()
+
+    def test_undecodable_text_document_is_a_failure(self):
+        document = self.make_text()
+        document.write_bytes(b'\xff\xfe bad')
+        with patch(EXTRACT) as e, \
+                self.assertRaisesRegex(Filez4EvaError, '1 of 1 file'):
+            app = Filez4EvaApp()
+            app.config = ConfigHandler.fake(**self.config())
+            with self.patchout(), self.patcherr() as err:
+                try:
+                    ClassifyCommand(app).execute()
+                finally:
+                    err.seek(0)
+                    self.assertIn('Could not read document', err.read())
+        e.assert_not_called()
+
+    def test_large_text_document_is_cut_with_a_note(self):
+        content = 'a' * MAX_CLASSIFY_CHARS + 'TAIL' + 'b' * 49_996
+        self.make_text(content=content)
+        _, _, _, e, _ = self.run_command()
+        text = e.call_args.args[0]
+        self.assertTrue(text.endswith(
+            '\n\nDocument text (cut: only the first 100,000 of 150,000 '
+            'characters are shown):\n\n' + 'a' * MAX_CLASSIFY_CHARS))
+        self.assertNotIn('TAIL', text)
+
+    def test_large_transcript_is_cut_with_a_note(self):
+        self.make_document(transcript='x' * 120_000)
+        _, _, _, e, _ = self.run_command()
+        text = e.call_args.args[0]
+        self.assertTrue(text.endswith(
+            '\n\nTranscript (cut: only the first 100,000 of 120,000 '
+            'characters are shown):\n\n' + 'x' * MAX_CLASSIFY_CHARS))
+
+    def test_text_at_the_cap_is_not_cut(self):
+        self.make_text(content='y' * MAX_CLASSIFY_CHARS)
+        _, _, _, e, _ = self.run_command()
+        self.assertTrue(e.call_args.args[0].endswith(
+            '\n\nDocument text:\n\n' + 'y' * MAX_CLASSIFY_CHARS))

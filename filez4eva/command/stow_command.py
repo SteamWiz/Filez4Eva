@@ -7,7 +7,7 @@ from filez4eva.command import ingest_command
 from filez4eva.command.classify_command import ClassifyCommand
 from filez4eva.command.ingest_command import archived_sidecar, sidecar_path
 from filez4eva.command.review_command import ReviewCommand
-from filez4eva.command.transcribe_command import TranscribeCommand
+from filez4eva.command.transcribe_command import TranscribeCommand, is_raw
 from filez4eva.error import Filez4EvaError
 from filez4eva.stage import StageCommand, load_sidecar, record_result
 from filez4eva.stow import Stower
@@ -58,11 +58,12 @@ class StowCommand(StageCommand):
     name = 'stow'
     summary = 'move confirmed documents into their cabinets'
     description = """
-        Move each reviewed document, with its transcript, into its cabinet,
-        named by the cabinet's pattern, then record results.stow and move
-        its X.yml sidecar to <intake>/archive/. A document not reviewed yet
-        is classified and reviewed first where needed, and stowed as soon
-        as it's confirmed. Learned values are recorded when a record is
+        Move each reviewed document, with its transcript (a text document
+        has none: it is its own transcript), into its cabinet, named by the
+        cabinet's pattern, then record results.stow and move its X.yml
+        sidecar to <intake>/archive/. A document not reviewed yet is
+        classified and reviewed first where needed, and stowed as soon as
+        it's confirmed. Learned values are recorded when a record is
         reviewed, not when it is stowed. Prints each destination.
 
         Main use: `filez4eva classify -c NAME ~/Scans`, then
@@ -80,9 +81,10 @@ class StowCommand(StageCommand):
     doing = 'Stowing'
     requires = (TranscribeCommand, ClassifyCommand, ReviewCommand)
 
-    def stower(self, path: Path, review: dict) -> Stower:
+    def stower(self, path: Path, review: dict, raw: bool = False) -> Stower:
         """A Stower for the document, with the reviewed cabinet, date and
-        other fields, so it never prompts"""
+        other fields, so it never prompts. With raw (a text document, its
+        own transcript), no transcript moves with it."""
         cabinet = self.cabinets[review['cabinet']]
         date = None
         data = {}
@@ -93,14 +95,17 @@ class StowCommand(StageCommand):
             else:
                 data[field.name] = value
         return Stower(self.app, use_stdin=False, file=str(path),
-                      cabinet=cabinet.name, date=date, data=data)
+                      cabinet=cabinet.name, date=date, data=data,
+                      transcript=not raw)
 
     def act(self, path: Path) -> str:
         """Stow a reviewed document with the cabinet and data from
         results.review: move the file and its transcript to the cabinet
         (never overwriting anything), record results.stow, then move X.yml
-        to the archive. Return the destination path."""
-        review = confirmed(load_sidecar(path)['results'], self.cabinets)
+        to the archive. A text document (results.transcribe with `raw:
+        true`) moves without a transcript. Return the destination path."""
+        results = load_sidecar(path)['results']
+        review = confirmed(results, self.cabinets)
         sidecar = sidecar_path(path)
         archived = archived_sidecar(path)
         # Checked before the file moves, so a stowed document's sidecar
@@ -108,7 +113,7 @@ class StowCommand(StageCommand):
         if archived.exists():
             raise Filez4EvaError(f"File already exists at {archived}")
         archived.parent.mkdir(exist_ok=True)
-        targetpath = self.stower(path, review).stow()
+        targetpath = self.stower(path, review, is_raw(results)).stow()
         try:
             record_result(path, self.stage, {
                 'at': ingest_command.now().isoformat(timespec='seconds'),
