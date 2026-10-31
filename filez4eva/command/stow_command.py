@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from wizlib.ui.shell_ui import Emphasis
+
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command import ingest_command
 from filez4eva.command.classify_command import ClassifyCommand
@@ -75,6 +77,7 @@ class StowCommand(StageCommand):
         record is reviewed as usual (see Given data below)."""
     stage = 'stow'
     done = 'Stowed'
+    doing = 'Stowing'
     requires = (TranscribeCommand, ClassifyCommand, ReviewCommand)
 
     def stower(self, path: Path, review: dict) -> Stower:
@@ -115,6 +118,7 @@ class StowCommand(StageCommand):
             raise Filez4EvaError(
                 f"Stowed to {targetpath}, but could not archive {sidecar}: "
                 f"{error}") from error
+        self.app.ui.send(f"Stowed to {targetpath}", Emphasis.INFO)
         return str(targetpath)
 
     @Filez4EvaCommand.wrap

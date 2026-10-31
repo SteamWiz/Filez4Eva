@@ -19,6 +19,7 @@ from filez4eva.command.transcribe_command import (
     transcribe_file, transcript_body, write_atomically)
 from filez4eva.error import Filez4EvaError
 from filez4eva.stage import find_ingested, new_files, resolve_path
+from test import plain
 
 
 TRANSCRIBE = 'filez4eva.command.transcribe_command.transcribe'
@@ -402,7 +403,8 @@ class TestTranscribeCommand(TranscribeTestCase):
         t.assert_called_once_with(document, model=DEFAULT_MODEL,
                                   api_key=None)
         self.assertEqual(out.strip(), f'{document}.md')
-        self.assertEqual(err, 'Transcribed 1 file\n')
+        self.assertEqual(plain(err), f'Transcribing {document.name} '
+                         '(orig.pdf)\nTranscribed 1 file\n')
 
     def test_ingested_that_is_not_a_document_is_an_error(self):
         document = self.make_document(f'{STAMP}.pdf')
@@ -687,8 +689,11 @@ class TestTranscribeCommand(TranscribeTestCase):
         with patch(TRANSCRIBE, return_value='x'):
             out, err, code = self.run_app(source)
         self.assertEqual(code, 0)
-        self.assertEqual(out.strip(), str(self.intake / f'{STAMP}.pdf.md'))
-        self.assertEqual(err, 'Ingested 1 file | Transcribed 1 file\n')
+        # stdout has only the result path; progress goes to stderr
+        self.assertEqual(out, str(self.intake / f'{STAMP}.pdf.md'))
+        self.assertEqual(plain(err), f'Ingesting {source}\n'
+                         f'Transcribing {STAMP}.pdf (scan.pdf)\n'
+                         'Ingested 1 file | Transcribed 1 file\n')
         with patch(TRANSCRIBE) as t:
             out, err, code = self.run_app()
         t.assert_not_called()

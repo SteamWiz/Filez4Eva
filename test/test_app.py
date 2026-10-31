@@ -90,6 +90,12 @@ class TestCommands(WizLibTestCase):
                                   'those documents', out)
                     self.assertIn('act only on documents that have had '
                                   'every earlier stage', out)
+                    self.assertIn('Progress: on stderr, a line before each '
+                                  'stage starts on a document', out)
+                    self.assertIn('Stdout has only the result paths.', out)
+                    self.assertEqual('Stowed to PATH' in out, name == 'stow')
+                else:
+                    self.assertIn('an Ingesting FILE line on stderr', out)
                 if name in ['ingest', 'transcribe']:
                     self.assertNotIn('Order:', out)
                 else:

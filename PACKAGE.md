@@ -149,6 +149,36 @@ describes one. Running `filez4eva` with no command is an error. The older
 `stow-file`, `scan-dir` and `process` commands have been removed: see
 [Migrating from stow-file, scan-dir and process](#migrating-from-stow-file-scan-dir-and-process).
 
+### Progress output
+
+Every command says on stderr which stage is running on which file, so a
+long run never looks frozen. Stdout keeps only the result lines (paths),
+so a script can still capture them.
+
+- **Before each stage starts on a document**, a line names the stage and
+  the document. For ingest, the file's path as given:
+  `Ingesting /Users/me/Scans/Scan 10.14.03.pdf`. For the later stages, the
+  document's name in the intake and its original name:
+  `Transcribing 20261025-140307-042.pdf (Scan 10.14.03.pdf)`, then
+  `Classifying ...`, `Reviewing ...` (the heading of the review display)
+  and `Stowing ...`. With several cabinets, the `Classifying` line comes
+  before the document's `Cabinet:` prompt. A document that already has the
+  stage gets no line, and neither do classify and review when
+  [complete given data](#given-data) stands in for them.
+- **After stowing**, a line with the stowed file's absolute path, e.g.
+  `Stowed to /Users/me/Dropbox/accounts/2026/amazon/20261002-receipt.pdf`.
+  Stdout still has just the path.
+- **While the model is transcribing or classifying a document**, and
+  stderr is a terminal, a spinner and the seconds elapsed are shown on one
+  line, redrawn in place several times a second (e.g.
+  `/ Transcribing... 12s`). When the call ends, the line is replaced with
+  e.g. `Transcribed in 23s`; when it fails or is interrupted (Ctrl-C), the
+  line is cleared and the error is reported as usual. When stderr isn't a
+  terminal (piped or redirected), there's no spinner; the stage line is
+  enough.
+
+Errors and the status line at the end are as described above.
+
 ### Ingesting Files
 
 To move a file into the intake, the holding area where documents wait to be
@@ -161,7 +191,8 @@ filez4eva ingest ~/Desktop/Report.DOCX.pdf
 The file is moved into the [intake directory](#intake) and renamed after the
 current local time as `YYYYMMDD-HHMMSS-mmm` (`mmm` is milliseconds), followed
 by its original extensions in lower case. The new path is printed on stdout
-(status `Ingested` on stderr). For example, at 14:03:07.042:
+(`Ingesting FILE` before it, and the status `Ingested` after, on stderr;
+see [Progress output](#progress-output)). For example, at 14:03:07.042:
 
 | Original name       | Name in the intake             |
 |---------------------|--------------------------------|
@@ -445,7 +476,8 @@ the usual flow is `filez4eva classify -c NAME ~/Scans` (unattended), then
 `filez4eva review`; to review just one document, give
 `filez4eva review --ingested NAME`.
 
-For each document, `review` shows its name (and original name), then the
+For each document, `review` shows a heading with its name and original
+name (e.g. `Reviewing 20261025-140307-042.pdf (Scan 10.14.03.pdf)`), then the
 proposed record from `results.classify`: the summary, doctype, the
 document's saved cabinet and the value of each of that cabinet's fields
 (`(none)` for a field without a value, e.g. a document without a date).
@@ -605,8 +637,9 @@ Stowing a document:
    where the file went (see [The X.yml sidecar](#the-xyml-sidecar)).
 3. moves `X.yml` to `<intake>/archive/`, for later reference.
 
-The absolute destination path is printed on stdout, so a script can
-capture it, e.g.
+The absolute destination path is printed on stdout (and, on stderr,
+`Stowed to` the same path; see [Progress output](#progress-output)), so a
+script can capture it, e.g.
 `dest=$(filez4eva stow -d 20240213 -f title=receipt file.pdf)` (with
 [complete given data](#given-data), nothing else is printed on stdout and
 nothing is asked).
@@ -1187,8 +1220,8 @@ first of these that applies wins:
 2. **`--cabinet NAME` (or `-c NAME`)** on `classify`, `review` or `stow`,
    for every document in the run (or `cabinet` in a record on stdin).
 3. **The only cabinet**, when just one is configured: no prompt.
-4. **A `Cabinet:` prompt** for that document, after a line naming it (and
-   its original name), with tab completion of the cabinet names. An unknown
+4. **A `Cabinet:` prompt** for that document, after its `Classifying NAME
+   (ORIGINAL NAME)` line (see [Progress output](#progress-output)), with tab completion of the cabinet names. An unknown
    name is rejected and the prompt asks again. Empty input skips the
    document: nothing is saved, it is counted as `Skipped`, and a later run
    asks again.

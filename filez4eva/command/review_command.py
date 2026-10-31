@@ -16,7 +16,7 @@ from filez4eva.error import Filez4EvaError
 from filez4eva.fields import Field, normalize_value
 from filez4eva.stage import (
     CLASSIFY, GIVEN, NotDone, StageCommand, StopRun, given_values,
-    load_sidecar, record_result, saved_cabinet)
+    load_sidecar, record_result, saved_cabinet, stage_line)
 from filez4eva.stow import Stower, remember_values, valid_date
 
 
@@ -70,6 +70,9 @@ class ReviewCommand(StageCommand):
         each reviewed document's path."""
     stage = 'review'
     done = 'Reviewed'
+    doing = 'Reviewing'
+    # show's heading is the stage line
+    heading = True
     requires = (TranscribeCommand, ClassifyCommand)
 
     # No Enter default: every action takes its own key
@@ -88,12 +91,10 @@ class ReviewCommand(StageCommand):
 
     def show(self, path: Path, results: dict, proposed: dict):
         """Show the document's name and its proposed record, with the
-        given values marked (given)"""
-        ingest = results.get('ingest')
-        original = ingest.get('original-name') \
-            if isinstance(ingest, dict) else None
-        self.app.ui.send(f"{path.name} ({original})" if original
-                         else path.name)
+        given values marked (given). The heading, e.g. `Reviewing NAME
+        (ORIGINAL NAME)`, is also the stage's progress line."""
+        self.app.ui.send(stage_line(self.doing, path, results),
+                         Emphasis.INFO)
         for key in ['summary', 'doctype']:
             if proposed.get(key):
                 self.app.ui.send(f"{key.capitalize()}: {proposed[key]}")
@@ -218,7 +219,8 @@ class ReviewCommand(StageCommand):
             data['results'][GIVEN]['data'] = given
         data['results'].pop(CLASSIFY, None)
         write_sidecar(path, data)
-        self.app.ui.send('Classifying...', Emphasis.INFO)
+        self.app.ui.send(stage_line(self.classifier.doing, path),
+                         Emphasis.INFO)
         self.classifier.act(path)
         return True
 

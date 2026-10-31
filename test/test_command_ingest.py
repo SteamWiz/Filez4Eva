@@ -19,6 +19,7 @@ from filez4eva.command.ingest_command import (
     intake_dir, intake_lock, is_companion, is_ingested, now, parse_meta,
     read_sidecar, sidecar_path, stamp_name, write_sidecar)
 from filez4eva.error import Filez4EvaError
+from test import plain
 
 
 NOW = 'filez4eva.command.ingest_command.now'
@@ -505,7 +506,7 @@ class TestIngestCommand(WizLibTestCase):
         self.assertEqual(code, 0)
         target = self.intake / (STAMP + '.pdf')
         self.assertEqual(out.strip(), str(target))
-        self.assertEqual(err, 'Ingested\n')
+        self.assertEqual(plain(err), f'Ingesting {source}\nIngested\n')
         self.assertEqual(
             read_sidecar(target)['results']['ingest']['source'],
             {'s': '1', 'k': 'v', 'x': 'y'})
@@ -517,8 +518,12 @@ class TestIngestCommand(WizLibTestCase):
         (self.source / 'sub').mkdir()
         (self.source / 'sub' / 'inner.pdf').write_text('i')
         (self.source / 'link.pdf').symlink_to(self.source / 'b.pdf')
-        result, command, _ = self.run_command(
+        result, command, err = self.run_command(
             self.source, stdin='via: dir\n')
+        # Each file is named on stderr before it is ingested
+        self.assertEqual(plain(err).splitlines(), [
+            f'Ingesting {self.source / "a.pdf"}',
+            f'Ingesting {self.source / "b.pdf"}'])
         paths = [Path(p) for p in result.split('\n')]
         # Sorted order: a.pdf first, then b.pdf (1 ms later, since the
         # clock is frozen)

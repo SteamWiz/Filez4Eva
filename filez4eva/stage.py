@@ -32,6 +32,10 @@ CLASSIFY = 'classify'
 # stage starts on any of them
 BATCH_STAGE = 'transcribe'
 
+# The classify stage's progress line (see stage_line), also before its
+# cabinet prompt
+CLASSIFY_DOING = 'Classifying'
+
 # Key under `results` of what is given for a document before it is
 # classified: when, its cabinet, and the field values given for it (data)
 GIVEN = 'given'
@@ -152,6 +156,31 @@ def reached(results: dict, stage: str) -> bool:
     return stage == CLASSIFY and results.get('review') is not None
 
 
+def original_name(results: dict):
+    """The document's original file name (results.ingest.original-name),
+    or None if none is recorded"""
+    ingest = results.get('ingest')
+    name = ingest.get('original-name') if isinstance(ingest, dict) else None
+    return str(name) if name else None
+
+
+def stage_line(doing: str, path: Path, results: dict = None) -> str:
+    """The progress line on stderr before a stage starts on an ingested
+    document: what the stage is doing, the document's name in the intake
+    and its original name, e.g. `Transcribing 20261025-140307-042.pdf (Scan
+    10.14.03.pdf)`. results are read from the sidecar if not given; if it
+    can't be read, the line has just the name (the stage reports the
+    error)."""
+    if results is None:
+        try:
+            results = load_sidecar(path)['results']
+        except Filez4EvaError:
+            results = {}
+    original = original_name(results)
+    return f"{doing} {path.name} ({original})" if original \
+        else f"{doing} {path.name}"
+
+
 def stage_result(path: Path, stage: str):
     """Return results.<stage> from a document's sidecar, or None if that
     stage hasn't run"""
@@ -213,6 +242,17 @@ class StageCommand(Filez4EvaCommand):
 
     # Status label for documents the stage acted on
     done: str = None
+
+    # What the stage is doing, for the progress line on stderr before it
+    # starts on a document (e.g. 'Transcribing')
+    doing: str = None
+
+    # True if act shows its own stage line (review's heading), so the run
+    # doesn't announce it
+    heading: bool = False
+
+    # The last stage line sent, so the same line isn't sent twice in a row
+    announced: str = None
 
     # Earlier StageCommand classes, in order, whose results a document needs
     # before this stage runs (ingest always comes first)
@@ -291,6 +331,16 @@ class StageCommand(Filez4EvaCommand):
                 "one finishing before the next one starts. "
                 "With no path, the most advanced documents come first (the "
                 "latest stage they've had, then name order).")
+        stowed = ", and Stowed to PATH after stowing" \
+            if cls.stage == 'stow' else ''
+        work = 'transcribes' if cls.stage == BATCH_STAGE \
+            else 'transcribes or classifies'
+        paragraphs.append(
+            "Progress: on stderr, a line before each stage starts on a "
+            "document, naming it and its original name (e.g. Transcribing "
+            f"NAME (ORIGINAL NAME)){stowed}. While the model {work} a "
+            "document, a spinner shows the seconds elapsed if stderr is a "
+            "terminal. Stdout has only the result paths.")
         return '\n\n'.join(fill(text, HELP_WIDTH) for text in paragraphs)
 
     @classmethod
@@ -461,11 +511,8 @@ class StageCommand(Filez4EvaCommand):
         """Prompt for a document's cabinet, with tab completion of the
         names, until a configured one is entered. Empty input skips the
         document (NotDone)."""
-        ingest = results.get('ingest')
-        original = ingest.get('original-name') \
-            if isinstance(ingest, dict) else None
-        self.app.ui.send(f"{path.name} ({original})" if original
-                         else path.name)
+        # The cabinet is chosen as part of classifying the document
+        self.announce(CLASSIFY_DOING, path, results)
         name = self.prompt_cabinet()
         if name is None:
             self.app.ui.send('Skipped', Emphasis.INFO)
@@ -579,6 +626,14 @@ class StageCommand(Filez4EvaCommand):
             remember_values(self.app, cabinet, data)
         return full
 
+    def announce(self, doing: str, path: Path, results: dict = None):
+        """Send the stage line for a document on stderr (see stage_line),
+        unless it is the line sent last"""
+        line = stage_line(doing, path, results)
+        if line != self.announced:
+            self.app.ui.send(line, Emphasis.INFO)
+        self.announced = line
+
     def act(self, path: Path) -> str:  # pragma: no cover
         """Run the stage on an ingested document that hasn't had it yet,
         record results.<stage>, and return the line to print on stdout.
@@ -642,6 +697,7 @@ class StageCommand(Filez4EvaCommand):
             if self.only:
                 self.skip(entry[0], 'ingested')
                 continue
+            self.app.ui.send(f"Ingesting {entry[0]}", Emphasis.INFO)
             try:
                 entry[1] = ingest_file(entry[0], intake, {})
             except (Filez4EvaError, OSError) as error:
@@ -666,6 +722,7 @@ class StageCommand(Filez4EvaCommand):
                     if transcriber is self:
                         self.counts[self.already] += 1
                 elif stage_result(current, self.stage) is None:
+                    self.announce(transcriber.doing, current)
                     line = transcriber.act(current)
                     self.counts[transcriber.done] += 1
                     if transcriber is self:
@@ -698,6 +755,7 @@ class StageCommand(Filez4EvaCommand):
         StopRun from act ends the run."""
         for entry in work:
             document, current = entry
+            self.announced = None
             try:
                 results = load_sidecar(current)['results']
                 self.check_given(current, results)
@@ -726,8 +784,12 @@ class StageCommand(Filez4EvaCommand):
                         lines.append(str(current))
                         continue
                 for command in missing:
+                    if not command.heading:
+                        self.announce(command.doing, current)
                     command.act(current)
                     self.counts[command.done] += 1
+                if not self.heading:
+                    self.announce(self.doing, current)
                 lines.append(self.act(current))
                 self.counts[self.done] += 1
             except NotDone as outcome:

@@ -10,8 +10,10 @@ from filez4eva.command.transcribe_command import (
     TranscribeCommand, recorded_transcript, transcript_body)
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import check_value, load_store, suggestions
+from filez4eva.progress import ai_progress
 from filez4eva.stage import (
-    StageCommand, given_values, load_sidecar, record_result, saved_cabinet)
+    CLASSIFY_DOING, StageCommand, given_values, load_sidecar, record_result,
+    saved_cabinet)
 from filez4eva.stow import Cabinet, valid_date
 
 
@@ -251,8 +253,9 @@ def ask_model(text: str, schema: dict, instructions: str, model: str,
               api_key):
     """Call extract, turning a Kwark error into Filez4EvaError"""
     try:
-        return extract(text, schema, instructions=instructions, model=model,
-                       api_key=api_key)
+        with ai_progress('Classifying', 'Classified'):
+            return extract(text, schema, instructions=instructions,
+                           model=model, api_key=api_key)
     except KwarkAIError as err:
         raise Filez4EvaError(f"Classification failed: {err}") from err
 
@@ -325,6 +328,7 @@ class ClassifyCommand(StageCommand):
         `filez4eva stow`."""
     stage = 'classify'
     done = 'Classified'
+    doing = CLASSIFY_DOING
     requires = (TranscribeCommand,)
 
     def handle_vals(self):

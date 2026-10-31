@@ -9,6 +9,7 @@ from filez4eva.atomic import write_atomically
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command import ingest_command
 from filez4eva.error import Filez4EvaError
+from filez4eva.progress import ai_progress
 from filez4eva.stage import StageCommand, record_result
 
 
@@ -120,7 +121,8 @@ def transcribe_file(path: Path, model: str, api_key=None) -> tuple:
         if cached is not None and str(cached) == sha256:
             return target, 'Unchanged'
     try:
-        markdown = transcribe(path, model=model, api_key=api_key)
+        with ai_progress('Transcribing', 'Transcribed'):
+            markdown = transcribe(path, model=model, api_key=api_key)
     except KwarkAIError as err:
         raise Filez4EvaError(f"Transcription failed: {err}") from err
     transcribed = datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -143,6 +145,7 @@ class TranscribeCommand(StageCommand):
         in its X.yml sidecar. Prints each transcript's path."""
     stage = 'transcribe'
     done = 'Transcribed'
+    doing = 'Transcribing'
 
     @property
     def model(self) -> str:
