@@ -146,13 +146,27 @@ def write_sidecar(path: Path, data: dict, exclusive: bool = False):
             raise
 
 
-def ingest_record(at: datetime, original_name: str, source: dict) -> dict:
-    """Return the sidecar content written by ingest"""
-    return {'results': {'ingest': {
-        'at': at.isoformat(timespec='seconds'),
-        'original-name': original_name,
-        'source': dict(source),
-    }}}
+def file_time(timestamp: float) -> str:
+    """A file timestamp as ISO-8601 local time with UTC offset, to the
+    second"""
+    return datetime.fromtimestamp(timestamp).astimezone().isoformat(
+        timespec='seconds')
+
+
+def ingest_record(at: datetime, original_name: str, source: dict,
+                  stat=None) -> dict:
+    """Return the sidecar content written by ingest. With stat (the
+    original file's os.stat result), the file's modified time is recorded,
+    and its creation (birth) time where the OS provides one."""
+    ingest = {'at': at.isoformat(timespec='seconds'),
+              'original-name': original_name}
+    if stat is not None:
+        created = getattr(stat, 'st_birthtime', None)
+        if created is not None:
+            ingest['created'] = file_time(created)
+        ingest['modified'] = file_time(stat.st_mtime)
+    ingest['source'] = dict(source)
+    return {'results': {'ingest': ingest}}
 
 
 def parse_meta(flags: list) -> dict:
@@ -248,8 +262,9 @@ def ingest_file(path: Path, intake: Path, source: dict) -> Path:
     was and nothing is left behind in the intake."""
     if path.is_symlink() or not path.is_file():
         raise Filez4EvaError(f"{path} must be a regular file")
+    stat = os.stat(path)
     dt = now()
-    record = ingest_record(dt, path.name, source)
+    record = ingest_record(dt, path.name, source, stat)
     target = reserve(intake, dt, extensions(path.name), record)
     try:
         move_onto(path, target)
@@ -299,7 +314,8 @@ class IngestCommand(Filez4EvaCommand):
         Move a file, or the non-hidden files at the top level of a
         directory, into the intake under a time-stamped name, and write an
         X.yml sidecar next to each one recording when it was ingested, its
-        original name and any source metadata (--meta flags and a YAML
+        original name, its creation time (where the OS provides one) and
+        modified time, and any source metadata (--meta flags and a YAML
         mapping on stdin). Prints each new path, with an Ingesting FILE
         line on stderr before each file is moved. The intake is set with the
         `intake:` configuration key (default ~/.filez4eva/intake)."""

@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 import re
 
@@ -33,11 +34,12 @@ Classify the document below so it can be filed. Return:
 - doctype: one of the document types listed below, or "other" if none fits
 - summary: a one-line summary of the document"""
 
-# Told to the model when the document's original name and source come
-# before its transcript (or, for a text document, its own text)
+# Told to the model when the document's original name, source and file
+# date come before its transcript (or, for a text document, its own text)
 CONTEXT_NOTE = ("Before the document's transcript (or, for a text file, "
-                "its text) you are given its original file name and where "
-                "it came from (its source). Use them as hints, but go by "
+                "its text) you are given its original file name, where "
+                "it came from (its source) and, when known, the file's "
+                "creation or modified date. Use them as hints, but go by "
                 "the transcript or text when they disagree.")
 
 # The most characters of a transcript, or of a text document, given to the
@@ -45,9 +47,11 @@ CONTEXT_NOTE = ("Before the document's transcript (or, for a text file, "
 MAX_CLASSIFY_CHARS = 100_000
 
 # Fixed rules for the date, whatever its guidance says
-DATE_RULES = ("Give it as YYYYMMDD. If you can't determine the document's "
-              "own date, return an empty string. Do not guess and do not "
-              "use today's date.")
+DATE_RULES = ("Give it as YYYYMMDD. Prefer the document's own date. If "
+              "the document has none, you may use the file date given "
+              "with it when that is a reasonable stand-in (for example, "
+              "for a photo). Otherwise return an empty string. Never use "
+              "today's date.")
 
 # Fixed rule for every other field (values are normalized anyway)
 VALUE_RULES = ("Use lowercase words and digits separated by hyphens, such "
@@ -137,9 +141,10 @@ def build_instructions(cabinet: Cabinet, vocabulary: dict,
                        given: dict = None) -> str:
     """Return the instructions passed to extract. vocabulary maps a field
     name to the existing values to offer for it. With context, the model is
-    told that the document's original name and source come before its
-    transcript. given maps the fields already given for the document to
-    their values: the model is told them, and isn't asked for them."""
+    told that the document's original name, source and file date come
+    before its transcript. given maps the fields already given for the
+    document to their values: the model is told them, and isn't asked for
+    them."""
     given = given or {}
     sections = [TASK]
     if context:
@@ -307,10 +312,28 @@ def classify_text(text: str, cabinet: Cabinet, doctypes: dict, model: str,
     return checked
 
 
+def file_date_line(ingest: dict):
+    """The file date line given to the model: 'File created: YYYY-MM-DD'
+    from results.ingest created, otherwise 'File modified: YYYY-MM-DD' from
+    modified, otherwise None. Values that aren't ISO dates are skipped."""
+    for key in ('created', 'modified'):
+        value = ingest.get(key)
+        if isinstance(value, date):
+            value = value.isoformat()
+        if not isinstance(value, str):
+            continue
+        try:
+            day = date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            continue
+        return f'File {key}: {day.isoformat()}'
+    return None
+
+
 def document_text(transcript: str, ingest: dict, raw: bool = False) -> str:
     """Return the text given to the model for a document in the intake: its
-    original file name and source (from results.ingest), then its
-    transcript, or with raw, the document's own text (a text document).
+    original file name, source and file date (from results.ingest), then
+    its transcript, or with raw, the document's own text (a text document).
     Only the first MAX_CLASSIFY_CHARS characters of it are given; when
     more are cut, its heading says so."""
     ingest = ingest if isinstance(ingest, dict) else {}
@@ -323,6 +346,9 @@ def document_text(transcript: str, ingest: dict, raw: bool = False) -> str:
         lines.extend(f'  {line}' for line in dumped.splitlines())
     else:
         lines.append('Source: (none recorded)')
+    file_date = file_date_line(ingest)
+    if file_date:
+        lines.append(file_date)
     heading = 'Document text' if raw else 'Transcript'
     if len(transcript) > MAX_CLASSIFY_CHARS:
         heading += (f" (cut: only the first {MAX_CLASSIFY_CHARS:,} of "
@@ -403,9 +429,9 @@ class ClassifyCommand(StageCommand):
     def act(self, path: Path) -> str:
         """Classify an ingested, transcribed document for its saved cabinet
         from its transcript (or, for a text document, its own text; see
-        document_source), original name and source, asking the model only
-        for the fields not given for it (results.given.data), record
-        results.classify (data: the given values and the model's), and
+        document_source), original name, source and file date, asking the
+        model only for the fields not given for it (results.given.data),
+        record results.classify (data: the given values and the model's), and
         return the document's path"""
         results = load_sidecar(path)['results']
         cabinet = self.document_cabinet(path, results)
