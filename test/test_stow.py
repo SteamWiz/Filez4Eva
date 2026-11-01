@@ -102,20 +102,33 @@ class TestStower(WizLibTestCase):
             self.assertEqual(Path(r), expected)
             self.assertTrue(Path(r).is_file())
 
-    def test_returns_absolute_path_for_relative_target(self):
-        with TemporaryDirectory() as source, \
-                TemporaryDirectory() as cwd, \
-                patch('os.getcwd', return_value=cwd):
+    def test_relative_target_rejected(self):
+        with TemporaryDirectory() as source:
             n = Path(source) / 'b.txt'
             n.write_text('a')
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(filez4eva_target='.')
             c = Stower(a, file=str(n), date='20240213',
                        data={'title': 't'})
+            with self.patchout(), \
+                    self.assertRaisesRegex(Filez4EvaError,
+                                           'target must be an absolute'):
+                execute(c)
+            self.assertTrue(n.is_file())
+
+    def test_returns_absolute_path_for_home_target(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as home, \
+                patch.dict('os.environ', {'HOME': home}):
+            n = Path(source) / 'b.txt'
+            n.write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target='~/files')
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'title': 't'})
             with self.patchout():
                 r = execute(c)
-            self.assertTrue(Path(r).is_absolute())
-            self.assertEqual(Path(r), Path(cwd) / '20240213-t.txt')
+            self.assertEqual(Path(r), Path(home) / 'files/20240213-t.txt')
             self.assertTrue(Path(r).is_file())
 
     def test_error_if_no_source(self):

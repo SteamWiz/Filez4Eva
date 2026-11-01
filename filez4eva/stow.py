@@ -23,6 +23,7 @@ from filez4eva.fields import (
     check_field_settings, check_pattern, check_value, load_store,
     normalize_value, record_values, render_pattern, resolve_fields,
     suggestions, value_rule, values_path)
+from filez4eva.paths import absolute_path
 
 
 DATE_PATTERN = re.compile(r'\d{8}')
@@ -68,14 +69,17 @@ DEFAULT_TRANSCRIPT_LOCATION = 'adjacent'
 
 def check_transcripts(owner: str, location, root):
     """Raise Filez4EvaError if a transcripts location (when set) is unknown
-    or a root (when set) isn't text. owner names where the values come from,
-    for the error message."""
+    or a root (when set) isn't text, or is a relative path (a blank root
+    counts as unset). owner names where the values come from, for the error
+    message."""
     if location is not None and location not in TRANSCRIPT_LOCATIONS:
         raise Filez4EvaError(
             f"{owner} has invalid transcripts location {location!r}; "
             "use one of: " + ', '.join(TRANSCRIPT_LOCATIONS))
     if root is not None and not isinstance(root, str):
         raise Filez4EvaError(f"{owner} transcripts root must be text")
+    if root is not None and root.strip():
+        absolute_path(owner, 'transcripts root', root)
 
 
 def blank_to_none(value):
@@ -185,11 +189,14 @@ def load_cabinets(config) -> dict:
     pattern = config.get('filez4eva-pattern') or DEFAULT_PATTERN
     location, root = load_top_transcripts(config)
     top_owner = 'Top-level filez4eva'
+    target = config.get('filez4eva-target')
+    # Checked even when cabinets make it unused: config paths are absolute
+    if target:
+        absolute_path(top_owner, 'target', str(target))
     top_fields = check_field_settings(top_owner,
                                       config.get('filez4eva-fields'))
     entries = config.get('filez4eva-cabinets')
     if not entries:
-        target = config.get('filez4eva-target')
         if not target:
             raise Filez4EvaError(
                 "No target configured: set filez4eva target or cabinets")
@@ -217,6 +224,7 @@ def load_cabinets(config) -> dict:
         target = entry.get('target')
         if not isinstance(target, str) or not target.strip():
             raise Filez4EvaError(f"Cabinet {name} must have a target")
+        absolute_path(f"Cabinet {name}", 'target', target)
         description = entry.get('description')
         if description is not None and not isinstance(description, str):
             raise Filez4EvaError(
@@ -244,7 +252,7 @@ def remember_values(app, cabinet: Cabinet, data: dict):
     learned = {field.name: str(data[field.name]) for field in cabinet.fields
                if field.learned and data.get(field.name)}
     try:
-        record_values(cabinet.targetdir.absolute(), learned)
+        record_values(cabinet.targetdir, learned)
     except (OSError, UnicodeDecodeError, yaml.YAMLError,
             ValueError) as error:
         app.ui.send(
@@ -486,10 +494,10 @@ class Stower:
         cabinet = self.resolve_cabinet()
         if cabinet.transcripts_location != 'parallel':
             return transcript_path(targetpath)
-        base = cabinet.transcripts_rootdir.absolute() / cabinet.name
+        base = cabinet.transcripts_rootdir / cabinet.name
         result = base / (str(Path(relative)) + '.md')
         # Checked lexically, like the target, in case of odd cabinet names
-        root = os.path.normpath(cabinet.transcripts_rootdir.absolute())
+        root = os.path.normpath(cabinet.transcripts_rootdir)
         base_norm = os.path.normpath(base)
         dest = os.path.normpath(result)
         if os.path.commonpath([root, base_norm]) != root \
@@ -532,7 +540,7 @@ class Stower:
         if not path.is_file():
             raise Filez4EvaError(f"File {path} must exist")
         self.values = self.field_values()
-        targetdir = self.targetdir.absolute()
+        targetdir = self.targetdir
         # The source file's extension is always kept
         relative = render_pattern(pattern, self.values) + path.suffix
         targetpath = targetdir / relative

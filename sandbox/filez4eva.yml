@@ -1,5 +1,6 @@
 filez4eva:
-  intake: './sandbox/test-intake'
-  target: './sandbox/test-target'
+  # Paths in the configuration must be absolute, so the sandbox intake and
+  # target come from the `play` alias in .swytchitrc.sh (FILEZ4EVA_INTAKE
+  # and FILEZ4EVA_TARGET, under the repository root) rather than from here.
   groupname: 'Account'
   # pattern: '{date.year}/{account}/{date}_{part}'

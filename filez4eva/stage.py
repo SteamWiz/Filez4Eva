@@ -15,8 +15,8 @@ from wizlib.ui.shell_ui import Emphasis
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.command import ingest_command
 from filez4eva.command.ingest_command import (
-    files, in_intake, ingest_file, intake_dir, is_ingested, sidecar_path,
-    top_level_documents, write_sidecar)
+    files, in_intake, ingest_file, intake_dir, intake_path, is_ingested,
+    sidecar_path, top_level_documents, write_sidecar)
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import DATE_FIELD, FIELD_NAME, Field, check_value
 
@@ -402,6 +402,8 @@ class StageCommand(Filez4EvaCommand):
             raise Filez4EvaError(
                 "--ingested names documents already in the intake; it "
                 "can't be combined with a path (new files)")
+        # Check the intake setting before any file is touched
+        intake_path(self.app.config)
         if self.stage != BATCH_STAGE:
             # Imported here: filez4eva.stow imports the transcribe command,
             # which imports this module
