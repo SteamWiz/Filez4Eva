@@ -893,6 +893,17 @@ filez4eva:
   target: '~/Dropbox/accounts' # Target directory for stowed files
 ```
 
+Directory paths in the configuration (the top-level `target`, each
+cabinet's `target`, `intake`, and the `transcripts` `root`, top-level and in
+a cabinet) must be absolute, or start with `~` or `~user`, which is
+expanded first. A relative path, such as `Dropbox/accounts` or
+`./accounts`, is a configuration error naming the key (and the cabinet),
+and the command exits before touching any file or asking anything: every
+command checks `intake`, and `classify`, `review` and `stow` check the
+targets and transcript roots. This holds for every cabinet, not just the
+one being used, and for the top-level `target` even when `cabinets` makes
+it unused.
+
 By default, files are stowed directly under the target, named after their
 date and a title, keeping their extension:
 ```
@@ -914,7 +925,9 @@ filez4eva:
 
 It defaults to `~/.filez4eva/intake`, and is created (with any missing
 parent directories) if it doesn't exist. It can also be set with the
-`FILEZ4EVA_INTAKE` environment variable.
+`FILEZ4EVA_INTAKE` environment variable. Either way it must be an absolute
+path or start with `~`; a relative one is an error, and every command exits
+before the intake is created or any file is moved.
 
 When [`stow`](#stowing-files) stows a document, its sidecar `X.yml` moves to
 `<intake>/archive/`. The stage commands only look at the top level of the
@@ -1264,7 +1277,8 @@ filez4eva:
 ```
 
 Each cabinet has:
-- `target` (required): the directory files are stowed under
+- `target` (required): the directory files are stowed under, an absolute
+  path or one starting with `~`
 - `pattern` (optional): the layout under the target, as described above,
   which also sets the cabinet's fields. Defaults to the top-level `pattern`
   if set, otherwise `'{date}-{title}'`. The set of fields always comes from
@@ -1327,8 +1341,8 @@ If there is no `cabinets` section (or it is empty), the top-level `target`,
 is present, the top-level `target` is ignored.
 
 The whole configuration is checked before any prompt: a cabinet with no
-`target`, or with an invalid pattern, fields or transcripts setting, is an
-error even if it isn't the one being used.
+`target`, a relative `target`, or an invalid pattern, fields or
+transcripts setting, is an error even if it isn't the one being used.
 
 ### Transcript location
 
@@ -1368,8 +1382,9 @@ filez4eva:
         location: adjacent               # transcripts next to the files
 ```
 
-A `location` other than `adjacent` or `parallel`, `parallel` without a
-`root`, or a `transcripts` value (top-level or in a cabinet) that isn't a
+The `root` must be an absolute path or start with `~`. A `location` other
+than `adjacent` or `parallel`, `parallel` without a `root`, a relative
+`root` (even with `location: adjacent`), or a `transcripts` value (top-level or in a cabinet) that isn't a
 mapping is a configuration error, and `classify`, `review` and `stow` exit
 before prompting or touching any file. An error in a top-level setting names the top level rather
 than a cabinet. An empty `transcripts:` block, or an empty `location`, counts
@@ -1486,6 +1501,13 @@ Differences to be aware of:
 - A directory is handled at its top level only: unlike `scan-dir`,
   subdirectories are left alone.
 - The `source:` configuration key is no longer used and can be removed.
+- Directory paths in the configuration must be absolute or start with `~`:
+  the top-level and cabinet `target`, `intake` (and `FILEZ4EVA_INTAKE`) and
+  the `transcripts` `root`. A relative one, which used to be taken from the
+  directory the command ran in, is now a configuration error naming the
+  key. To migrate, write each such path in full, e.g. `target:
+  ~/Dropbox/accounts` rather than `target: Dropbox/accounts`. See
+  [Configuration](#configuration).
 - Status lines on stderr count the files of each stage, e.g.
   `Ingested 1 file | Transcribed 1 file | Stowed 1 file`, instead of
   `stow-file`'s `Done`. The destination path is still printed on stdout.

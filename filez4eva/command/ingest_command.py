@@ -17,6 +17,7 @@ from wizlib.ui.shell_ui import Emphasis
 from filez4eva.atomic import write_atomically
 from filez4eva.command import Filez4EvaCommand
 from filez4eva.error import Filez4EvaError
+from filez4eva.paths import absolute_path
 
 
 # Intake directory used when `filez4eva: intake:` is not configured
@@ -36,15 +37,24 @@ def now() -> datetime:
     return datetime.now().astimezone()
 
 
-def intake_dir(config) -> Path:
-    """Return the intake directory from `filez4eva: intake:` (default
-    ~/.filez4eva/intake), expanded and absolute, creating it if needed.
-    Raises Filez4EvaError if it can't be created."""
+def intake_path(config) -> Path:
+    """Return the intake directory from `filez4eva: intake:` or
+    FILEZ4EVA_INTAKE (default ~/.filez4eva/intake), with ~ expanded,
+    without creating it. Raises Filez4EvaError if it isn't an absolute path
+    (or one starting with ~)."""
     setting = config.get('filez4eva-intake') or DEFAULT_INTAKE
     if not isinstance(setting, str):
         raise Filez4EvaError(
             f"intake must be a directory path, not {setting!r}")
-    path = Path(setting).expanduser().absolute()
+    return absolute_path('filez4eva', 'intake (or FILEZ4EVA_INTAKE)',
+                         setting)
+
+
+def intake_dir(config) -> Path:
+    """Return the intake directory (see intake_path), creating it if
+    needed. Raises Filez4EvaError if the setting is invalid or the
+    directory can't be created."""
+    path = intake_path(config)
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError as error:
@@ -342,6 +352,8 @@ class IngestCommand(Filez4EvaCommand):
         if not self.path:
             raise Filez4EvaError(
                 "ingest needs a path: a file, or a directory")
+        # Check the intake setting before any file is touched
+        intake_path(self.app.config)
         # Flags win over stdin. Stdin is read once, for every file.
         self.source = self.stdin_mapping()
         self.source.update(parse_meta(self.meta))
