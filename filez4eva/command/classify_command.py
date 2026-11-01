@@ -246,7 +246,7 @@ def anthropic_key(config):
 
 
 def read_transcript(transcript: Path) -> str:
-    """Return a transcript's Markdown without its front matter. Raises
+    """Return a transcript's Markdown without its header. Raises
     Filez4EvaError if it can't be read or is empty."""
     try:
         text = transcript_body(transcript.read_text(encoding='utf-8'))
@@ -275,7 +275,7 @@ def read_raw(path: Path) -> str:
 def document_source(path: Path, results: dict) -> tuple:
     """Return (text, raw) for a document: its own text if it is a text
     document (results.transcribe has `raw: true`; any X.md is ignored),
-    otherwise its transcript X.md without front matter"""
+    otherwise its transcript X.md without its header"""
     if is_raw(results):
         return read_raw(path), True
     return read_transcript(recorded_transcript(path, results)), False

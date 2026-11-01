@@ -15,8 +15,9 @@ from wizlib.test_case import WizLibTestCase
 from filez4eva import Filez4EvaApp
 from filez4eva.command.ingest_command import read_sidecar, write_sidecar
 from filez4eva.command.transcribe_command import (
-    DEFAULT_MODEL, TranscribeCommand, format_transcript, read_front_matter,
-    transcribe_file, transcript_body, write_atomically)
+    DEFAULT_MODEL, TranscribeCommand, format_transcript,
+    read_transcript_header, split_header, transcribe_file, transcript_body,
+    write_atomically)
 from filez4eva.error import Filez4EvaError
 from filez4eva.stage import find_ingested, new_files, resolve_path
 from test import plain
@@ -34,10 +35,24 @@ STAMP = '20261025-140307-042'
 
 
 def split_transcript(text):
-    """Return (front matter dict, rest of the file) for a transcript"""
-    assert text.startswith('---\n')
-    end = text.index('\n---\n', 4)
-    return yaml.safe_load(text[4:end]), text[end + 5:]
+    """Return (header dict, rest of the file) for a transcript with a
+    fenced YAML header"""
+    assert text.startswith('```yaml\n')
+    end = text.index('\n```\n', 8)
+    return yaml.safe_load(text[8:end]), text[end + 5:]
+
+
+DISCLAIMER = f'<!-- {TRANSCRIBE_DISCLAIMER} -->'
+
+
+def old_transcript(sha256, model='old-model', body='# Old\n\nBody'):
+    """A transcript in the earlier format, with YAML front matter"""
+    return (f"---\nsource: scan.pdf\nsha256: {sha256}\nmodel: {model}\n"
+            f"transcribed: '2026-10-01T00:00:00+00:00'\n---\n"
+            f"{DISCLAIMER}\n\n{body}\n")
+
+
+YAML_TABLE = '```yaml\n- item: USB hub\n  price: 10\n```'
 
 
 class TestTranscribeFile(WizLibTestCase):
@@ -58,7 +73,7 @@ class TestTranscribeFile(WizLibTestCase):
     def run_file(self, model=DEFAULT_MODEL, api_key=None):
         return transcribe_file(self.source, model, api_key)
 
-    def test_writes_transcript_with_front_matter(self):
+    def test_writes_transcript_with_fenced_header(self):
         with patch(TRANSCRIBE, return_value='# Hello\n\nWorld\n') as t:
             target, status = self.run_file()
         self.assertEqual(target, self.target)
@@ -94,7 +109,7 @@ class TestTranscribeFile(WizLibTestCase):
         self.source.write_bytes(b'x')
         with patch(TRANSCRIBE, return_value='x'):
             target, _ = self.run_file()
-        self.assertEqual(read_front_matter(target)['source'],
+        self.assertEqual(read_transcript_header(target)['source'],
                          self.source.name)
 
     def test_cache_hit_skips_transcription(self):
@@ -121,8 +136,10 @@ class TestTranscribeFile(WizLibTestCase):
         self.assertTrue(rest.endswith('\nsecond\n'))
 
     def test_unparseable_transcript_retranscribes(self):
-        for content in ['no front matter', '---\n: [bad\n---\nx',
-                        '---\nunterminated', '---\n- a list\n---\n', '']:
+        for content in ['no header', '---\n: [bad\n---\nx',
+                        '---\nunterminated', '---\n- a list\n---\n',
+                        '```yaml\n: [bad\n```\nx', '```yaml\nunterminated',
+                        '```yaml\n- a list\n```\n', '']:
             self.target.write_text(content)
             with patch(TRANSCRIBE, return_value='new') as t:
                 self.run_file()
@@ -130,7 +147,7 @@ class TestTranscribeFile(WizLibTestCase):
             self.assertTrue(self.target.read_text().endswith('\nnew\n'))
 
     def test_read_front_matter_missing_file(self):
-        self.assertEqual(read_front_matter(self.dir / 'missing.md'), {})
+        self.assertEqual(read_transcript_header(self.dir / 'missing.md'), {})
 
     def test_kwark_error_raises(self):
         with patch(TRANSCRIBE, side_effect=APIError('boom')), \
@@ -163,6 +180,61 @@ class TestTranscribeFile(WizLibTestCase):
         text = format_transcript('a.pdf', 'abc', 'm', 't', '# Title\n\nBody')
         self.assertEqual(transcript_body(text), '# Title\n\nBody')
         self.assertEqual(transcript_body('plain\ntext\n'), 'plain\ntext')
+
+    def test_writes_fenced_header_exactly(self):
+        text = format_transcript('a.pdf', 'abc', 'm', 't', 'Body')
+        self.assertEqual(text, "```yaml\nsource: a.pdf\nsha256: abc\n"
+                               "model: m\ntranscribed: t\n```\n"
+                               f"{DISCLAIMER}\n\nBody\n")
+
+    def test_old_front_matter_transcript_is_reused(self):
+        self.target.write_text(old_transcript(self.sha))
+        before = self.target.read_text()
+        with patch(TRANSCRIBE) as t:
+            target, status = self.run_file()
+        t.assert_not_called()
+        self.assertEqual(status, 'Unchanged')
+        self.assertEqual(self.target.read_text(), before)
+        self.assertEqual(read_transcript_header(target)['model'],
+                         'old-model')
+
+    def test_old_front_matter_transcript_body(self):
+        self.assertEqual(transcript_body(old_transcript('abc')),
+                         '# Old\n\nBody')
+
+    def test_yaml_table_at_start_of_body_stays_in_body(self):
+        markdown = f'{YAML_TABLE}\n\nTotal: 10'
+        text = format_transcript('a.pdf', 'abc', 'm', 't', markdown)
+        header, _ = split_header(text)
+        self.assertEqual(header['sha256'], 'abc')
+        self.assertEqual(transcript_body(text), markdown)
+        old = old_transcript('abc', body=markdown)
+        self.assertEqual(transcript_body(old), markdown)
+
+    def test_header_only_counts_on_the_first_line(self):
+        late = (f"{DISCLAIMER}\n```yaml\nsource: a.pdf\nsha256: abc\n```\n"
+                "Body\n")
+        self.target.write_text(late)
+        self.assertEqual(read_transcript_header(self.target), {})
+        self.assertEqual(transcript_body(late),
+                         "```yaml\nsource: a.pdf\nsha256: abc\n```\nBody")
+        blank_first = '\n```yaml\nsha256: abc\n```\nBody'
+        self.assertEqual(split_header(blank_first), ({}, blank_first.split(
+            '\n')))
+
+    def test_unterminated_header_keeps_the_body(self):
+        text = '```yaml\nsha256: abc\nBody\n'
+        self.assertEqual(split_header(text), ({}, text.splitlines()))
+        self.assertEqual(transcript_body(text), text.strip('\n'))
+
+    def test_new_transcript_reused_with_header_values(self):
+        with patch(TRANSCRIBE, return_value=f'{YAML_TABLE}\nx'):
+            self.run_file('claude-x')
+        header = read_transcript_header(self.target)
+        self.assertEqual(header['sha256'], self.sha)
+        self.assertEqual(header['model'], 'claude-x')
+        self.assertEqual(transcript_body(self.target.read_text()),
+                         f'{YAML_TABLE}\nx')
 
     def test_write_atomically_cleans_up_on_write_error(self):
         target = self.dir / 'out.md'
@@ -488,6 +560,21 @@ class TestTranscribeCommand(TranscribeTestCase):
         transcribe = read_sidecar(document)['results']['transcribe']
         self.assertEqual(transcribe['model'], 'claude-earlier')
         self.assertEqual(transcribe['length'], len('Cached text'))
+
+    def test_existing_front_matter_transcript_is_reused(self):
+        document = self.make_document(f'{STAMP}.pdf')
+        sha = hashlib.sha256(document.read_bytes()).hexdigest()
+        body = f'{YAML_TABLE}\n\nCached text'
+        Path(f'{document}.md').write_text(
+            old_transcript(sha, 'claude-earlier', body))
+        with patch(TRANSCRIBE) as t:
+            result, command, _ = self.run_command(
+                config={'filez4eva_transcribe_model': 'claude-now'})
+        t.assert_not_called()
+        self.assertEqual(result, f'{document}.md')
+        transcribe = read_sidecar(document)['results']['transcribe']
+        self.assertEqual(transcribe['model'], 'claude-earlier')
+        self.assertEqual(transcribe['length'], len(body))
 
     def test_only_skips_files_not_ingested(self):
         source = self.make('a.pdf')
