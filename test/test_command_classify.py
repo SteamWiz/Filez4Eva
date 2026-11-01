@@ -576,6 +576,24 @@ class TestClassifierInput(ClassifyTestCase):
         self.assertTrue(text.endswith('Transcript:\n\nBody text'))
         self.assertIn(CONTEXT_NOTE, e.call_args.kwargs['instructions'])
 
+    def test_yaml_table_after_header_stays_in_transcript(self):
+        table = '```yaml\n- item: USB hub\n  price: 10\n```\n\nTotal: 10'
+        self.make_document(transcript=table)
+        _, _, _, e, _ = self.run_command()
+        text = e.call_args.args[0]
+        self.assertTrue(text.endswith('Transcript:\n\n' + table))
+        self.assertNotIn('sha256', text)
+
+    def test_front_matter_transcript_body_passed(self):
+        document = self.make_document()
+        Path(f'{document}.md').write_text(
+            "---\nsource: x.pdf\nsha256: abc\nmodel: m\n---\n"
+            f"<!-- {TRANSCRIBE_DISCLAIMER} -->\n\nOld body\n")
+        _, _, _, e, _ = self.run_command()
+        text = e.call_args.args[0]
+        self.assertTrue(text.endswith('Transcript:\n\nOld body'))
+        self.assertNotIn('sha256', text)
+
     def test_name_and_source_from_ingest(self):
         source = self.make('My Receipt.PDF')
         _, _, _, e, _ = self.run_command(source)

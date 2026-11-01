@@ -16,6 +16,12 @@ from filez4eva.stage import StageCommand, record_result
 # Model used when `filez4eva: transcribe: model:` is not configured
 DEFAULT_MODEL = 'claude-opus-4-6'
 
+# The transcript header: a fenced YAML block at the very top of X.md
+HEADER_OPEN = '```yaml'
+HEADER_CLOSE = '```'
+
+# Transcripts written before the fenced header have YAML front matter,
+# opened and closed by this line; they are still read
 FRONT_MATTER_DELIMITER = '---'
 
 CHUNK_SIZE = 1024 * 1024
@@ -100,51 +106,65 @@ def recorded_transcript(path: Path, results: dict) -> Path:
     return target
 
 
-def read_front_matter(path: Path) -> dict:
-    """Return the YAML front matter of a Markdown file as a dict, or an empty
-    dict if the file is missing, unreadable, has no front matter, or the front
-    matter isn't a valid YAML mapping"""
+def split_header(text: str) -> tuple:
+    """Return (header, rest) for a transcript: the header as a dict and the
+    lines after it. The header is a fenced YAML block (```yaml ... ```) or,
+    for older transcripts, YAML front matter (--- ... ---), and only counts
+    if it opens on the very first line, so a YAML block later in the body
+    is never taken for it. With no header, or one that is never closed,
+    return ({}, every line). A closed header that isn't a valid YAML
+    mapping still ends at its closing line, with an empty dict."""
+    lines = text.splitlines()
+    if not lines:
+        return {}, lines
+    first = lines[0].strip()
+    if first == HEADER_OPEN:
+        close = HEADER_CLOSE
+    elif first == FRONT_MATTER_DELIMITER:
+        close = FRONT_MATTER_DELIMITER
+    else:
+        return {}, lines
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == close:
+            try:
+                data = yaml.safe_load('\n'.join(lines[1:index]))
+            except yaml.YAMLError:
+                data = None
+            return (data if isinstance(data, dict) else {},
+                    lines[index + 1:])
+    return {}, lines
+
+
+def read_transcript_header(path: Path) -> dict:
+    """Return the header of a transcript file as a dict (see split_header),
+    or an empty dict if the file is missing, unreadable, has no header, or
+    the header isn't a valid YAML mapping"""
     try:
         text = path.read_text(encoding='utf-8')
     except (OSError, UnicodeDecodeError):
         return {}
-    lines = text.splitlines()
-    if not lines or lines[0].rstrip() != FRONT_MATTER_DELIMITER:
-        return {}
-    for index, line in enumerate(lines[1:], start=1):
-        if line.rstrip() == FRONT_MATTER_DELIMITER:
-            try:
-                data = yaml.safe_load('\n'.join(lines[1:index]))
-            except yaml.YAMLError:
-                return {}
-            return data if isinstance(data, dict) else {}
-    return {}
+    return split_header(text)[0]
 
 
 def format_transcript(source: str, sha256: str, model: str,
                       transcribed: str, markdown: str) -> str:
-    """Return the transcript file content: front matter, disclaimer comment,
-    a blank line, then the Markdown with a trailing newline"""
-    front_matter = yaml.safe_dump(
+    """Return the transcript file content: the header as a fenced YAML
+    block, the disclaimer comment, a blank line, then the Markdown with a
+    trailing newline"""
+    header = yaml.safe_dump(
         {'source': source, 'sha256': sha256, 'model': model,
          'transcribed': transcribed},
         sort_keys=False, allow_unicode=True, default_flow_style=False)
     body = markdown.strip('\n')
-    return (f"{FRONT_MATTER_DELIMITER}\n{front_matter}"
-            f"{FRONT_MATTER_DELIMITER}\n"
+    return (f"{HEADER_OPEN}\n{header}{HEADER_CLOSE}\n"
             f"<!-- {TRANSCRIBE_DISCLAIMER} -->\n\n"
             f"{body}\n")
 
 
 def transcript_body(text: str) -> str:
-    """Return a transcript's Markdown without its front matter and AI
-    disclaimer comment"""
-    lines = text.splitlines()
-    if lines and lines[0].rstrip() == FRONT_MATTER_DELIMITER:
-        for index, line in enumerate(lines[1:], start=1):
-            if line.rstrip() == FRONT_MATTER_DELIMITER:
-                lines = lines[index + 1:]
-                break
+    """Return a transcript's Markdown without its header (fenced YAML block
+    or older front matter) and AI disclaimer comment"""
+    _, lines = split_header(text)
     if lines and lines[0].strip() == f'<!-- {TRANSCRIBE_DISCLAIMER} -->':
         lines = lines[1:]
     return '\n'.join(lines).strip('\n')
@@ -169,7 +189,7 @@ def transcribe_file(path: Path, model: str, api_key=None) -> tuple:
     sha256 = file_sha256(path)
     target = transcript_path(path)
     if target.is_file():
-        cached = read_front_matter(target).get('sha256')
+        cached = read_transcript_header(target).get('sha256')
         if cached is not None and str(cached) == sha256:
             return target, 'Unchanged'
     try:
@@ -247,7 +267,7 @@ class TranscribeCommand(StageCommand):
         except (OSError, UnicodeDecodeError) as err:
             raise Filez4EvaError(
                 f"Could not read transcript {target}: {err}") from err
-        model = read_front_matter(target).get('model') or self.model
+        model = read_transcript_header(target).get('model') or self.model
         record_result(path, self.stage, {
             'at': at.isoformat(timespec='seconds'),
             'model': str(model),
