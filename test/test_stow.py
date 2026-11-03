@@ -6,15 +6,22 @@ from unittest.mock import Mock, patch
 
 import yaml
 
+"""Tests for Stower and the cabinets in filez4eva/stow.py: reading a
+record from --field flags, stdin and prompts, patterns, fields, learned
+values, cabinets and transcripts. The stow command itself is tested in
+test_command_stow_stage.py."""
+
 from filez4eva import Filez4EvaApp
-from filez4eva.command.stow_file_command import Cabinet, StowFileCommand
+from filez4eva.command.stow_command import StowCommand
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import (
     MAX_SUGGESTIONS, Field, load_store, normalize_value, record_values,
     suggestions, values_path)
+from filez4eva.stow import Cabinet, Stower, remember_values
 
-from kwark.ai import APIError
+from wizlib.command import CommandCancellation
 from wizlib.config_handler import ConfigHandler
+from wizlib.parser import WizParser
 from wizlib.test_case import WizLibTestCase
 
 
@@ -30,13 +37,39 @@ def write_store(target, store):
     path.write_text(yaml.safe_dump(store))
 
 
+def execute(stower: Stower):
+    """Read the values (flags, stdin, then prompts) and stow, as the stow
+    command does with input data; return the destination as text, or None
+    if a prompt was cancelled"""
+    try:
+        stower.read_values()
+        return str(stower.stow())
+    except CommandCancellation:
+        return None
+
+
+def start_stower(config: str, file: str, *args):
+    """Run execute for file with an app set up from a configuration file
+    (so nested blocks are flattened as in real use) and the stow command's
+    --cabinet, --date and --field options in args; print the
+    destination"""
+    parser = WizParser()
+    StowCommand.add_args(parser)
+    vals = parser.parse_args([file, *args])
+    app = Filez4EvaApp(config=config)
+    result = execute(Stower(app, file=vals.path, cabinet=vals.cabinet,
+                            date=vals.date, field=vals.field))
+    if result:
+        print(result)
+
+
 def files(dir):
     """Files under dir (relative), ignoring the learned values store"""
     return sorted(str(p.relative_to(dir)) for p in Path(dir).rglob('*')
                   if p.is_file() and '.filez4eva' not in p.parts)
 
 
-class TestStowCommand(WizLibTestCase):
+class TestStower(WizLibTestCase):
     """With the default pattern, '{date}-{title}'"""
 
     def test_file(self):
@@ -46,10 +79,10 @@ class TestStowCommand(WizLibTestCase):
             n.write_text('a')
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(filez4eva_target=target)
-            c = StowFileCommand(a, file=str(n), date='20240213',
-                                data={'title': 't'})
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'title': 't'})
             with self.patchout():
-                c.execute()
+                execute(c)
             self.assertEqual((Path(target) / '20240213-t.txt').read_text(),
                              'a')
 
@@ -60,29 +93,42 @@ class TestStowCommand(WizLibTestCase):
             n.write_text('a')
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(filez4eva_target=target)
-            c = StowFileCommand(a, file=str(n), date='20240213',
-                                data={'title': 't'})
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'title': 't'})
             with self.patchout():
-                r = c.execute()
+                r = execute(c)
             expected = Path(target) / '20240213-t.txt'
             self.assertTrue(Path(r).is_absolute())
             self.assertEqual(Path(r), expected)
             self.assertTrue(Path(r).is_file())
 
-    def test_returns_absolute_path_for_relative_target(self):
-        with TemporaryDirectory() as source, \
-                TemporaryDirectory() as cwd, \
-                patch('os.getcwd', return_value=cwd):
+    def test_relative_target_rejected(self):
+        with TemporaryDirectory() as source:
             n = Path(source) / 'b.txt'
             n.write_text('a')
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(filez4eva_target='.')
-            c = StowFileCommand(a, file=str(n), date='20240213',
-                                data={'title': 't'})
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'title': 't'})
+            with self.patchout(), \
+                    self.assertRaisesRegex(Filez4EvaError,
+                                           'target must be an absolute'):
+                execute(c)
+            self.assertTrue(n.is_file())
+
+    def test_returns_absolute_path_for_home_target(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as home, \
+                patch.dict('os.environ', {'HOME': home}):
+            n = Path(source) / 'b.txt'
+            n.write_text('a')
+            a = Filez4EvaApp()
+            a.config = ConfigHandler.fake(filez4eva_target='~/files')
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'title': 't'})
             with self.patchout():
-                r = c.execute()
-            self.assertTrue(Path(r).is_absolute())
-            self.assertEqual(Path(r), Path(cwd) / '20240213-t.txt')
+                r = execute(c)
+            self.assertEqual(Path(r), Path(home) / 'files/20240213-t.txt')
             self.assertTrue(Path(r).is_file())
 
     def test_error_if_no_source(self):
@@ -90,12 +136,11 @@ class TestStowCommand(WizLibTestCase):
                 TemporaryDirectory() as target:
             n = Path(source) / 'b.txt'
             a = Filez4EvaApp()
-            a.config = ConfigHandler.fake(filez4eva_source=source,
-                                          filez4eva_target=target)
-            c = StowFileCommand(a, file=str(n), date='20240213',
-                                data={'title': 't'})
+            a.config = ConfigHandler.fake(filez4eva_target=target)
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'title': 't'})
             with self.patchout(), self.assertRaises(Filez4EvaError):
-                c.execute()
+                execute(c)
 
     def test_error_if_file_already_exists(self):
         with TemporaryDirectory() as source, \
@@ -104,17 +149,16 @@ class TestStowCommand(WizLibTestCase):
             n.write_text('a')
             (Path(target) / '20240213-t.txt').write_text('-')
             a = Filez4EvaApp()
-            a.config = ConfigHandler.fake(filez4eva_source=source,
-                                          filez4eva_target=target)
-            c = StowFileCommand(a, file=str(n), date='20240213',
-                                data={'title': 't'})
+            a.config = ConfigHandler.fake(filez4eva_target=target)
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'title': 't'})
             with patch('sys.stdout', StringIO()), \
                     self.assertRaises(Filez4EvaError):
-                c.execute()
+                execute(c)
             self.assertEqual(n.read_text(), 'a')
 
     def run_app(self, *args, ttyin='', config=''):
-        """Run stow-file via the app on a new b.txt; return (files under
+        """Run start_stower on a new b.txt; return (files under
         target, stdout, stderr)"""
         with TemporaryDirectory() as target, \
                 TemporaryDirectory() as sd, \
@@ -126,8 +170,8 @@ class TestStowCommand(WizLibTestCase):
             with NamedTemporaryFile('w+') as cf:
                 cf.write(f"filez4eva:\n  target: {target}\n" + config)
                 cf.seek(0)
-                Filez4EvaApp.start('--config', cf.name, 'stow-file', str(sp),
-                                   *args, debug=True)
+                start_stower(cf.name, str(sp),
+                             *args)
             o.seek(0)
             e.seek(0)
             return files(target), o.read(), e.read()
@@ -155,29 +199,6 @@ class TestStowCommand(WizLibTestCase):
                                       ttyin='20240299\n20240317\n')
         self.assertEqual(result, ['20240317-t.txt'])
         self.assertIn('format', err)
-
-    def test_output(self):
-        _, _, err = self.run_app('-d', '20240213', '-f', 'title=t')
-        self.assertEqual(err, 'Done\n')
-
-    def test_stdout_is_destination_path(self):
-        with TemporaryDirectory() as target, \
-                TemporaryDirectory() as sd, \
-                patch('sys.stderr', StringIO()), \
-                patch('sys.stdout', o := StringIO()):
-            sp = Path(sd) / 'b.txt'
-            sp.write_text('a')
-            with NamedTemporaryFile('w+') as cf:
-                cf.write(f"filez4eva:\n  target: {target}\n")
-                cf.seek(0)
-                Filez4EvaApp.start('--config', cf.name, 'stow-file', str(sp),
-                                   '--date', '20240213', '--field', 'title=t',
-                                   debug=True)
-            printed = Path(o.getvalue().strip())
-            actual = Path(target) / '20240213-t.txt'
-            self.assertTrue(printed.is_absolute())
-            self.assertTrue(actual.is_file())
-            self.assertEqual(printed.resolve(), actual.resolve())
 
     # Field values are normalized to hyphen-separated-lower
 
@@ -258,7 +279,7 @@ class TestStowCommand(WizLibTestCase):
             n.write_text('a')
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(filez4eva_target=source)
-            return StowFileCommand(a, file=str(n), **vals).plan()
+            return Stower(a, file=str(n), **vals).plan()
 
     def test_plan_missing_value_raises(self):
         with self.assertRaises(Filez4EvaError) as cm:
@@ -290,12 +311,12 @@ class TestNormalize(WizLibTestCase):
                 self.assertEqual(normalize_value(value), expected)
 
 
-class TestStowFileStdin(WizLibTestCase):
-    """stow-file reads the cabinet, and the fields under `data:`, from a
+class TestStowStdin(WizLibTestCase):
+    """Stower reads the cabinet, and the fields under `data:`, from a
     YAML mapping on stdin"""
 
     def stow(self, stdin, *args, ttyin='', config=''):
-        """Run stow-file via the app with the given stdin text and typed
+        """Run start_stower with the given stdin text and typed
         input; return (destination files under target, stderr text, ttyin
         mock)"""
         with \
@@ -310,8 +331,8 @@ class TestStowFileStdin(WizLibTestCase):
             with NamedTemporaryFile('w+') as cf:
                 cf.write(f"filez4eva:\n  target: {targetd}\n" + config)
                 cf.seek(0)
-                Filez4EvaApp.start('--config', cf.name, 'stow-file',
-                                   str(sourcep), *args, debug=True)
+                start_stower(cf.name,
+                             str(sourcep), *args)
             e.seek(0)
             return files(targetd), e.read(), t
 
@@ -400,10 +421,10 @@ class TestStowFileStdin(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(filez4eva_target=target)
             del a.stream
-            c = StowFileCommand(a, file=str(n), date='20240213',
-                                data={'title': 't'})
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'title': 't'})
             with self.patchout():
-                c.execute()
+                execute(c)
             self.assertTrue((Path(target) / '20240213-t.txt').is_file())
 
     # YAML 1.1 scalars must stay as typed (no octal, booleans, etc.)
@@ -454,28 +475,9 @@ class TestStowFileStdin(WizLibTestCase):
         self.assertEqual(result, ['20240213-t.txt'])
 
 
-class TestScanDirIgnoresStdin(WizLibTestCase):
-
-    def test_scan_dir_stow_does_not_use_stdin(self):
-        from filez4eva.command.scan_dir_command import ScanDirCommand
-        with TemporaryDirectory() as source, \
-                TemporaryDirectory() as target:
-            (Path(source) / 'b.txt').write_text('a')
-            a = Filez4EvaApp()
-            a.config = ConfigHandler.fake(filez4eva_target=target)
-            a.stream = Mock(text=record(date='20240213', title='t'))
-            c = ScanDirCommand(a, dir=source)
-            with patch('filez4eva.command.scan_dir_command.StowFileCommand')\
-                    as s, \
-                    patch.object(a.ui, 'get_option', return_value='stow'), \
-                    patch.object(a.ui, 'send'), \
-                    patch('filez4eva.command.transcribe_command.transcribe',
-                          side_effect=APIError('offline')):
-                c.execute()
-            # The AI step fails, so stow-file prompts as before (for the
-            # only cabinet), without reading stdin
-            s.assert_called_once_with(a, file=str(Path(source) / 'b.txt'),
-                                      use_stdin=False, cabinet='default')
+class TestUseStdin(WizLibTestCase):
+    """Values never come from stdin with use_stdin False (e.g. when
+    stowing a reviewed document)"""
 
     def test_use_stdin_false_skips_record(self):
         with TemporaryDirectory() as source, \
@@ -485,16 +487,16 @@ class TestScanDirIgnoresStdin(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(filez4eva_target=target)
             a.stream = Mock(text=record(date='20230101', title='u'))
-            c = StowFileCommand(a, file=str(n), date='20240213',
-                                data={'title': 't'}, use_stdin=False)
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'title': 't'}, use_stdin=False)
             c.apply_stdin_record = Mock()
             with self.patchout():
-                c.execute()
+                execute(c)
             c.apply_stdin_record.assert_not_called()
             self.assertTrue((Path(target) / '20240213-t.txt').is_file())
 
 
-class TestStowFilePattern(WizLibTestCase):
+class TestStowPattern(WizLibTestCase):
     """The destination layout, and the fields, come from the pattern"""
 
     CUSTOM = '{account}/{date.year}/{part}-{date}'
@@ -506,9 +508,9 @@ class TestStowFilePattern(WizLibTestCase):
         a = Filez4EvaApp()
         a.config = ConfigHandler.fake(filez4eva_target=target,
                                       filez4eva_pattern=pattern)
-        c = StowFileCommand(a, file=str(n), date='20240213', data=data)
+        c = Stower(a, file=str(n), date='20240213', data=data)
         with self.patchout():
-            return n, c.execute()
+            return n, execute(c)
 
     def assert_rejected(self, pattern, message=None):
         with TemporaryDirectory() as source, \
@@ -585,7 +587,7 @@ class TestStowFilePattern(WizLibTestCase):
         a = Filez4EvaApp()
         a.config = ConfigHandler.fake(filez4eva_target='/x',
                                       filez4eva_pattern=self.CUSTOM)
-        cabinet = StowFileCommand(a).resolve_cabinet()
+        cabinet = Stower(a).resolve_cabinet()
         # {date.year} places date before part
         self.assertEqual([f.name for f in cabinet.fields],
                          ['account', 'date', 'part'])
@@ -595,7 +597,7 @@ class TestStowFilePattern(WizLibTestCase):
         a.config = ConfigHandler.fake(
             filez4eva_target='/x',
             filez4eva_pattern='{date.year}/{account}/{date}_{part}')
-        cabinet = StowFileCommand(a).resolve_cabinet()
+        cabinet = Stower(a).resolve_cabinet()
         self.assertEqual([f.name for f in cabinet.fields],
                          ['date', 'account', 'part'])
 
@@ -610,9 +612,9 @@ class TestStowFilePattern(WizLibTestCase):
                 cf.write(f"filez4eva:\n  target: {target}\n"
                          f"  pattern: '{self.CUSTOM}'\n")
                 cf.seek(0)
-                Filez4EvaApp.start('--config', cf.name, 'stow-file', str(sp),
-                                   '--date', '20240213', '-f', 'account=j',
-                                   '-f', 'part=t', debug=True)
+                start_stower(cf.name, str(sp),
+                             '--date', '20240213', '-f', 'account=j',
+                             '-f', 'part=t')
             actual = Path(target) / 'j/2024/t-20240213.txt'
             self.assertEqual(actual.read_text(), 'a')
             self.assertEqual(Path(o.getvalue().strip()), actual)
@@ -682,22 +684,22 @@ class TestStowFilePattern(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(filez4eva_target=target,
                                           filez4eva_pattern='{foo}')
-            c = StowFileCommand(a, file=str(sp))
-            with patch.object(StowFileCommand, 'prompt_value') as pv, \
+            c = Stower(a, file=str(sp))
+            with patch.object(Stower, 'prompt_value') as pv, \
                     self.assertRaises(Filez4EvaError):
-                c.execute()
+                execute(c)
             pv.assert_not_called()
             self.assertTrue(sp.is_file())
 
     def test_destination_outside_target_rejected(self):
         # Defence in depth: even if the pattern check were bypassed, the
         # formatted destination must stay inside the target
-        with patch('filez4eva.command.stow_file_command.check_pattern',
+        with patch('filez4eva.stow.check_pattern',
                    return_value=['date', 'account', 'part']):
             self.assert_rejected('../{date}{account}{part}', 'outside')
 
     def test_pattern_naming_target_rejected(self):
-        with patch('filez4eva.command.stow_file_command.check_pattern',
+        with patch('filez4eva.stow.check_pattern',
                    return_value=['date', 'account', 'part']), \
                 TemporaryDirectory() as source:
             n = Path(source) / 'b'
@@ -705,20 +707,20 @@ class TestStowFilePattern(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(filez4eva_target=source,
                                           filez4eva_pattern='.')
-            c = StowFileCommand(a, file=str(n), date='20240213',
-                                data={'account': 'j', 'part': 't'})
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'account': 'j', 'part': 't'})
             with self.assertRaises(Filez4EvaError) as cm:
                 c.plan()
             self.assertIn('outside', str(cm.exception))
 
 
-class TestStowFileFields(WizLibTestCase):
+class TestStowFields(WizLibTestCase):
     """Field settings (guidance and values) from `fields:`"""
 
     def cabinets(self, **config):
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(**config)
-        return StowFileCommand(app).cabinets
+        return Stower(app).cabinets
 
     def test_defaults(self):
         cabinet = self.cabinets(filez4eva_target='/x')['default']
@@ -807,10 +809,10 @@ class TestStowFileFields(WizLibTestCase):
             n.write_text('a')
             app = Filez4EvaApp()
             app.config = ConfigHandler.fake(**config)
-            c = StowFileCommand(app, file=str(n), use_stdin=False)
+            c = Stower(app, file=str(n), use_stdin=False)
             with patch.object(app.ui, 'get_text') as gt, \
                     self.assertRaises(Filez4EvaError) as cm:
-                c.execute()
+                execute(c)
             gt.assert_not_called()
             self.assertTrue(n.is_file())
             self.assertIn(message, str(cm.exception))
@@ -897,7 +899,7 @@ class TestStowFileFields(WizLibTestCase):
             filez4eva_cabinets={'a': {'target': '/a', 'fields': 'title'}})
 
 
-class TestStowFileValues(WizLibTestCase):
+class TestStowValues(WizLibTestCase):
     """Learned values are recorded in <target>/.filez4eva/values.yaml and
     offered for tab completion once common"""
 
@@ -925,58 +927,66 @@ class TestStowFileValues(WizLibTestCase):
     def stow(self, app=None, name='b.txt', **data):
         n = self.source / name
         n.write_text('a')
-        c = StowFileCommand(app or self.app(), file=str(n), date='20240213',
-                            data=data, use_stdin=False)
+        c = Stower(app or self.app(), file=str(n), date='20240213',
+                   data=data, use_stdin=False)
         with self.patchout(), self.patcherr() as e:
-            r = c.execute()
+            r = execute(c)
             e.seek(0)
             return r, e.read()
+
+    def remember(self, app=None, **data):
+        """Record a reviewed record's values (as review does); return what
+        was sent to stderr"""
+        app = app or self.app()
+        cabinet = Stower(app).resolve_cabinet()
+        with self.patchout(), self.patcherr() as e:
+            remember_values(app, cabinet, dict(data, date='20240213'))
+            e.seek(0)
+            return e.read()
 
     def store(self):
         return yaml.safe_load(values_path(self.target).read_text())
 
-    def test_recorded_on_stow(self):
-        self.stow(account='amazon', title='receipt')
+    def test_recorded(self):
+        self.remember(account='amazon', title='receipt')
         self.assertEqual(self.store(), {'account': {'amazon': {
             'count': 1, 'last_used': date.today().isoformat()}}})
 
     def test_count_increments(self):
-        self.stow(name='a.txt', account='amazon', title='one')
-        self.stow(name='b.txt', account='amazon', title='two')
-        self.stow(name='c.txt', account='bank', title='three')
+        self.remember(account='amazon', title='one')
+        self.remember(account='amazon', title='two')
+        self.remember(account='bank', title='three')
         store = self.store()
         self.assertEqual(store['account']['amazon']['count'], 2)
         self.assertEqual(store['account']['bank']['count'], 1)
         self.assertNotIn('title', store)
 
-    def test_normalized_value_recorded(self):
-        self.stow(account='Royal Bank', title='x')
-        self.assertIn('royal-bank', self.store()['account'])
-
     def test_title_learned_when_configured(self):
         app = self.app(filez4eva_target=str(self.target),
                        filez4eva_fields={'title': {'values': 'learned'}})
-        self.stow(app, title='receipt')
+        self.remember(app, title='receipt')
         self.assertEqual(list(self.store()), ['title'])
 
     def test_nothing_recorded_without_learned_fields(self):
         app = self.app(filez4eva_target=str(self.target))
-        self.stow(app, title='receipt')
+        self.remember(app, title='receipt')
         self.assertFalse(values_path(self.target).exists())
 
-    def test_not_recorded_when_stow_fails(self):
-        existing = self.target / 'amazon/20240213-x.txt'
-        existing.parent.mkdir(parents=True)
-        existing.write_text('-')
-        with self.assertRaises(Filez4EvaError):
-            self.stow(account='amazon', title='x')
+    def test_not_recorded_by_stow(self):
+        r, _ = self.stow(account='amazon', title='x')
+        self.assertTrue(Path(r).is_file())
         self.assertFalse(values_path(self.target).exists())
+
+    def test_stow_leaves_counts_alone(self):
+        write_store(self.target, {'account': {'amazon': {'count': 4}}})
+        self.stow(account='amazon', title='x')
+        self.assertEqual(self.store(), {'account': {'amazon': {'count': 4}}})
 
     def test_not_recorded_by_plan(self):
         n = self.source / 'b.txt'
         n.write_text('a')
-        StowFileCommand(self.app(), file=str(n), date='20240213',
-                        data={'account': 'amazon', 'title': 'x'}).plan()
+        Stower(self.app(), file=str(n), date='20240213',
+               data={'account': 'amazon', 'title': 'x'}).plan()
         self.assertFalse(values_path(self.target).exists())
 
     def test_existing_entries_kept(self):
@@ -985,8 +995,8 @@ class TestStowFileValues(WizLibTestCase):
                                    'note': 'kept'},
                         'odd': {'count': 'x'}},
             'other': 'junk'})
-        self.stow(account='amazon', title='x')
-        self.stow(name='c.txt', account='odd', title='y')
+        self.remember(account='amazon', title='x')
+        self.remember(account='odd', title='y')
         store = self.store()
         self.assertEqual(store['account']['amazon'],
                          {'count': 5, 'last_used': date.today().isoformat(),
@@ -996,7 +1006,7 @@ class TestStowFileValues(WizLibTestCase):
 
     def test_junk_field_entry_replaced(self):
         write_store(self.target, {'account': 'junk'})
-        self.stow(account='amazon', title='x')
+        self.remember(account='amazon', title='x')
         self.assertEqual(self.store()['account']['amazon']['count'], 1)
 
     def test_hand_edited_non_string_keys(self):
@@ -1004,28 +1014,25 @@ class TestStowFileValues(WizLibTestCase):
         path.parent.mkdir(parents=True)
         path.write_text('account:\n  0123:\n    count: 5\n  yes:\n'
                         '    count: 3\n')
-        self.stow(account='amazon', title='x')
+        self.remember(account='amazon', title='x')
         self.assertIn('amazon', self.store()['account'])
 
     def test_malformed_store_reported_and_kept(self):
         path = values_path(self.target)
         path.parent.mkdir(parents=True)
         path.write_text('account: [unclosed\n')
-        r, err = self.stow(account='amazon', title='x')
-        self.assertTrue(Path(r).is_file())
+        err = self.remember(account='amazon', title='x')
         self.assertIn(f'Could not record values in {path}', err)
         self.assertEqual(path.read_text(), 'account: [unclosed\n')
 
     def test_non_mapping_store_reported(self):
         write_store(self.target, ['a'])
-        r, err = self.stow(account='amazon', title='x')
-        self.assertTrue(Path(r).is_file())
+        err = self.remember(account='amazon', title='x')
         self.assertIn('must be a mapping', err)
 
     def test_write_failure_cleans_up(self):
         with patch('os.replace', side_effect=OSError('disk full')):
-            r, err = self.stow(account='amazon', title='x')
-        self.assertTrue(Path(r).is_file())
+            err = self.remember(account='amazon', title='x')
         self.assertIn('disk full', err)
         self.assertEqual(list(values_path(self.target).parent.iterdir()),
                          [])
@@ -1073,7 +1080,7 @@ class TestStowFileValues(WizLibTestCase):
         write_store(self.target, {
             'account': {'amazon': {'count': 2}, 'bank': {'count': 1}},
             'title': {'receipt': {'count': 5}}})
-        c = StowFileCommand(self.app())
+        c = Stower(self.app())
         cabinet = c.resolve_cabinet()
         self.assertEqual(c.choices(cabinet.field('account')), ['amazon'])
         # title isn't learned by default
@@ -1081,7 +1088,7 @@ class TestStowFileValues(WizLibTestCase):
         self.assertEqual(c.choices(cabinet.field('date')), [])
 
     def test_choices_empty_for_missing_target(self):
-        c = StowFileCommand(self.app())
+        c = Stower(self.app())
         cabinet = c.resolve_cabinet()
         self.assertEqual(c.choices(cabinet.field('account')), [])
 
@@ -1094,33 +1101,34 @@ class TestStowFileValues(WizLibTestCase):
             'accounts': {'target': str(a)}, 'memories': {'target': str(b)}})
         n = self.source / 'b.txt'
         n.write_text('a')
-        c = StowFileCommand(app, file=str(n), date='20240213',
-                            use_stdin=False)
+        c = Stower(app, file=str(n), date='20240213',
+                   use_stdin=False)
         answers = iter(['memories', 'trip', 'photo'])
         with patch.object(app.ui, 'get_text',
                           side_effect=lambda *x: next(answers)) as gt, \
                 self.patchout():
-            c.execute()
+            execute(c)
         self.assertEqual([call.args for call in gt.call_args_list], [
             ('Cabinet: ', ['accounts', 'memories']),
             ('Account: ', ['trip']),
             ('Title: ', [])])
         self.assertTrue((b / 'trip/20240213-photo.txt').is_file())
-        self.assertEqual(self.store_at(b)['account']['trip']['count'], 3)
+        # Stowing records nothing (values are recorded at review)
+        self.assertEqual(self.store_at(b)['account']['trip']['count'], 2)
 
     @staticmethod
     def store_at(target):
         return yaml.safe_load(values_path(target).read_text())
 
 
-class TestStowFileCabinets(WizLibTestCase):
+class TestStowCabinets(WizLibTestCase):
     """Multiple named destinations from the `filez4eva: cabinets:` key"""
 
     CUSTOM = '{account}/{date.year}/{part}-{date}'
     STDIN = record(date='20240213', title='t')
 
     def run_app(self, config, *args, stdin='', ttyin=''):
-        """Run stow-file via the app with a YAML config body (indented under
+        """Run start_stower with a YAML config body (indented under
         `filez4eva:`); return (stderr text, ttyin mock)"""
         with \
                 TemporaryDirectory() as sourced, \
@@ -1133,8 +1141,8 @@ class TestStowFileCabinets(WizLibTestCase):
             with NamedTemporaryFile('w+') as cf:
                 cf.write('filez4eva:\n' + config)
                 cf.seek(0)
-                Filez4EvaApp.start('--config', cf.name, 'stow-file',
-                                   str(sourcep), *args, debug=True)
+                start_stower(cf.name,
+                             str(sourcep), *args)
             e.seek(0)
             return e.read(), t
 
@@ -1168,7 +1176,7 @@ class TestStowFileCabinets(WizLibTestCase):
         a = Filez4EvaApp()
         a.config = ConfigHandler.fake(filez4eva_target='/x',
                                       filez4eva_pattern=self.CUSTOM)
-        c = StowFileCommand(a)
+        c = Stower(a)
         cabinet = c.resolve_cabinet()
         self.assertEqual(list(c.cabinets), ['default'])
         self.assertEqual(cabinet.name, 'default')
@@ -1183,7 +1191,7 @@ class TestStowFileCabinets(WizLibTestCase):
 
     def test_no_target_raises(self):
         with self.assertRaises(Filez4EvaError):
-            self.run_app("  source: /tmp\n", stdin=self.STDIN)
+            self.run_app("  pattern: '{date}-{title}'\n", stdin=self.STDIN)
 
     def test_empty_cabinets_uses_target(self):
         with TemporaryDirectory() as target:
@@ -1212,10 +1220,10 @@ class TestStowFileCabinets(WizLibTestCase):
             a = Filez4EvaApp()
             a.config = ConfigHandler.fake(
                 filez4eva_cabinets={'only': {'target': target}})
-            c = StowFileCommand(a, file=str(n), date='20240213',
-                                data={'title': 't'}, use_stdin=False)
+            c = Stower(a, file=str(n), date='20240213',
+                       data={'title': 't'}, use_stdin=False)
             with self.patchout():
-                r = c.execute()
+                r = execute(c)
             self.assertEqual(Path(r), Path(target) / '20240213-t.txt')
 
     # Several cabinets: flag, stdin or prompt
@@ -1263,11 +1271,11 @@ class TestStowFileCabinets(WizLibTestCase):
             app = Filez4EvaApp()
             app.config = ConfigHandler.fake(filez4eva_cabinets={
                 'zeta': {'target': a}, 'alpha': {'target': b}})
-            c = StowFileCommand(app, file=str(n), date='20240213',
-                                data={'title': 't'}, use_stdin=False)
+            c = Stower(app, file=str(n), date='20240213',
+                       data={'title': 't'}, use_stdin=False)
             with patch.object(app.ui, 'get_text', return_value='zeta') as gt, \
                     self.patchout():
-                r = c.execute()
+                r = execute(c)
             gt.assert_called_once_with('Cabinet: ', ['alpha', 'zeta'])
             self.assertEqual(Path(r), Path(a) / '20240213-t.txt')
 
@@ -1369,7 +1377,7 @@ class TestStowFileCabinets(WizLibTestCase):
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(
             filez4eva_cabinets={'x': {'target': '/x', 'pattern': ''}})
-        c = StowFileCommand(app)
+        c = Stower(app)
         self.assertEqual(c.pattern, '{date}-{title}')
 
     def test_description_kept(self):
@@ -1377,7 +1385,7 @@ class TestStowFileCabinets(WizLibTestCase):
         app.config = ConfigHandler.fake(filez4eva_cabinets={
             'x': {'target': '~/x', 'description': 'Things'},
             'y': {'target': '/y'}})
-        c = StowFileCommand(app)
+        c = Stower(app)
         self.assertEqual(c.cabinets['x'].description, 'Things')
         self.assertIsNone(c.cabinets['y'].description)
         self.assertEqual(c.cabinets['x'].targetdir,
@@ -1391,11 +1399,11 @@ class TestStowFileCabinets(WizLibTestCase):
             n.write_text('a')
             app = Filez4EvaApp()
             app.config = ConfigHandler.fake(filez4eva_cabinets=cabinets)
-            c = StowFileCommand(app, file=str(n), use_stdin=False)
-            with patch.object(StowFileCommand, 'prompt_value') as pv, \
+            c = Stower(app, file=str(n), use_stdin=False)
+            with patch.object(Stower, 'prompt_value') as pv, \
                     patch.object(app.ui, 'get_text') as gt, \
                     self.assertRaises(Filez4EvaError) as cm:
-                c.execute()
+                execute(c)
             pv.assert_not_called()
             gt.assert_not_called()
             self.assertTrue(n.is_file())
@@ -1429,7 +1437,7 @@ class TestStowFileCabinets(WizLibTestCase):
              'b': {'target': '/b', 'pattern': '{Foo}/{date}'}}, '{Foo}')
 
 
-class TestStowFileTranscript(WizLibTestCase):
+class TestStowTranscript(WizLibTestCase):
     """A transcript (FILE.md) is moved with the file, named after it"""
 
     def command(self, source, target):
@@ -1437,8 +1445,8 @@ class TestStowFileTranscript(WizLibTestCase):
         n.write_text('a')
         a = Filez4EvaApp()
         a.config = ConfigHandler.fake(filez4eva_target=target)
-        c = StowFileCommand(a, file=str(n), date='20240213',
-                            data={'title': 't'}, use_stdin=False)
+        c = Stower(a, file=str(n), date='20240213',
+                   data={'title': 't'}, use_stdin=False)
         return n, c
 
     def test_transcript_moved_and_renamed(self):
@@ -1448,7 +1456,7 @@ class TestStowFileTranscript(WizLibTestCase):
             t = Path(source) / 'b.txt.md'
             t.write_text('# transcript')
             with self.patchout():
-                r = c.execute()
+                r = execute(c)
             dest = Path(target) / '20240213-t.txt'
             self.assertEqual(Path(r), dest)
             self.assertEqual(dest.read_text(), 'a')
@@ -1462,7 +1470,7 @@ class TestStowFileTranscript(WizLibTestCase):
                 TemporaryDirectory() as target:
             n, c = self.command(source, target)
             with self.patchout():
-                r = c.execute()
+                r = execute(c)
             dest = Path(target) / '20240213-t.txt'
             self.assertEqual(Path(r), dest)
             files = sorted(str(p.relative_to(target))
@@ -1482,7 +1490,7 @@ class TestStowFileTranscript(WizLibTestCase):
             dest_t.write_text('# existing')
             with self.patchout(), \
                     self.assertRaises(Filez4EvaError) as cm:
-                c.execute()
+                execute(c)
             self.assertIn(str(dest_t), str(cm.exception))
             self.assertEqual(n.read_text(), 'a')
             self.assertEqual(t.read_text(), '# new')
@@ -1498,14 +1506,14 @@ class TestStowFileTranscript(WizLibTestCase):
             with self.patchout(), \
                     patch('shutil.move', side_effect=OSError('boom')), \
                     self.assertRaises(Filez4EvaError):
-                c.execute()
+                execute(c)
             self.assertEqual(n.read_text(), 'a')
             self.assertEqual(t.read_text(), '# transcript')
             self.assertFalse(
                 (Path(target) / '20240213-t.txt').exists())
 
 
-class TestStowFileTranscriptLocation(WizLibTestCase):
+class TestStowTranscriptLocation(WizLibTestCase):
     """The transcript goes adjacent to the file (default) or into a parallel
     tree under a configured root"""
 
@@ -1524,14 +1532,14 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(**config)
         extra = {'cabinet': cabinet} if cabinet else {}
-        c = StowFileCommand(app, file=str(n), date='20261002',
-                            data={'title': 'part'}, use_stdin=False,
-                            **extra)
+        c = Stower(app, file=str(n), date='20261002',
+                   data={'title': 'part'}, use_stdin=False,
+                   **extra)
         with self.patchout():
-            return Path(c.execute())
+            return Path(execute(c))
 
     def run_app(self, config, *args, transcript=True):
-        """Run stow-file via the app with a YAML config body (indented under
+        """Run start_stower with a YAML config body (indented under
         `filez4eva:`), so nested blocks are flattened as in real use"""
         with TemporaryDirectory() as sourced, \
                 self.patchout(), self.patcherr():
@@ -1542,9 +1550,9 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
             with NamedTemporaryFile('w+') as cf:
                 cf.write('filez4eva:\n' + config)
                 cf.seek(0)
-                Filez4EvaApp.start('--config', cf.name, 'stow-file',
-                                   str(sourcep), '-d', '20261002', '-f',
-                                   'title=part', *args, debug=True)
+                start_stower(cf.name,
+                             str(sourcep), '-d', '20261002', '-f',
+                             'title=part', *args)
             return self.files(sourced)
 
     def test_adjacent_by_default(self):
@@ -1694,7 +1702,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
                 'b': {'target': '/b', 'transcripts': {'root': '~/x'}},
                 'c': {'target': '/c',
                       'transcripts': {'location': 'adjacent'}}})
-        c = StowFileCommand(app)
+        c = Stower(app)
         self.assertEqual((c.cabinets['a'].transcripts_location,
                           c.cabinets['a'].transcripts_root),
                          ('parallel', '/t'))
@@ -1705,7 +1713,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
     def test_default_values(self):
         app = Filez4EvaApp()
         app.config = ConfigHandler.fake(filez4eva_target='/x')
-        cabinet = StowFileCommand(app).cabinets['default']
+        cabinet = Stower(app).cabinets['default']
         self.assertEqual(cabinet.transcripts_location, 'adjacent')
         self.assertIsNone(cabinet.transcripts_root)
         self.assertIsNone(cabinet.transcripts_rootdir)
@@ -1777,11 +1785,11 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
             n.write_text('a')
             app = Filez4EvaApp()
             app.config = ConfigHandler.fake(**config)
-            c = StowFileCommand(app, file=str(n), use_stdin=False)
-            with patch.object(StowFileCommand, 'prompt_value') as pv, \
+            c = Stower(app, file=str(n), use_stdin=False)
+            with patch.object(Stower, 'prompt_value') as pv, \
                     patch.object(app.ui, 'get_text') as gt, \
                     self.assertRaises(Filez4EvaError) as cm:
-                c.execute()
+                execute(c)
             pv.assert_not_called()
             gt.assert_not_called()
             self.assertTrue(n.is_file())
@@ -1868,7 +1876,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
             filez4eva_transcripts_location='',
             filez4eva_cabinets={
                 'a': {'target': '/a', 'transcripts': {'location': ''}}})
-        cabinet = StowFileCommand(app).cabinets['a']
+        cabinet = Stower(app).cabinets['a']
         self.assertEqual(cabinet.transcripts_location, 'adjacent')
 
     def test_invalid_cabinet_location_raises(self):
@@ -1892,7 +1900,7 @@ class TestStowFileTranscriptLocation(WizLibTestCase):
             filez4eva_transcripts_location='parallel',
             filez4eva_cabinets={
                 'a': {'target': '/a', 'transcripts': {'root': '/ra'}}})
-        cabinet = StowFileCommand(app).cabinets['a']
+        cabinet = Stower(app).cabinets['a']
         self.assertEqual((cabinet.transcripts_location,
                           cabinet.transcripts_root), ('parallel', '/ra'))
 

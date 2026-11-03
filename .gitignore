@@ -18,6 +18,7 @@ dist/
 # Application
 /sandbox/test-source/
 /sandbox/test-target/
+/sandbox/test-intake/
 
 delete-me.*
 .target-branch

@@ -1,3 +1,8 @@
+"""Cabinets, and the logic that stows a file in one: reading a record
+from flags, stdin and prompts, confirming a proposed record, planning the
+destination, and moving the file and its transcript. Used by the review
+and stow commands."""
+
 from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime
 from functools import cached_property
@@ -7,11 +12,10 @@ import re
 import shutil
 
 import yaml
-from wizlib.parser import WizParser
 from wizlib.command import CommandCancellation
 from wizlib.ui.shell_ui import Emphasis
 
-from filez4eva.command import Filez4EvaCommand
+from filez4eva.command import stdin_mapping
 from filez4eva.command.transcribe_command import transcript_path
 from filez4eva.error import Filez4EvaError
 from filez4eva.fields import (
@@ -19,6 +23,7 @@ from filez4eva.fields import (
     check_field_settings, check_pattern, check_value, load_store,
     normalize_value, record_values, render_pattern, resolve_fields,
     suggestions, value_rule, values_path)
+from filez4eva.paths import absolute_path
 
 
 DATE_PATTERN = re.compile(r'\d{8}')
@@ -55,7 +60,7 @@ def stdin_null(value) -> bool:
 # `pattern` keys when no `cabinets` section is configured.
 DEFAULT_CABINET = 'default'
 
-# Where stow-file puts a file's transcript: next to the stowed file
+# Where stow puts a file's transcript: next to the stowed file
 # ('adjacent') or under a separate root that mirrors the cabinet layout
 # ('parallel').
 TRANSCRIPT_LOCATIONS = ('adjacent', 'parallel')
@@ -64,14 +69,17 @@ DEFAULT_TRANSCRIPT_LOCATION = 'adjacent'
 
 def check_transcripts(owner: str, location, root):
     """Raise Filez4EvaError if a transcripts location (when set) is unknown
-    or a root (when set) isn't text. owner names where the values come from,
-    for the error message."""
+    or a root (when set) isn't text, or is a relative path (a blank root
+    counts as unset). owner names where the values come from, for the error
+    message."""
     if location is not None and location not in TRANSCRIPT_LOCATIONS:
         raise Filez4EvaError(
             f"{owner} has invalid transcripts location {location!r}; "
             "use one of: " + ', '.join(TRANSCRIPT_LOCATIONS))
     if root is not None and not isinstance(root, str):
         raise Filez4EvaError(f"{owner} transcripts root must be text")
+    if root is not None and root.strip():
+        absolute_path(owner, 'transcripts root', root)
 
 
 def blank_to_none(value):
@@ -181,11 +189,14 @@ def load_cabinets(config) -> dict:
     pattern = config.get('filez4eva-pattern') or DEFAULT_PATTERN
     location, root = load_top_transcripts(config)
     top_owner = 'Top-level filez4eva'
+    target = config.get('filez4eva-target')
+    # Checked even when cabinets make it unused: config paths are absolute
+    if target:
+        absolute_path(top_owner, 'target', str(target))
     top_fields = check_field_settings(top_owner,
                                       config.get('filez4eva-fields'))
     entries = config.get('filez4eva-cabinets')
     if not entries:
-        target = config.get('filez4eva-target')
         if not target:
             raise Filez4EvaError(
                 "No target configured: set filez4eva target or cabinets")
@@ -213,6 +224,7 @@ def load_cabinets(config) -> dict:
         target = entry.get('target')
         if not isinstance(target, str) or not target.strip():
             raise Filez4EvaError(f"Cabinet {name} must have a target")
+        absolute_path(f"Cabinet {name}", 'target', target)
         description = entry.get('description')
         if description is not None and not isinstance(description, str):
             raise Filez4EvaError(
@@ -232,11 +244,30 @@ def load_cabinets(config) -> dict:
     return cabinets
 
 
-class StowFileCommand(Filez4EvaCommand):
-    """Move filez to the right place with the right name"""
+def remember_values(app, cabinet: Cabinet, data: dict):
+    """Record one use of each value in data (field name -> value) of the
+    cabinet's learned fields in its learned values store, when a record is
+    accepted at review. A failure to read or write the store is reported
+    as a warning and never raised, so it can't lose the review."""
+    learned = {field.name: str(data[field.name]) for field in cabinet.fields
+               if field.learned and data.get(field.name)}
+    try:
+        record_values(cabinet.targetdir, learned)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError,
+            ValueError) as error:
+        app.ui.send(
+            f"Could not record values in "
+            f"{values_path(cabinet.targetdir)}: {error}", Emphasis.ERROR)
 
-    name = 'stow-file'
 
+class Stower:
+    """Stow one file into a cabinet with the right name. The cabinet, date
+    and other fields come from the caller, --field flags, a record on stdin
+    (with use_stdin) or prompts (read_values), or from confirming a
+    proposed record (confirm_values). Not a command: the stow command
+    builds one per file, and review uses it to update records."""
+
+    file: str = None
     date: str = None
     # Values of the cabinet's fields other than date, by field name
     data: dict = None
@@ -244,21 +275,35 @@ class StowFileCommand(Filez4EvaCommand):
     field: list = None
     cabinet: str = None
 
-    # Set False when stow-file runs inside another command (e.g. scan-dir),
-    # so a record piped to that command isn't applied to every file.
+    # False for a text document, which is its own transcript: no X.md
+    # moves with it, even if one is there
+    transcript: bool = True
+
+    # False when values must not come from stdin (e.g. when stowing a
+    # reviewed document), so a record piped to a run isn't applied to
+    # every file
     use_stdin: bool = True
 
-    @classmethod
-    def add_args(cls, parser: WizParser):
-        super().add_args(parser)
-        parser.add_argument('--date', '-d')
-        parser.add_argument('--field', '-f', action='append',
-                            metavar='NAME=VALUE')
-        parser.add_argument('--cabinet', '-c')
-        parser.add_argument('file')
+    def __init__(self, app, **vals):
+        self.app = app
+        for key, value in vals.items():
+            setattr(self, key, value)
 
-    def handle_vals(self):
-        super().handle_vals()
+    def provided(self, name: str) -> bool:
+        """Was a value given for name? (False counts, as for a command's
+        arguments)"""
+        value = getattr(self, name, None)
+        return True if value is False else bool(value)
+
+    def stdin_mapping(self) -> dict:
+        """The YAML mapping piped on stdin, or an empty dict"""
+        return stdin_mapping(self.app)
+
+    def read_values(self):
+        """Fill in the cabinet, date and other fields from --field flags,
+        then stdin (with use_stdin), then prompts for whatever is missing.
+        Raises Filez4EvaError on bad configuration or a bad value, and
+        CommandCancellation on an empty answer at a prompt."""
         # Fail on bad configuration (including any cabinet's pattern) before
         # prompting for anything
         self.cabinets
@@ -293,7 +338,7 @@ class StowFileCommand(Filez4EvaCommand):
         """Prompt until a valid value is entered; cancel on an empty one.
         clean returns the value to use (e.g. normalized), or something falsy
         if the value is invalid. Re-asking (rather than raising) keeps a
-        typo from ending a scan-dir session. A default is shown pre-filled,
+        typo from ending a review session. A default is shown pre-filled,
         so Enter accepts it."""
         # Only pass a default when there is one
         extra = (default,) if default else ()
@@ -307,6 +352,33 @@ class StowFileCommand(Filez4EvaCommand):
             if cleaned:
                 return cleaned
             self.app.ui.send(rule, Emphasis.PRINCIPAL)
+
+    def confirm_values(self, cabinet: str, proposed: dict) -> dict:
+        """Confirm a proposed record for a cabinet at pre-filled prompts.
+        The cabinet is fixed (the document's cabinet is chosen before it is
+        classified, and never prompted for here); an unknown name raises
+        Filez4EvaError. Prompt for each field of the cabinet in pattern
+        order, pre-filled with the proposed value of the same name (empty
+        if there is none, e.g. a document without a date). Return the
+        cabinet, date and data (the other fields). An empty answer raises
+        CommandCancellation."""
+        self.cabinet = cabinet
+        chosen = self.resolve_cabinet()
+        proposed = proposed or {}
+        date = None
+        data = {}
+        for field in chosen.fields:
+            default = proposed.get(field.name) or ''
+            if not isinstance(default, str):
+                default = str(default)
+            if field.is_date:
+                date = self.prompt_value('Date', [], self.clean_date,
+                                         DATE_RULE, default)
+            else:
+                data[field.name] = self.prompt_value(
+                    field.label, self.choices(field), normalize_value,
+                    value_rule(field), default)
+        return {'cabinet': chosen.name, 'date': date, 'data': data}
 
     def apply_field_flags(self) -> list:
         """Put the values of --field NAME=VALUE flags into data, normalized,
@@ -327,20 +399,6 @@ class StowFileCommand(Filez4EvaCommand):
             names.append(name)
         return names
 
-    def stdin_record(self) -> dict:
-        """Return the YAML mapping piped on stdin, or an empty dict if stdin
-        is absent, empty, malformed, or not a mapping. BaseLoader keeps every
-        scalar as a string, so values like 0123 or yes are not converted."""
-        stream = getattr(self.app, 'stream', None)
-        text = getattr(stream, 'text', None) if stream else None
-        if not isinstance(text, str) or not text.strip():
-            return {}
-        try:
-            record = yaml.load(text, Loader=yaml.BaseLoader)
-        except yaml.YAMLError:
-            return {}
-        return record if isinstance(record, dict) else {}
-
     def apply_stdin_record(self):
         """Fill the cabinet, and the date and other fields (under `data`),
         from stdin where not provided as command-line flags. Field names
@@ -348,7 +406,7 @@ class StowFileCommand(Filez4EvaCommand):
         doesn't have are ignored. Stdin is untrusted, so values are
         validated (fields other than date are normalized) and a bad value
         raises Filez4EvaError."""
-        record = self.stdin_record()
+        record = self.stdin_mapping()
         cabinet = record.get('cabinet')
         if not self.provided('cabinet') and not stdin_null(cabinet):
             if not isinstance(cabinet, str):
@@ -436,10 +494,10 @@ class StowFileCommand(Filez4EvaCommand):
         cabinet = self.resolve_cabinet()
         if cabinet.transcripts_location != 'parallel':
             return transcript_path(targetpath)
-        base = cabinet.transcripts_rootdir.absolute() / cabinet.name
+        base = cabinet.transcripts_rootdir / cabinet.name
         result = base / (str(Path(relative)) + '.md')
         # Checked lexically, like the target, in case of odd cabinet names
-        root = os.path.normpath(cabinet.transcripts_rootdir.absolute())
+        root = os.path.normpath(cabinet.transcripts_rootdir)
         base_norm = os.path.normpath(base)
         dest = os.path.normpath(result)
         if os.path.commonpath([root, base_norm]) != root \
@@ -472,7 +530,8 @@ class StowFileCommand(Filez4EvaCommand):
         """Work out where the file (and its transcript, if any) would go,
         without moving anything. Return (source, targetpath,
         source_transcript, target_transcript); the transcript paths are None
-        if the file has no transcript. Raises Filez4EvaError if the file is
+        if the file has no transcript, or transcript is False (a text
+        document). Raises Filez4EvaError if the file is
         missing, a value is invalid, a destination is outside its tree, or
         something already exists at a destination."""
         pattern = self.pattern
@@ -481,7 +540,7 @@ class StowFileCommand(Filez4EvaCommand):
         if not path.is_file():
             raise Filez4EvaError(f"File {path} must exist")
         self.values = self.field_values()
-        targetdir = self.targetdir.absolute()
+        targetdir = self.targetdir
         # The source file's extension is always kept
         relative = render_pattern(pattern, self.values) + path.suffix
         targetpath = targetdir / relative
@@ -495,9 +554,10 @@ class StowFileCommand(Filez4EvaCommand):
         if targetpath.exists():
             raise Filez4EvaError(f"File already exists at {targetpath}")
         # A transcript (FILE.md) travels with the file, named after it
+        # (unless the file is its own transcript)
         source_transcript = transcript_path(path)
         target_transcript = None
-        if source_transcript.is_file():
+        if self.transcript and source_transcript.is_file():
             target_transcript = self.target_transcript(relative, targetpath)
             if target_transcript.exists():
                 raise Filez4EvaError(
@@ -506,22 +566,16 @@ class StowFileCommand(Filez4EvaCommand):
             source_transcript = None
         return path, targetpath, source_transcript, target_transcript
 
-    def remember(self):
-        """Record the values of the cabinet's learned fields, after a
-        successful move. A failure is reported but doesn't undo the move."""
-        cabinet = self.resolve_cabinet()
-        learned = {f.name: self.values[f.name] for f in cabinet.fields
-                   if f.learned}
-        try:
-            record_values(cabinet.targetdir.absolute(), learned)
-        except (OSError, UnicodeDecodeError, yaml.YAMLError,
-                ValueError) as error:
-            self.app.ui.send(
-                f"Could not record values in "
-                f"{values_path(cabinet.targetdir)}: {error}", Emphasis.ERROR)
-
-    @Filez4EvaCommand.wrap
-    def execute(self):
+    def stow(self) -> Path:
+        """Move the file (and its transcript, if any) to the chosen
+        cabinet. Return the destination. Learned values are not recorded
+        here: they were recorded when the record was reviewed
+        (remember_values).
+        Nothing is ever overwritten: if something already exists at a
+        destination, Filez4EvaError is raised before anything moves. If the
+        transcript can't be moved, the file is moved back. The cabinet, date
+        and data must already be set (read_values, or given by the
+        caller)."""
         path, targetpath, source_transcript, target_transcript = self.plan()
         targetpath.parent.mkdir(parents=True, exist_ok=True)
         path.rename(targetpath)
@@ -542,6 +596,4 @@ class StowFileCommand(Filez4EvaCommand):
                 raise Filez4EvaError(
                     f"Could not move transcript {source_transcript}: "
                     f"{error}") from error
-        self.remember()
-        self.status = 'Done'
-        return str(targetpath)
+        return targetpath

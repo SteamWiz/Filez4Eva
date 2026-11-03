@@ -1,0 +1,159 @@
+"""The command set: the five stage commands, no default command, and no
+stow-file, scan-dir or process"""
+
+from io import StringIO
+from unittest.mock import patch
+
+from wizlib.test_case import WizLibTestCase
+
+from filez4eva import Filez4EvaApp
+
+
+def start(*args):
+    """Run the app as the CLI does; return (stdout, stderr, exit code)"""
+    code = 0
+    with patch('sys.stdout', out := StringIO()), \
+            patch('sys.stderr', err := StringIO()):
+        try:
+            Filez4EvaApp.start(*args)
+        except SystemExit as exit:
+            code = exit.code
+    return out.getvalue(), err.getvalue(), code
+
+
+class TestCommands(WizLibTestCase):
+
+    def test_the_five_commands(self):
+        names = {c.name for c in Filez4EvaApp.base.family_members('name')}
+        self.assertEqual(names, {'ingest', 'transcribe', 'classify',
+                                 'review', 'stow'})
+
+    def test_no_default_command(self):
+        self.assertIsNone(Filez4EvaApp.base.default)
+
+    def test_removed_commands_are_unknown(self):
+        # The same error as for any name that was never a command
+        _, expected, code = start('no-such-command', 'x')
+        self.assertEqual(code, 1)
+        self.assertIn('unrecognized arguments: no-such-command x', expected)
+        for name in ['stow-file', 'scan-dir', 'process']:
+            with self.subTest(name=name):
+                out, err, code = start(name, 'x')
+                self.assertEqual(out, '')
+                self.assertEqual(code, 1)
+                self.assertEqual(
+                    err, expected.replace('no-such-command', name))
+
+    def test_no_command_is_an_error(self):
+        # WizLib's handling of a missing command when there is no default
+        out, err, code = start()
+        self.assertEqual(out, '')
+        self.assertEqual(code, 1)
+        self.assertIn('Unknown command None', err)
+
+    def test_help_lists_the_five_commands(self):
+        out, _, code = start('--help')
+        self.assertEqual(code, 0)
+        self.assertEqual(set(Filez4EvaApp.commands), {
+            c.name for c in Filez4EvaApp.base.family_members('name')})
+        for name in Filez4EvaApp.commands:
+            command = Filez4EvaApp.base.family_member('name', name)
+            self.assertIn(f'  {name:<12}{command.summary}\n', out)
+        self.assertLess(out.index('  ingest '), out.index('  stow '))
+        self.assertIn('Main use: `filez4eva classify -c NAME ~/Scans`, '
+                      'then `filez4eva stow`. With several cabinets and no '
+                      '-c, classify prompts for each document\'s cabinet.',
+                      ' '.join(out.split()))
+        for name in ['stow-file', 'scan-dir', 'process']:
+            self.assertNotIn(name, out)
+
+    def test_command_help(self):
+        for name, text in [
+                ('ingest', 'into the intake under a time-stamped name'),
+                ('transcribe', 'Transcribe documents to Markdown'),
+                ('classify', 'With several cabinets and no --cabinet, '
+                 'classify prompts for each document'),
+                ('review', 'Nothing is stowed'),
+                ('stow', 'Given data (--cabinet, --date, --field')]:
+            with self.subTest(name=name):
+                out, _, code = start(name, '--help')
+                self.assertEqual(code, 0)
+                self.assertTrue(out.startswith(f'usage: filez4eva {name} '))
+                # Ignore where argparse wraps the lines
+                out = ' '.join(out.split())
+                self.assertIn(text, out)
+                if name != 'ingest':
+                    self.assertIn('Default: the documents already in the '
+                                  'intake', out)
+                    self.assertIn('a path in the intake is an error', out)
+                    self.assertIn('--ingested NAME (repeatable), just '
+                                  'those documents', out)
+                    self.assertIn('act only on documents that have had '
+                                  'every earlier stage', out)
+                    self.assertIn('Progress: on stderr, a line before each '
+                                  'stage starts on a document', out)
+                    self.assertIn('Stdout has only the result paths.', out)
+                    self.assertEqual('Stowed to PATH' in out, name == 'stow')
+                else:
+                    self.assertIn('an Ingesting FILE line on stderr', out)
+                if name in ['ingest', 'transcribe']:
+                    self.assertNotIn('Order:', out)
+                else:
+                    self.assertIn('transcribed first, in one batch', out)
+                    self.assertIn('the most advanced documents come first',
+                                  out)
+
+    def test_cabinet_flag_on_classify_review_and_stow(self):
+        for name in ['classify', 'review', 'stow']:
+            with self.subTest(name=name):
+                out, _, code = start(name, '--help')
+                self.assertEqual(code, 0)
+                out = ' '.join(out.split())
+                self.assertIn('--cabinet, -c NAME the cabinet of every '
+                              'document in the run that has none saved yet',
+                              out)
+                self.assertIn('The model never picks the cabinet.', out)
+                self.assertIn('--date, -d DATE given data: the date of every '
+                              'document in the run', out)
+                self.assertIn('--field, -f NAME=VALUE given data: the value '
+                              'of a field for every document in the run '
+                              '(repeatable)', out)
+                self.assertIn('Given data: --cabinet, --date, --field '
+                              'NAME=VALUE (repeatable) and a YAML record on '
+                              'stdin', out)
+        for name in ['ingest', 'transcribe']:
+            with self.subTest(name=name):
+                out, _, _ = start(name, '--help')
+                self.assertNotIn('--cabinet', out)
+                self.assertNotIn('--date', out)
+
+    def test_order_help_names_the_remaining_stages(self):
+        out, _, _ = start('stow', '--help')
+        self.assertIn('remaining stages (classify, review, stow)',
+                      ' '.join(out.split()))
+
+    def test_only_help_names_the_earlier_stages(self):
+        out, _, _ = start('stow', '--help')
+        self.assertIn('(ingest, transcribe, classify, review)',
+                      ' '.join(out.split()))
+
+    def test_ingest_needs_a_path(self):
+        out, err, code = start('ingest')
+        self.assertEqual(out, '')
+        self.assertEqual(code, 1)
+        self.assertIn('ingest needs a path', err)
+
+    def test_help_on_text_documents(self):
+        expected = {
+            'transcribe': 'is a text document: it is its own transcript, '
+            'so there is no model call and no X.md',
+            'classify': "or a text document's own text (it has no "
+            'transcript)',
+            'stow': 'a text document has none: it is its own transcript'}
+        for name, text in expected.items():
+            with self.subTest(name=name):
+                out, _, _ = start(name, '--help')
+                self.assertIn(text, ' '.join(out.split()))
+        out, _, _ = start('classify', '--help')
+        self.assertIn('Only the first 100,000 characters',
+                      ' '.join(out.split()))
