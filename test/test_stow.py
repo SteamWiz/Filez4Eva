@@ -1689,8 +1689,108 @@ class TestStowTranscriptLocation(WizLibTestCase):
                       f"        root: {own}\n")
             self.run_app(config)
             self.assertEqual(self.files(root), [])
+            # The cabinet's own root mirrors its target: no cabinet folder
             self.assertEqual(self.files(own),
-                             ['accounts/20261002-part.pdf.md'])
+                             ['20261002-part.pdf.md'])
+
+    def test_own_root_mirrors_target(self):
+        # #91: a cabinet with its own target and its own parallel root,
+        # and no top-level transcripts settings
+        with TemporaryDirectory() as target, TemporaryDirectory() as root:
+            config = (f"  cabinets:\n"
+                      f"    hickory:\n"
+                      f"      target: {target}\n"
+                      f"      pattern: '{{date}}-{{title}}'\n"
+                      f"      transcripts:\n"
+                      f"        location: parallel\n"
+                      f"        root: {root}\n")
+            left = self.run_app(config)
+            self.assertEqual(left, [])
+            self.assertEqual(self.files(target), ['20261002-part.pdf'])
+            self.assertEqual(self.files(root), ['20261002-part.pdf.md'])
+            self.assertEqual(
+                (Path(root) / '20261002-part.pdf.md').read_text(),
+                '# transcript')
+            self.assertFalse((Path(root) / 'hickory').exists())
+
+    def test_own_root_mirrors_subdirectories(self):
+        with TemporaryDirectory() as target, TemporaryDirectory() as root:
+            config = (f"  cabinets:\n"
+                      f"    hickory:\n"
+                      f"      target: {target}\n"
+                      f"      pattern: '{{date.year}}/{{date}}-{{title}}'\n"
+                      f"      transcripts:\n"
+                      f"        location: parallel\n"
+                      f"        root: {root}\n")
+            self.run_app(config)
+            self.assertEqual(self.files(target),
+                             ['2026/20261002-part.pdf'])
+            self.assertEqual(self.files(root),
+                             ['2026/20261002-part.pdf.md'])
+            self.assertFalse((Path(root) / 'hickory').exists())
+
+    def test_own_root_with_top_level_location(self):
+        # Location inherited from the top level, root the cabinet's own
+        with TemporaryDirectory() as target, TemporaryDirectory() as root:
+            config = (f"  transcripts:\n"
+                      f"    location: parallel\n"
+                      f"  cabinets:\n"
+                      f"    hickory:\n"
+                      f"      target: {target}\n"
+                      f"      transcripts:\n"
+                      f"        root: {root}\n")
+            self.run_app(config)
+            self.assertEqual(self.files(root), ['20261002-part.pdf.md'])
+
+    def test_shared_root_keeps_cabinet_folders(self):
+        # Cabinets inheriting the top-level root each get their own folder
+        # under it, so the same name in two cabinets can't collide
+        with TemporaryDirectory() as a, TemporaryDirectory() as b, \
+                TemporaryDirectory() as root:
+            config = (f"  transcripts:\n"
+                      f"    location: parallel\n"
+                      f"    root: {root}\n"
+                      f"  cabinets:\n"
+                      f"    accounts:\n"
+                      f"      target: {a}\n"
+                      f"    memories:\n"
+                      f"      target: {b}\n")
+            self.run_app(config, '-c', 'accounts')
+            self.run_app(config, '-c', 'memories')
+            self.assertEqual(self.files(root),
+                             ['accounts/20261002-part.pdf.md',
+                              'memories/20261002-part.pdf.md'])
+
+    def test_own_root_collision_moves_nothing(self):
+        with TemporaryDirectory() as source, \
+                TemporaryDirectory() as target, \
+                TemporaryDirectory() as root:
+            existing = Path(root) / '20261002-part.txt.md'
+            existing.write_text('# existing')
+            with self.assertRaises(Filez4EvaError) as cm:
+                self.stow(source, cabinet='a', filez4eva_cabinets={
+                    'a': {'target': target, 'transcripts': {
+                        'location': 'parallel', 'root': root}}})
+            self.assertIn(str(existing), str(cm.exception))
+            self.assertEqual(self.files(source), ['b.txt', 'b.txt.md'])
+            self.assertEqual(self.files(target), [])
+            self.assertEqual(existing.read_text(), '# existing')
+
+    def test_shared_flag_resolved(self):
+        app = Filez4EvaApp()
+        app.config = ConfigHandler.fake(
+            filez4eva_transcripts_location='parallel',
+            filez4eva_transcripts_root='/t',
+            filez4eva_cabinets={
+                'a': {'target': '/a'},
+                'b': {'target': '/b', 'transcripts': {'root': '/x'}},
+                'c': {'target': '/c', 'transcripts': {'root': ''}}})
+        cabinets = Stower(app).cabinets
+        self.assertTrue(cabinets['a'].transcripts_shared)
+        self.assertFalse(cabinets['b'].transcripts_shared)
+        # A blank own root counts as unset: the top-level root is used
+        self.assertTrue(cabinets['c'].transcripts_shared)
+        self.assertEqual(cabinets['c'].transcripts_root, '/t')
 
     def test_cabinet_values_resolved(self):
         app = Filez4EvaApp()

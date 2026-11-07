@@ -1357,13 +1357,23 @@ filez4eva:
     root: ~/Dropbox/transcripts
 ```
 
-With `location: parallel`, the transcript goes to
-`<root>/<cabinet>/<path under the cabinet target>.md`. For example, stowing
-into the `finances` cabinet at `2026/amazon/20261002_receipt.pdf` puts the
-transcript at `~/Dropbox/transcripts/finances/2026/amazon/20261002_receipt.pdf.md`.
+With `location: parallel`, the transcript goes under the root at the same
+path as the stowed file under the cabinet target, with `.md` added to the
+file's name. Where exactly depends on whose `root` it is:
+
+- The top-level `root` is shared by every cabinet that doesn't set its own,
+  so each cabinet gets a folder named after it:
+  `<root>/<cabinet>/<path under the cabinet target>.md`. For example, stowing
+  into the `finances` cabinet at `2026/amazon/20261002_receipt.pdf` puts the
+  transcript at
+  `~/Dropbox/transcripts/finances/2026/amazon/20261002_receipt.pdf.md`.
+  Without a `cabinets` section the single cabinet is named `default`, so
+  transcripts go under `<root>/default/`.
+- A `root` set in a cabinet's own `transcripts` block belongs to that cabinet
+  alone and mirrors its target directly, with no cabinet folder:
+  `<root>/<path under the cabinet target>.md`.
+
 Missing directories are created, and the root may be on another filesystem.
-Without a `cabinets` section the single cabinet is named `default`, so
-transcripts go under `<root>/default/`.
 
 A cabinet can override either key with its own `transcripts` block; a key it
 doesn't set falls back to the top-level value:
@@ -1375,12 +1385,20 @@ filez4eva:
     root: ~/Dropbox/transcripts
   cabinets:
     accounts:
-      target: ~/Dropbox/accounts         # transcripts in the parallel tree
+      target: ~/Dropbox/accounts         # ~/Dropbox/transcripts/accounts/...
     memories:
       target: ~/Dropbox/memories
       transcripts:
         location: adjacent               # transcripts next to the files
+    hickory:
+      target: ~/clients/hickory/files
+      pattern: '{date.year}/{date}-{description}'
+      transcripts:
+        root: ~/clients/hickory/sources  # ~/clients/hickory/sources/...
 ```
+
+Here a document stowed in `hickory` at `2026/20261106-acme-invoice.pdf` has
+its transcript at `~/clients/hickory/sources/2026/20261106-acme-invoice.pdf.md`.
 
 The `root` must be an absolute path or start with `~`. A `location` other
 than `adjacent` or `parallel`, `parallel` without a `root`, a relative

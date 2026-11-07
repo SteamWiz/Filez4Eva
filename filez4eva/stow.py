@@ -61,8 +61,10 @@ def stdin_null(value) -> bool:
 DEFAULT_CABINET = 'default'
 
 # Where stow puts a file's transcript: next to the stowed file
-# ('adjacent') or under a separate root that mirrors the cabinet layout
-# ('parallel').
+# ('adjacent') or under a separate root that mirrors the cabinet target
+# ('parallel'). A root set in the cabinet's own `transcripts` block mirrors
+# its target directly; the top-level root, shared by every cabinet that
+# inherits it, holds one folder per cabinet.
 TRANSCRIPT_LOCATIONS = ('adjacent', 'parallel')
 DEFAULT_TRANSCRIPT_LOCATION = 'adjacent'
 
@@ -113,11 +115,13 @@ def load_top_transcripts(config) -> tuple:
 
 
 def resolve_transcripts(name: str, block, location=None, root=None) -> tuple:
-    """Return (location, root) for a cabinet. Values in the cabinet's own
-    `transcripts` block win, key by key, over the given top-level values
-    (already checked by load_top_transcripts); location defaults to
-    'adjacent'. Raises Filez4EvaError on a block that isn't a mapping, an
-    unknown location, or 'parallel' without a root."""
+    """Return (location, root, shared) for a cabinet. Values in the
+    cabinet's own `transcripts` block win, key by key, over the given
+    top-level values (already checked by load_top_transcripts); location
+    defaults to 'adjacent'. shared is True when the root is the top-level
+    one (the cabinet sets none), which several cabinets may share. Raises
+    Filez4EvaError on a block that isn't a mapping, an unknown location, or
+    'parallel' without a root."""
     own_location = own_root = None
     if block is not None:
         if not isinstance(block, dict):
@@ -129,6 +133,7 @@ def resolve_transcripts(name: str, block, location=None, root=None) -> tuple:
     if own_location is not None:
         location = own_location
     location = location or DEFAULT_TRANSCRIPT_LOCATION
+    shared = not own_root
     root = own_root or root
     if location == 'parallel' and not (root and root.strip()):
         if own_location is None and own_root is None:
@@ -137,7 +142,7 @@ def resolve_transcripts(name: str, block, location=None, root=None) -> tuple:
                 f"a root (cabinet {name} sets none)")
         raise Filez4EvaError(
             f"Cabinet {name} transcripts location 'parallel' needs a root")
-    return location, root
+    return location, root, shared
 
 
 def default_fields() -> tuple:
@@ -156,6 +161,10 @@ class Cabinet:
     description: str = None
     transcripts_location: str = DEFAULT_TRANSCRIPT_LOCATION
     transcripts_root: str = None
+    # True when transcripts_root is the top-level root, which every cabinet
+    # without its own root shares; a parallel transcript then goes in a
+    # folder named after the cabinet
+    transcripts_shared: bool = True
     # Field for each name in the pattern, in pattern order (date included)
     fields: tuple = dataclass_field(default_factory=default_fields)
 
@@ -488,20 +497,24 @@ class Stower:
 
     def target_transcript(self, relative: str, targetpath: Path) -> Path:
         """Return where the stowed file's transcript goes. 'adjacent' puts
-        it next to the stowed file; 'parallel' puts it at
-        <root>/<cabinet>/<relative>.md, where relative is the stowed file's
-        path under the cabinet target."""
+        it next to the stowed file; 'parallel' puts it at <root>/<relative>.md
+        when the root is the cabinet's own, so the root mirrors the target,
+        or at <root>/<cabinet>/<relative>.md when the root is the shared
+        top-level one, so cabinets sharing it don't collide. relative is the
+        stowed file's path under the cabinet target."""
         cabinet = self.resolve_cabinet()
         if cabinet.transcripts_location != 'parallel':
             return transcript_path(targetpath)
-        base = cabinet.transcripts_rootdir / cabinet.name
+        rootdir = cabinet.transcripts_rootdir
+        shared = cabinet.transcripts_shared
+        base = rootdir / cabinet.name if shared else rootdir
         result = base / (str(Path(relative)) + '.md')
         # Checked lexically, like the target, in case of odd cabinet names
-        root = os.path.normpath(cabinet.transcripts_rootdir)
+        root = os.path.normpath(rootdir)
         base_norm = os.path.normpath(base)
         dest = os.path.normpath(result)
         if os.path.commonpath([root, base_norm]) != root \
-                or base_norm == root \
+                or (shared and base_norm == root) \
                 or os.path.commonpath([base_norm, dest]) != base_norm \
                 or dest == base_norm:
             raise Filez4EvaError(
